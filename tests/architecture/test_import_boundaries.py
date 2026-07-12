@@ -1,0 +1,126 @@
+from pathlib import Path
+
+import pytest
+
+from tests.architecture.import_boundaries import find_violations, format_violations
+
+
+def write_module(root: Path, relative_path: str, source: str) -> None:
+    module_path = root / relative_path
+    module_path.parent.mkdir(parents=True, exist_ok=True)
+    module_path.write_text(source, encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "source", "expected_module"),
+    [
+        ("slices/tasks/domain/task.py", "import fastapi\n", "fastapi"),
+        (
+            "slices/tasks/application/handler.py",
+            "import sqlalchemy\n",
+            "sqlalchemy",
+        ),
+        ("slices/tasks/domain/files.py", "import pathlib\n", "pathlib"),
+        ("slices/tasks/domain/http_client.py", "import httpx\n", "httpx"),
+        (
+            "slices/tasks/adapters/worker/consumer.py",
+            "import fastapi\n",
+            "fastapi",
+        ),
+        (
+            "slices/tasks/application/handler.py",
+            "from second_brain.slices.knowledge.application.service import Service\n",
+            "second_brain.slices.knowledge.application.service",
+        ),
+        (
+            "slices/tasks/domain/task.py",
+            "from second_brain.slices.tasks.domain_models import Task\n",
+            "second_brain.slices.tasks.domain_models",
+        ),
+        (
+            "slices/tasks/application/handler.py",
+            "from second_brain.slices.tasks.infrastructure.mailer import Mailer\n",
+            "second_brain.slices.tasks.infrastructure.mailer",
+        ),
+        (
+            "slices/tasks/domain/handler.py",
+            "from ..application.command import Command\n",
+            "second_brain.slices.tasks.application.command",
+        ),
+        (
+            "shared/leak.py",
+            (
+                "from second_brain.slices.tasks.application.contracts "
+                "import TaskContract\n"
+            ),
+            "second_brain.slices.tasks.application.contracts",
+        ),
+        (
+            "shared/leak.py",
+            "from second_brain.slices import tasks\n",
+            "second_brain.slices",
+        ),
+        (
+            "slices/tasks/domain/environment.py",
+            "import os\n",
+            "os",
+        ),
+        (
+            "slices/tasks/application/worker.py",
+            "import queue\n",
+            "queue",
+        ),
+    ],
+)
+def test_checker_reports_prohibited_import(
+    tmp_path: Path,
+    relative_path: str,
+    source: str,
+    expected_module: str,
+) -> None:
+    write_module(tmp_path, relative_path, source)
+
+    violations = list(find_violations(tmp_path))
+
+    assert [violation.imported_module for violation in violations] == [expected_module]
+    assert relative_path in str(violations[0].path)
+    assert expected_module in format_violations(violations)
+
+
+def test_checker_allows_bootstrap_and_published_contract_imports(
+    tmp_path: Path,
+) -> None:
+    write_module(tmp_path, "bootstrap/app.py", "from fastapi import FastAPI\n")
+    write_module(
+        tmp_path,
+        "slices/tasks/adapters/api/router.py",
+        "from fastapi import FastAPI\n",
+    )
+    write_module(
+        tmp_path,
+        "slices/tasks/domain/handler.py",
+        "from .model import Task\n",
+    )
+    write_module(
+        tmp_path,
+        "slices/tasks/application/handler.py",
+        (
+            "from second_brain.shared.clock import Clock\n"
+            "from second_brain.slices.knowledge.application.contracts "
+            "import KnowledgeContract\n"
+            "from second_brain.slices.tasks.application.command import Command\n"
+            "from second_brain.slices.tasks.domain.task import Task\n"
+            "from second_brain.slices.tasks.ports.clock import TaskClock\n"
+        ),
+    )
+
+    violations = list(find_violations(tmp_path))
+
+    assert not violations, format_violations(violations)
+
+
+def test_real_package_obeys_import_boundaries() -> None:
+    package_root = Path(__file__).parents[2] / "src" / "second_brain"
+    violations = list(find_violations(package_root))
+
+    assert not violations, format_violations(violations)
