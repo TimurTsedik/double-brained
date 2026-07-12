@@ -1,5 +1,24 @@
 # Second Brain
 
-Implementation repository for Second Brain.
+Python implementation of Second Brain.
 
-This repository contains application source code, tests, migrations and runtime configuration examples. Product research, architectural decision history and private development guidance are maintained in a separate local-only vault and are not published through this repository.
+## Local setup
+
+```bash
+uv sync --python 3.13
+```
+
+## Quality checks
+
+```bash
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src
+```
+
+## Run locally
+
+```bash
+uv run uvicorn second_brain.bootstrap.main:app --host 127.0.0.1 --port 8000
+```
