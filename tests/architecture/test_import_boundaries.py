@@ -70,6 +70,16 @@ def write_module(root: Path, relative_path: str, source: str) -> None:
             "import queue\n",
             "queue",
         ),
+        (
+            "other/feature/adapters/api/router.py",
+            "import fastapi\n",
+            "fastapi",
+        ),
+        (
+            "slices/tasks/domain/file_input.py",
+            "import fileinput\n",
+            "fileinput",
+        ),
     ],
 )
 def test_checker_reports_prohibited_import(

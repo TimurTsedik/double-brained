@@ -100,9 +100,10 @@ def imports_fastapi(imported_module: str) -> bool:
 
 
 def fastapi_import_allowed(module_path: tuple[str, ...]) -> bool:
-    return module_path[:1] == ("bootstrap",) or module_path[2:4] == (
-        "adapters",
-        "api",
+    return module_path[:1] == ("bootstrap",) or (
+        len(module_path) >= 4
+        and module_path[:1] == ("slices",)
+        and module_path[2:4] == ("adapters", "api")
     )
 
 
@@ -170,5 +171,14 @@ def imports_forbidden_framework(imported_module: str) -> bool:
         "glob",
         "pathlib",
         "queue",
+        "fileinput",
+        "zipfile",
+        "tarfile",
+        "gzip",
+        "bz2",
+        "lzma",
+        "mmap",
+        "stat",
+        "fnmatch",
     )
     return imported_module.partition(".")[0] in forbidden_roots
