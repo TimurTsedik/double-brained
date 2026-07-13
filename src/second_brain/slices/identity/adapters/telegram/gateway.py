@@ -72,6 +72,14 @@ class AiogramGateway:
             ),
         )
 
+    async def send_selection_feedback(self, update: TelegramUpdate) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        text = _selection_feedback_text(update.callback_data)
+        if text is None:
+            return
+        await self._bot.send_message(chat_id=update.telegram_user_id, text=text)
+
     async def answer_callback(self, update: TelegramUpdate) -> None:
         if update.callback_query_id is None:
             return
@@ -121,3 +129,19 @@ def _acknowledgement_text(kind: AcknowledgementKind) -> str:
         AcknowledgementKind.KNOWN_USER_STARTED: "Welcome back.",
     }
     return messages[kind]
+
+
+def _selection_feedback_text(callback_data: str | None) -> str | None:
+    if callback_data is None:
+        return None
+    messages = {
+        "capture:note": "📝 Заметка",
+        "capture:task": "✅ Задача",
+        "capture:idea": "💡 Идея",
+        "capture:decision": "⚖️ Решение",
+        "capture:question": "❓ Вопрос",
+        "capture:cancel": "✖️ Отменено",
+        "task:await_text": "✅ Задача",
+        "task:cancel": "✖️ Отменено",
+    }
+    return messages.get(callback_data)

@@ -83,6 +83,7 @@ class PanelGateway:
     def __init__(self, update: TelegramUpdate) -> None:
         self._update = update
         self.panels: list[TelegramUpdate] = []
+        self.selection_feedback: list[TelegramUpdate] = []
         self.answered_callbacks: list[TelegramUpdate] = []
         self.acknowledgements: list[AcknowledgementKind] = []
 
@@ -96,6 +97,9 @@ class PanelGateway:
 
     async def send_panel(self, update: TelegramUpdate) -> None:
         self.panels.append(update)
+
+    async def send_selection_feedback(self, update: TelegramUpdate) -> None:
+        self.selection_feedback.append(update)
 
     async def answer_callback(self, update: TelegramUpdate) -> None:
         self.answered_callbacks.append(update)
@@ -206,6 +210,31 @@ async def test_callback_always_closes_spinner_without_chat_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fresh_note_selection_sends_feedback_once_and_duplicate_sends_none() -> (
+    None
+):
+    update = private_callback(103, "capture:note")
+    fresh_gateway = PanelGateway(update)
+
+    await LocalPoller(
+        fresh_gateway,
+        StaticProcessor(update_result(AcknowledgementKind.TASK_MODE_SET, True)),
+        AcquiredPollerLock(),
+    ).run_once()
+
+    assert fresh_gateway.selection_feedback == [update]
+
+    duplicate_gateway = PanelGateway(update)
+    await LocalPoller(
+        duplicate_gateway,
+        StaticProcessor(update_result(AcknowledgementKind.TASK_MODE_SET, False)),
+        AcquiredPollerLock(),
+    ).run_once()
+
+    assert duplicate_gateway.selection_feedback == []
+
+
+@pytest.mark.asyncio
 async def test_callback_spinner_is_answered_before_a_processor_retry() -> None:
     update = TelegramUpdate(
         1,
@@ -300,6 +329,29 @@ async def test_aiogram_gateway_sends_fixed_inline_task_panel_and_answers_callbac
         "capture:cancel",
     ]
     assert "task:await_text" not in repr(callback_update)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("callback_data", "expected_text"),
+    [
+        ("capture:note", "📝 Заметка"),
+        ("capture:task", "✅ Задача"),
+        ("capture:idea", "💡 Идея"),
+        ("capture:decision", "⚖️ Решение"),
+        ("capture:question", "❓ Вопрос"),
+        ("capture:cancel", "✖️ Отменено"),
+    ],
+)
+async def test_aiogram_gateway_sends_selection_feedback(
+    callback_data: str, expected_text: str
+) -> None:
+    bot = RecordingAiogramBot()
+    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+
+    await gateway.send_selection_feedback(private_callback(103, callback_data))
+
+    assert bot.sent_messages == [{"chat_id": 42, "text": expected_text}]
 
 
 class RecordingTaskModePort:

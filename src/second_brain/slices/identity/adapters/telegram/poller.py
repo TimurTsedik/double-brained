@@ -32,6 +32,8 @@ class TelegramGateway(Protocol):
 
     async def send_panel(self, update: TelegramUpdate) -> None: ...
 
+    async def send_selection_feedback(self, update: TelegramUpdate) -> None: ...
+
     async def answer_callback(self, update: TelegramUpdate) -> None: ...
 
 
@@ -99,6 +101,21 @@ class LocalPoller:
                 while True:
                     try:
                         await self._gateway.send_panel(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            if (
+                result.kind
+                in {
+                    AcknowledgementKind.TASK_MODE_SET,
+                    AcknowledgementKind.TASK_MODE_CANCELLED,
+                }
+                and getattr(result, "fresh", True)
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_selection_feedback(update)
                     except Exception:
                         await self._sleep(1.0)
                         continue
