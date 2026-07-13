@@ -13,13 +13,18 @@ from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresUpdateTransaction,
 )
 from second_brain.slices.identity.application.contracts import UpdateTransaction
+from second_brain.slices.knowledge.adapters.persistence.repository import (
+    PostgresKnowledgeWriter,
+)
 from second_brain.slices.tasks.adapters.persistence.repository import (
-    PostgresPendingTaskModeWriter,
+    PostgresPendingCaptureSelectionWriter,
+    PostgresTaskWriter,
 )
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
     ConsumePendingTaskTextCommand,
     SetAwaitingTaskCommand,
+    SetPendingCaptureSelectionCommand,
     TaskModePort,
 )
 from second_brain.slices.tasks.application.task_capture import TaskCapture
@@ -33,7 +38,8 @@ class TaskCaptureInTransaction(CaptureTextPort, TaskModePort):
     ) -> CaptureEvent:
         session = _active_session(transaction)
         source = await CaptureText(PostgresCaptureEventWriter(session)).execute(command)
-        await TaskCapture(PostgresPendingTaskModeWriter(session)).consume_for_text(
+        task_capture = _typed_task_capture(session)
+        await task_capture.consume_for_text(
             ConsumePendingTaskTextCommand(
                 access_context=command.access_context,
                 text=command.raw_text,
@@ -49,17 +55,18 @@ class TaskCaptureInTransaction(CaptureTextPort, TaskModePort):
     async def set_awaiting_task(
         self, command: SetAwaitingTaskCommand, transaction: UpdateTransaction
     ) -> None:
-        task_capture = TaskCapture(
-            PostgresPendingTaskModeWriter(_active_session(transaction))
-        )
+        task_capture = _typed_task_capture(_active_session(transaction))
         await task_capture.set_awaiting_task(command)
+
+    async def set_selection(
+        self, command: SetPendingCaptureSelectionCommand, transaction: UpdateTransaction
+    ) -> None:
+        await _typed_task_capture(_active_session(transaction)).set_selection(command)
 
     async def cancel(
         self, command: CancelPendingTaskCommand, transaction: UpdateTransaction
     ) -> None:
-        task_capture = TaskCapture(
-            PostgresPendingTaskModeWriter(_active_session(transaction))
-        )
+        task_capture = _typed_task_capture(_active_session(transaction))
         await task_capture.cancel(command)
 
 
@@ -67,3 +74,11 @@ def _active_session(transaction: UpdateTransaction) -> AsyncSession:
     if not isinstance(transaction, PostgresUpdateTransaction):
         raise TypeError("task capture requires the PostgreSQL update transaction")
     return transaction.active_session
+
+
+def _typed_task_capture(session: AsyncSession) -> TaskCapture:
+    return TaskCapture(
+        PostgresPendingCaptureSelectionWriter(session),
+        PostgresTaskWriter(session),
+        PostgresKnowledgeWriter(session),
+    )

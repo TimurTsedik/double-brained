@@ -19,6 +19,7 @@ from second_brain.slices.identity.ports.repositories import (
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
     SetAwaitingTaskCommand,
+    SetPendingCaptureSelectionCommand,
     TaskModePort,
 )
 
@@ -143,7 +144,19 @@ class LocalUpdateProcessor:
         context: TraceContext,
         now: datetime,
     ) -> str:
-        if update.callback_data not in {"task:await_text", "task:cancel"}:
+        selections = {
+            "capture:note": "note",
+            "capture:task": "task",
+            "capture:idea": "idea",
+            "capture:decision": "decision",
+            "capture:question": "question",
+        }
+        if update.callback_data not in {
+            *selections,
+            "capture:cancel",
+            "task:await_text",
+            "task:cancel",
+        }:
             return AcknowledgementKind.IGNORED
         if update.telegram_user_id is None:
             return AcknowledgementKind.IGNORED
@@ -156,6 +169,18 @@ class LocalUpdateProcessor:
             await self._task_mode_port.set_awaiting_task(
                 SetAwaitingTaskCommand(
                     access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            return AcknowledgementKind.TASK_MODE_SET
+        if update.callback_data in selections:
+            selection = selections[update.callback_data]
+            await self._task_mode_port.set_selection(
+                SetPendingCaptureSelectionCommand(
+                    access_context=access_context,
+                    selection=selection,
                     updated_at=now,
                     trace_id=context.trace_id,
                 ),

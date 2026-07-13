@@ -8,9 +8,12 @@ class TaskStatus(StrEnum):
     INBOX = "inbox"
 
 
-class PendingCaptureMode(StrEnum):
-    NORMAL = "normal"
-    AWAITING_TASK_TEXT = "awaiting_task_text"
+class PendingCaptureType(StrEnum):
+    NOTE = "note"
+    TASK = "task"
+    IDEA = "idea"
+    DECISION = "decision"
+    QUESTION = "question"
 
 
 @dataclass(frozen=True)

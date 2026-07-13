@@ -17,16 +17,18 @@ from second_brain.slices.identity.adapters.persistence.database import (
 )
 from second_brain.slices.identity.adapters.persistence.models import User, UserSpace
 from second_brain.slices.identity.application.contracts import AccessContext
-from second_brain.slices.tasks.adapters.persistence.models import PendingTaskModeModel
+from second_brain.slices.tasks.adapters.persistence.models import (
+    PendingCaptureSelectionModel,
+)
 from second_brain.slices.tasks.adapters.persistence.repository import (
-    PostgresPendingTaskModeRepository,
+    PostgresPendingCaptureSelectionRepository,
 )
 from second_brain.slices.tasks.application.contracts import (
     ConsumePendingTaskTextCommand,
     SetAwaitingTaskCommand,
 )
 from second_brain.slices.tasks.application.task_capture import TaskCapture
-from second_brain.slices.tasks.domain.entities import PendingCaptureMode, TaskStatus
+from second_brain.slices.tasks.domain.entities import PendingCaptureType, TaskStatus
 from tests.identity.conftest import IsolatedDatabase
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
@@ -123,18 +125,37 @@ def consume_command(source_capture_event_id: UUID) -> ConsumePendingTaskTextComm
 
 
 @pytest.mark.asyncio
+async def test_missing_pending_selection_defaults_to_note(
+    engine: AsyncEngine,
+) -> None:
+    repository = PostgresPendingCaptureSelectionRepository(
+        create_session_factory(engine)
+    )
+
+    selection = await repository.consume_selection(
+        consume_command(UUID("00000000-0000-0000-0000-000000000101"))
+    )
+
+    assert selection is PendingCaptureType.NOTE
+
+
+@pytest.mark.asyncio
 async def test_pending_mode_survives_repository_restart_then_consumes_once(
     engine: AsyncEngine,
 ) -> None:
     session_factory = create_session_factory(engine)
-    first_process = TaskCapture(PostgresPendingTaskModeRepository(session_factory))
+    first_process = TaskCapture(
+        PostgresPendingCaptureSelectionRepository(session_factory)
+    )
 
     await first_process.set_awaiting_task(set_awaiting_command(ACCESS_A))
 
     source = await PostgresCaptureEventRepository(session_factory).create(
         capture_command(ACCESS_A)
     )
-    second_process = TaskCapture(PostgresPendingTaskModeRepository(session_factory))
+    second_process = TaskCapture(
+        PostgresPendingCaptureSelectionRepository(session_factory)
+    )
     task = await second_process.consume_for_text(consume_command(source.id))
     repeated_task = await second_process.consume_for_text(consume_command(source.id))
 
@@ -149,7 +170,9 @@ async def test_pending_mode_survives_repository_restart_then_consumes_once(
 async def test_pending_mode_row_is_scoped_by_row_level_security(
     engine: AsyncEngine, session: AsyncSession
 ) -> None:
-    repository = PostgresPendingTaskModeRepository(create_session_factory(engine))
+    repository = PostgresPendingCaptureSelectionRepository(
+        create_session_factory(engine)
+    )
     await repository.set_awaiting_task(set_awaiting_command(ACCESS_B))
 
     await session.execute(
@@ -157,12 +180,12 @@ async def test_pending_mode_row_is_scoped_by_row_level_security(
         {"user_space_id": str(ACCESS_A.user_space_id)},
     )
 
-    assert (await session.scalars(select(PendingTaskModeModel))).all() == []
+    assert (await session.scalars(select(PendingCaptureSelectionModel))).all() == []
     with pytest.raises(DBAPIError):
         await session.execute(
-            insert(PendingTaskModeModel).values(
+            insert(PendingCaptureSelectionModel).values(
                 user_space_id=ACCESS_B.user_space_id,
-                mode=PendingCaptureMode.AWAITING_TASK_TEXT.value,
+                selection=PendingCaptureType.TASK.value,
                 updated_at=NOW,
                 trace_id="1" * 32,
             )

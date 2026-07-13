@@ -26,6 +26,14 @@ class SetAwaitingTaskCommand:
 
 
 @dataclass(frozen=True)
+class SetPendingCaptureSelectionCommand:
+    access_context: AccessContext
+    selection: str
+    updated_at: datetime
+    trace_id: str
+
+
+@dataclass(frozen=True)
 class CancelPendingTaskCommand:
     access_context: AccessContext
     updated_at: datetime
@@ -48,6 +56,10 @@ class TaskModePort(Protocol):
 
     async def set_awaiting_task(
         self, command: SetAwaitingTaskCommand, transaction: UpdateTransaction
+    ) -> None: ...
+
+    async def set_selection(
+        self, command: SetPendingCaptureSelectionCommand, transaction: UpdateTransaction
     ) -> None: ...
 
     async def cancel(

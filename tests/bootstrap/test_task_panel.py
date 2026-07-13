@@ -290,8 +290,14 @@ async def test_aiogram_gateway_sends_fixed_inline_task_panel_and_answers_callbac
     assert len(bot.sent_messages) == 1
     markup = bot.sent_messages[0]["reply_markup"]
     assert [button.callback_data for button in markup.inline_keyboard[0]] == [
-        "task:await_text",
-        "task:cancel",
+        "capture:note",
+        "capture:task",
+        "capture:idea",
+    ]
+    assert [button.callback_data for button in markup.inline_keyboard[1]] == [
+        "capture:decision",
+        "capture:question",
+        "capture:cancel",
     ]
     assert "task:await_text" not in repr(callback_update)
 

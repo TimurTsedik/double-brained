@@ -51,10 +51,11 @@ INVITE_TOKEN_PEPPER_KEY_ID=
 
 ### Initialize and enroll
 
-This slice changes the prototype database-role contract and the allowed
-Telegram receipt results. **A database created by an earlier prototype version
-must be reset before running the task-panel bot.** `init-db` does not alter the
-existing receipt constraint. The reset destroys all local prototype data:
+This slice changes the prototype database-role contract, the allowed Telegram
+receipt results and the pending-capture schema. **A database created by an
+earlier prototype version must be reset before running the typed-capture bot.**
+`init-db` does not alter existing constraints or rename the former pending-task
+table. The reset destroys all local prototype data:
 
 ```bash
 uv run --env-file .env second-brain-identity reset-db --confirm-prototype-reset

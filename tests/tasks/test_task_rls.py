@@ -3,7 +3,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, insert, select, text
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
@@ -18,14 +18,19 @@ from second_brain.slices.identity.adapters.persistence.database import (
 from second_brain.slices.identity.adapters.persistence.models import User, UserSpace
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.tasks.adapters.persistence.models import (
+    PendingCaptureSelectionModel,
     TaskModel,
     TaskProvenanceModel,
 )
 from second_brain.slices.tasks.adapters.persistence.repository import (
+    PostgresPendingCaptureSelectionRepository,
     PostgresTaskRepository,
 )
-from second_brain.slices.tasks.application.contracts import CreateTaskCommand
-from second_brain.slices.tasks.domain.entities import TaskStatus
+from second_brain.slices.tasks.application.contracts import (
+    CreateTaskCommand,
+    SetAwaitingTaskCommand,
+)
+from second_brain.slices.tasks.domain.entities import PendingCaptureType, TaskStatus
 from tests.identity.conftest import IsolatedDatabase
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
@@ -321,12 +326,12 @@ async def test_task_tables_have_forced_row_level_security(
             {
                 "tasks": f"{isolated_database.schema}.tasks",
                 "provenance": f"{isolated_database.schema}.task_provenance",
-                "pending": f"{isolated_database.schema}.pending_task_modes",
+                "pending": f"{isolated_database.schema}.pending_capture_selections",
             },
         )
 
     assert result.all() == [
-        ("pending_task_modes", True, True),
+        ("pending_capture_selections", True, True),
         ("task_provenance", True, True),
         ("tasks", True, True),
     ]
@@ -348,6 +353,46 @@ async def test_app_role_cannot_update_or_delete_task_tables(
 
         assert update_allowed is False
         assert delete_allowed is False
+
+
+@pytest.mark.asyncio
+async def test_pending_capture_selection_cannot_be_updated_without_its_user_space_scope(
+    engine: AsyncEngine,
+    schema_engine: AsyncEngine,
+    session: AsyncSession,
+) -> None:
+    repository = PostgresPendingCaptureSelectionRepository(
+        create_session_factory(engine)
+    )
+    await repository.set_awaiting_task(
+        SetAwaitingTaskCommand(
+            access_context=ACCESS_B,
+            updated_at=NOW,
+            trace_id="1" * 32,
+        )
+    )
+
+    no_scope = await session.execute(
+        update(PendingCaptureSelectionModel)
+        .where(PendingCaptureSelectionModel.user_space_id == ACCESS_B.user_space_id)
+        .values(selection=PendingCaptureType.NOTE)
+    )
+    assert no_scope.rowcount == 0
+    await session.rollback()
+
+    await _set_scope(session, ACCESS_A)
+    foreign_scope = await session.execute(
+        update(PendingCaptureSelectionModel)
+        .where(PendingCaptureSelectionModel.user_space_id == ACCESS_B.user_space_id)
+        .values(selection=PendingCaptureType.NOTE)
+    )
+    assert foreign_scope.rowcount == 0
+    await session.rollback()
+
+    async with create_session_factory(schema_engine)() as owner_session:
+        selection = await owner_session.scalar(select(PendingCaptureSelectionModel))
+    assert selection is not None
+    assert selection.selection is PendingCaptureType.TASK
 
 
 async def _set_scope(session: AsyncSession, access_context: AccessContext) -> None:

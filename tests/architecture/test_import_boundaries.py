@@ -226,4 +226,4 @@ def test_task_capture_transaction_composition_is_limited_to_bootstrap() -> None:
     composition_source = composition.read_text(encoding="utf-8")
     assert "PostgresUpdateTransaction" in composition_source
     assert "PostgresCaptureEventWriter" in composition_source
-    assert "PostgresPendingTaskModeWriter" in composition_source
+    assert "PostgresPendingCaptureSelectionWriter" in composition_source

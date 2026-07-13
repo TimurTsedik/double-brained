@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.tasks.adapters.persistence.models import (
-    PendingTaskModeModel,
+    PendingCaptureSelectionModel,
     TaskModel,
     TaskProvenanceModel,
 )
@@ -15,9 +15,10 @@ from second_brain.slices.tasks.application.contracts import (
     ConsumePendingTaskTextCommand,
     CreateTaskCommand,
     SetAwaitingTaskCommand,
+    SetPendingCaptureSelectionCommand,
 )
 from second_brain.slices.tasks.domain.entities import (
-    PendingCaptureMode,
+    PendingCaptureType,
     Task,
     TaskStatus,
 )
@@ -67,67 +68,117 @@ class PostgresTaskWriter:
         return _to_entity(model)
 
 
-class PostgresPendingTaskModeRepository:
+class PostgresPendingCaptureSelectionRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
     async def set_awaiting_task(self, command: SetAwaitingTaskCommand) -> None:
         async with self._session_factory() as session:
             async with session.begin():
-                await PostgresPendingTaskModeWriter(session).set_awaiting_task(command)
+                await PostgresPendingCaptureSelectionWriter(session).set_awaiting_task(
+                    command
+                )
+
+    async def set_selection(self, command: SetPendingCaptureSelectionCommand) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await PostgresPendingCaptureSelectionWriter(session).set_selection(
+                    command
+                )
 
     async def cancel(self, command: CancelPendingTaskCommand) -> None:
         async with self._session_factory() as session:
             async with session.begin():
-                await PostgresPendingTaskModeWriter(session).cancel(command)
+                await PostgresPendingCaptureSelectionWriter(session).cancel(command)
+
+    async def consume_selection(
+        self, command: ConsumePendingTaskTextCommand
+    ) -> PendingCaptureType:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresPendingCaptureSelectionWriter(
+                    session
+                ).consume_selection(command)
 
     async def consume_awaiting_task(
         self, command: ConsumePendingTaskTextCommand
     ) -> Task | None:
         async with self._session_factory() as session:
             async with session.begin():
-                return await PostgresPendingTaskModeWriter(
+                return await PostgresPendingCaptureSelectionWriter(
                     session
                 ).consume_awaiting_task(command)
 
 
-class PostgresPendingTaskModeWriter:
+class PostgresPendingCaptureSelectionWriter:
     """Mutates pending state and creates Tasks through a caller-owned transaction."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def set_awaiting_task(self, command: SetAwaitingTaskCommand) -> None:
-        mode = await self._get_or_create(
+        await self.set_selection(
+            SetPendingCaptureSelectionCommand(
+                access_context=command.access_context,
+                selection=PendingCaptureType.TASK.value,
+                updated_at=command.updated_at,
+                trace_id=command.trace_id,
+            )
+        )
+
+    async def set_selection(self, command: SetPendingCaptureSelectionCommand) -> None:
+        selection = await self._get_or_create(
             command.access_context, command.updated_at, command.trace_id
         )
-        mode.mode = PendingCaptureMode.AWAITING_TASK_TEXT
-        mode.updated_at = command.updated_at
-        mode.trace_id = command.trace_id
+        selection.selection = PendingCaptureType(command.selection)
+        selection.updated_at = command.updated_at
+        selection.trace_id = command.trace_id
         await self._session.flush()
 
     async def cancel(self, command: CancelPendingTaskCommand) -> None:
-        mode = await self._get_or_create(
+        selection = await self._get_or_create(
             command.access_context, command.updated_at, command.trace_id
         )
-        mode.mode = PendingCaptureMode.NORMAL
-        mode.updated_at = command.updated_at
-        mode.trace_id = command.trace_id
+        selection.selection = PendingCaptureType.NOTE
+        selection.updated_at = command.updated_at
+        selection.trace_id = command.trace_id
         await self._session.flush()
+
+    async def consume_selection(
+        self, command: ConsumePendingTaskTextCommand
+    ) -> PendingCaptureType:
+        await _set_user_space_scope(self._session, command.access_context)
+        selection = await self._session.scalar(
+            select(PendingCaptureSelectionModel)
+            .where(
+                PendingCaptureSelectionModel.user_space_id
+                == command.access_context.user_space_id
+            )
+            .with_for_update()
+        )
+        if selection is None:
+            return PendingCaptureType.NOTE
+
+        selected_type = selection.selection
+        selection.selection = PendingCaptureType.NOTE
+        selection.updated_at = command.created_at
+        selection.trace_id = command.trace_id
+        await self._session.flush()
+        return selected_type
 
     async def consume_awaiting_task(
         self, command: ConsumePendingTaskTextCommand
     ) -> Task | None:
         await _set_user_space_scope(self._session, command.access_context)
-        mode = await self._session.scalar(
-            select(PendingTaskModeModel)
+        selection = await self._session.scalar(
+            select(PendingCaptureSelectionModel)
             .where(
-                PendingTaskModeModel.user_space_id
+                PendingCaptureSelectionModel.user_space_id
                 == command.access_context.user_space_id
             )
             .with_for_update()
         )
-        if mode is None or mode.mode is not PendingCaptureMode.AWAITING_TASK_TEXT:
+        if selection is None or selection.selection is not PendingCaptureType.TASK:
             return None
 
         if command.text is None:
@@ -141,33 +192,36 @@ class PostgresPendingTaskModeWriter:
                 trace_id=command.trace_id,
             )
         )
-        mode.mode = PendingCaptureMode.NORMAL
-        mode.updated_at = command.created_at
-        mode.trace_id = command.trace_id
+        selection.selection = PendingCaptureType.NOTE
+        selection.updated_at = command.created_at
+        selection.trace_id = command.trace_id
         await self._session.flush()
         return task
 
     async def _get_or_create(
         self, access_context: AccessContext, updated_at: datetime, trace_id: str
-    ) -> PendingTaskModeModel:
+    ) -> PendingCaptureSelectionModel:
         await _set_user_space_scope(self._session, access_context)
-        mode = await self._session.scalar(
-            select(PendingTaskModeModel)
-            .where(PendingTaskModeModel.user_space_id == access_context.user_space_id)
+        selection = await self._session.scalar(
+            select(PendingCaptureSelectionModel)
+            .where(
+                PendingCaptureSelectionModel.user_space_id
+                == access_context.user_space_id
+            )
             .with_for_update()
         )
-        if mode is not None:
-            return mode
+        if selection is not None:
+            return selection
 
-        mode = PendingTaskModeModel(
+        selection = PendingCaptureSelectionModel(
             user_space_id=access_context.user_space_id,
-            mode=PendingCaptureMode.NORMAL,
+            selection=PendingCaptureType.NOTE,
             updated_at=updated_at,
             trace_id=trace_id,
         )
-        self._session.add(mode)
+        self._session.add(selection)
         await self._session.flush()
-        return mode
+        return selection
 
 
 async def _set_user_space_scope(

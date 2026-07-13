@@ -48,10 +48,24 @@ class AiogramGateway:
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="➕ Задача", callback_data="task:await_text"
+                            text="📝 Заметка", callback_data="capture:note"
                         ),
                         InlineKeyboardButton(
-                            text="Отмена", callback_data="task:cancel"
+                            text="✅ Задача", callback_data="capture:task"
+                        ),
+                        InlineKeyboardButton(
+                            text="💡 Идея", callback_data="capture:idea"
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="⚖️ Решение", callback_data="capture:decision"
+                        ),
+                        InlineKeyboardButton(
+                            text="❓ Вопрос", callback_data="capture:question"
+                        ),
+                        InlineKeyboardButton(
+                            text="Отмена", callback_data="capture:cancel"
                         ),
                     ]
                 ]

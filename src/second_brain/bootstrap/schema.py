@@ -11,8 +11,18 @@ from second_brain.slices.identity.adapters.persistence.schema import (
     initialize_identity_schema,
     reset_identity_prototype_schema,
 )
+from second_brain.slices.knowledge.adapters.persistence.models import (
+    DecisionModel,
+    DecisionProvenanceModel,
+    IdeaModel,
+    IdeaProvenanceModel,
+    NoteModel,
+    NoteProvenanceModel,
+    QuestionModel,
+    QuestionProvenanceModel,
+)
 from second_brain.slices.tasks.adapters.persistence.models import (
-    PendingTaskModeModel,
+    PendingCaptureSelectionModel,
     TaskModel,
     TaskProvenanceModel,
 )
@@ -21,7 +31,17 @@ CAPTURE_EVENT_TABLE = cast(Table, CaptureEventModel.__table__)
 TASK_TABLES = (
     cast(Table, TaskModel.__table__),
     cast(Table, TaskProvenanceModel.__table__),
-    cast(Table, PendingTaskModeModel.__table__),
+    cast(Table, PendingCaptureSelectionModel.__table__),
+)
+KNOWLEDGE_TABLES = (
+    cast(Table, NoteModel.__table__),
+    cast(Table, NoteProvenanceModel.__table__),
+    cast(Table, IdeaModel.__table__),
+    cast(Table, IdeaProvenanceModel.__table__),
+    cast(Table, DecisionModel.__table__),
+    cast(Table, DecisionProvenanceModel.__table__),
+    cast(Table, QuestionModel.__table__),
+    cast(Table, QuestionProvenanceModel.__table__),
 )
 
 
@@ -29,6 +49,7 @@ async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") ->
     await initialize_identity_schema(engine, schema_name)
     await _initialize_capture_schema(engine, schema_name)
     await _initialize_task_schema(engine, schema_name)
+    await _initialize_knowledge_schema(engine, schema_name)
 
 
 async def reset_prototype_schema(
@@ -38,10 +59,12 @@ async def reset_prototype_schema(
         await reset_identity_prototype_schema(engine, confirm, schema_name)
         return
     await _drop_task_schema(engine)
+    await _drop_knowledge_schema(engine)
     await _drop_capture_schema(engine)
     await reset_identity_prototype_schema(engine, confirm, schema_name)
     await _initialize_capture_schema(engine, schema_name)
     await _initialize_task_schema(engine, schema_name)
+    await _initialize_knowledge_schema(engine, schema_name)
 
 
 async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> None:
@@ -58,7 +81,11 @@ async def _drop_capture_schema(engine: AsyncEngine) -> None:
 async def _initialize_task_schema(engine: AsyncEngine, schema_name: str) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_create_task_tables)
-        for table_name in ("tasks", "task_provenance", "pending_task_modes"):
+        for table_name in (
+            "tasks",
+            "task_provenance",
+            "pending_capture_selections",
+        ):
             await _configure_user_space_rls(connection, schema_name, table_name)
         await _grant_task_privileges(connection, schema_name)
 
@@ -66,6 +93,28 @@ async def _initialize_task_schema(engine: AsyncEngine, schema_name: str) -> None
 async def _drop_task_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_drop_task_tables)
+
+
+async def _initialize_knowledge_schema(engine: AsyncEngine, schema_name: str) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_create_knowledge_tables)
+        for table_name in (
+            "notes",
+            "note_provenance",
+            "ideas",
+            "idea_provenance",
+            "decisions",
+            "decision_provenance",
+            "questions",
+            "question_provenance",
+        ):
+            await _configure_user_space_rls(connection, schema_name, table_name)
+        await _grant_knowledge_privileges(connection, schema_name)
+
+
+async def _drop_knowledge_schema(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_drop_knowledge_tables)
 
 
 def _create_capture_event_table(connection: Connection) -> None:
@@ -83,6 +132,16 @@ def _create_task_tables(connection: Connection) -> None:
 
 def _drop_task_tables(connection: Connection) -> None:
     for table in reversed(TASK_TABLES):
+        table.drop(connection, checkfirst=True)
+
+
+def _create_knowledge_tables(connection: Connection) -> None:
+    for table in KNOWLEDGE_TABLES:
+        table.create(connection, checkfirst=True)
+
+
+def _drop_knowledge_tables(connection: Connection) -> None:
+    for table in reversed(KNOWLEDGE_TABLES):
         table.drop(connection, checkfirst=True)
 
 
@@ -119,7 +178,7 @@ async def _grant_task_privileges(connection: AsyncConnection, schema_name: str) 
     quoted_schema = _quote_identifier(schema_name)
     task_tables = (
         f"{quoted_schema}.tasks, {quoted_schema}.task_provenance, "
-        f"{quoted_schema}.pending_task_modes"
+        f"{quoted_schema}.pending_capture_selections"
     )
     await connection.execute(
         text(f"REVOKE ALL PRIVILEGES ON TABLE {task_tables} FROM {APPLICATION_ROLE}")
@@ -130,8 +189,35 @@ async def _grant_task_privileges(connection: AsyncConnection, schema_name: str) 
     await connection.execute(
         text(
             "GRANT UPDATE ON TABLE "
-            f"{quoted_schema}.pending_task_modes TO {APPLICATION_ROLE}"
+            f"{quoted_schema}.pending_capture_selections TO {APPLICATION_ROLE}"
         )
+    )
+
+
+async def _grant_knowledge_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    quoted_schema = _quote_identifier(schema_name)
+    knowledge_tables = ", ".join(
+        f"{quoted_schema}.{table_name}"
+        for table_name in (
+            "notes",
+            "note_provenance",
+            "ideas",
+            "idea_provenance",
+            "decisions",
+            "decision_provenance",
+            "questions",
+            "question_provenance",
+        )
+    )
+    await connection.execute(
+        text(
+            f"REVOKE ALL PRIVILEGES ON TABLE {knowledge_tables} FROM {APPLICATION_ROLE}"
+        )
+    )
+    await connection.execute(
+        text(f"GRANT SELECT, INSERT ON TABLE {knowledge_tables} TO {APPLICATION_ROLE}")
     )
 
 

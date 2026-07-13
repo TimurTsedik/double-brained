@@ -14,7 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from second_brain.persistence.base import Base
-from second_brain.slices.tasks.domain.entities import PendingCaptureMode, TaskStatus
+from second_brain.slices.tasks.domain.entities import PendingCaptureType, TaskStatus
 
 
 class TaskModel(Base):
@@ -88,22 +88,22 @@ class TaskProvenanceModel(Base):
     trace_id: Mapped[str] = mapped_column(Text, nullable=False)
 
 
-class PendingTaskModeModel(Base):
-    __tablename__ = "pending_task_modes"
+class PendingCaptureSelectionModel(Base):
+    __tablename__ = "pending_capture_selections"
     __table_args__ = (
         CheckConstraint(
             "trace_id ~ '^[0-9a-f]{32}$' AND trace_id <> repeat('0', 32)",
-            name="ck_pending_task_modes_trace_id",
+            name="ck_pending_capture_selections_trace_id",
         ),
     )
 
     user_space_id: Mapped[UUID] = mapped_column(
         ForeignKey("user_spaces.id"), primary_key=True
     )
-    mode: Mapped[PendingCaptureMode] = mapped_column(
+    selection: Mapped[PendingCaptureType] = mapped_column(
         Enum(
-            PendingCaptureMode,
-            name="pending_capture_mode",
+            PendingCaptureType,
+            name="pending_capture_type",
             native_enum=False,
             create_constraint=True,
             values_callable=lambda modes: [mode.value for mode in modes],

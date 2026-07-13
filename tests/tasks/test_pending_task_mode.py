@@ -11,11 +11,11 @@ from second_brain.slices.tasks.application.contracts import (
 )
 from second_brain.slices.tasks.application.task_capture import TaskCapture
 from second_brain.slices.tasks.domain.entities import (
-    PendingCaptureMode,
+    PendingCaptureType,
     Task,
     TaskStatus,
 )
-from second_brain.slices.tasks.ports.repositories import PendingTaskModeStore
+from second_brain.slices.tasks.ports.repositories import PendingCaptureSelectionStore
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
 ACCESS_A = AccessContext(
@@ -29,28 +29,26 @@ ACCESS_B = AccessContext(
 SOURCE_A = UUID("00000000-0000-0000-0000-000000000101")
 
 
-class InMemoryPendingTaskModeStore(PendingTaskModeStore):
+class InMemoryPendingCaptureSelectionStore(PendingCaptureSelectionStore):
     def __init__(self) -> None:
-        self.modes: dict[UUID, PendingCaptureMode] = {}
+        self.modes: dict[UUID, PendingCaptureType] = {}
         self.created_tasks: list[Task] = []
 
     async def set_awaiting_task(self, command: SetAwaitingTaskCommand) -> None:
-        self.modes[command.access_context.user_space_id] = (
-            PendingCaptureMode.AWAITING_TASK_TEXT
-        )
+        self.modes[command.access_context.user_space_id] = PendingCaptureType.TASK
 
     async def cancel(self, command: CancelPendingTaskCommand) -> None:
-        self.modes[command.access_context.user_space_id] = PendingCaptureMode.NORMAL
+        self.modes[command.access_context.user_space_id] = PendingCaptureType.NOTE
 
     async def consume_awaiting_task(
         self, command: ConsumePendingTaskTextCommand
     ) -> Task | None:
         user_space_id = command.access_context.user_space_id
-        if self.modes.get(user_space_id, PendingCaptureMode.NORMAL) is not (
-            PendingCaptureMode.AWAITING_TASK_TEXT
+        if self.modes.get(user_space_id, PendingCaptureType.NOTE) is not (
+            PendingCaptureType.TASK
         ):
             return None
-        self.modes[user_space_id] = PendingCaptureMode.NORMAL
+        self.modes[user_space_id] = PendingCaptureType.NOTE
         task = Task(
             id=UUID("00000000-0000-0000-0000-000000000201"),
             user_space_id=user_space_id,
@@ -102,26 +100,26 @@ def text_command(
 
 @pytest.mark.asyncio
 async def test_set_awaiting_task_is_scoped_to_one_user_space() -> None:
-    store = InMemoryPendingTaskModeStore()
+    store = InMemoryPendingCaptureSelectionStore()
     task_capture = TaskCapture(store)
 
     await task_capture.set_awaiting_task(set_awaiting_command(ACCESS_A))
 
-    assert store.modes[ACCESS_A.user_space_id] is PendingCaptureMode.AWAITING_TASK_TEXT
-    assert store.modes.get(ACCESS_B.user_space_id, PendingCaptureMode.NORMAL) is (
-        PendingCaptureMode.NORMAL
+    assert store.modes[ACCESS_A.user_space_id] is PendingCaptureType.TASK
+    assert store.modes.get(ACCESS_B.user_space_id, PendingCaptureType.NOTE) is (
+        PendingCaptureType.NOTE
     )
 
 
 @pytest.mark.asyncio
 async def test_cancel_returns_the_user_space_to_normal_mode() -> None:
-    store = InMemoryPendingTaskModeStore()
+    store = InMemoryPendingCaptureSelectionStore()
     task_capture = TaskCapture(store)
     await task_capture.set_awaiting_task(set_awaiting_command(ACCESS_A))
 
     await task_capture.cancel(cancel_command(ACCESS_A))
 
-    assert store.modes[ACCESS_A.user_space_id] is PendingCaptureMode.NORMAL
+    assert store.modes[ACCESS_A.user_space_id] is PendingCaptureType.NOTE
     assert store.created_tasks == []
 
 
@@ -139,7 +137,7 @@ async def test_cancel_returns_the_user_space_to_normal_mode() -> None:
 async def test_ineligible_text_preserves_awaiting_mode(
     text: str | None, is_private_chat: bool, telegram_message_id: int | None
 ) -> None:
-    store = InMemoryPendingTaskModeStore()
+    store = InMemoryPendingCaptureSelectionStore()
     task_capture = TaskCapture(store)
     await task_capture.set_awaiting_task(set_awaiting_command(ACCESS_A))
 
@@ -152,13 +150,13 @@ async def test_ineligible_text_preserves_awaiting_mode(
     )
 
     assert task is None
-    assert store.modes[ACCESS_A.user_space_id] is PendingCaptureMode.AWAITING_TASK_TEXT
+    assert store.modes[ACCESS_A.user_space_id] is PendingCaptureType.TASK
     assert store.created_tasks == []
 
 
 @pytest.mark.asyncio
 async def test_eligible_text_consumes_mode_and_creates_one_inbox_task() -> None:
-    store = InMemoryPendingTaskModeStore()
+    store = InMemoryPendingCaptureSelectionStore()
     task_capture = TaskCapture(store)
     await task_capture.set_awaiting_task(set_awaiting_command(ACCESS_A))
 
@@ -170,13 +168,13 @@ async def test_eligible_text_consumes_mode_and_creates_one_inbox_task() -> None:
     assert task.status is TaskStatus.INBOX
     assert task.user_space_id == ACCESS_A.user_space_id
     assert task.source_capture_event_id == SOURCE_A
-    assert store.modes[ACCESS_A.user_space_id] is PendingCaptureMode.NORMAL
+    assert store.modes[ACCESS_A.user_space_id] is PendingCaptureType.NOTE
     assert store.created_tasks == [task]
 
 
 @pytest.mark.asyncio
 async def test_eligible_text_does_not_create_a_task_in_normal_mode() -> None:
-    store = InMemoryPendingTaskModeStore()
+    store = InMemoryPendingCaptureSelectionStore()
 
     task = await TaskCapture(store).consume_for_text(text_command())
 

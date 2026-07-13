@@ -33,7 +33,7 @@ from second_brain.slices.identity.application.local_updates import (
     LocalUpdateProcessor,
 )
 from second_brain.slices.tasks.adapters.persistence.models import (
-    PendingTaskModeModel,
+    PendingCaptureSelectionModel,
     TaskModel,
     TaskProvenanceModel,
 )
@@ -41,7 +41,7 @@ from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
     SetAwaitingTaskCommand,
 )
-from second_brain.slices.tasks.domain.entities import PendingCaptureMode, TaskStatus
+from second_brain.slices.tasks.domain.entities import PendingCaptureType, TaskStatus
 from tests.identity.conftest import IsolatedDatabase
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
@@ -154,7 +154,7 @@ async def test_button_then_text_atomically_creates_source_task_and_provenance(
         task = await session.scalar(select(TaskModel))
         source = await session.scalar(select(CaptureEventModel))
         provenance = await session.scalar(select(TaskProvenanceModel))
-        mode = await session.scalar(select(PendingTaskModeModel))
+        mode = await session.scalar(select(PendingCaptureSelectionModel))
     assert task is not None
     assert source is not None
     assert provenance is not None
@@ -165,7 +165,7 @@ async def test_button_then_text_atomically_creates_source_task_and_provenance(
     assert task.source_capture_event_id == source.id
     assert source.id == provenance.source_capture_event_id
     assert provenance.task_id == task.id
-    assert mode.mode is PendingCaptureMode.NORMAL
+    assert mode.selection is PendingCaptureType.NOTE
 
 
 @pytest.mark.asyncio
@@ -200,7 +200,7 @@ async def test_duplicate_callback_is_idempotent_and_keeps_one_pending_mode(
     assert first.fresh is True
     assert duplicate.fresh is False
     assert first.trace_id == duplicate.trace_id
-    assert await count(schema_engine, PendingTaskModeModel) == 1
+    assert await count(schema_engine, PendingCaptureSelectionModel) == 1
     assert await count(schema_engine, TelegramUpdateReceipt) == 1
 
 
@@ -277,7 +277,7 @@ def processor_with_port(
     ("callback_data", "failing_action", "expected_before_retry"),
     [
         ("task:await_text", "set", None),
-        ("task:cancel", "cancel", PendingCaptureMode.AWAITING_TASK_TEXT),
+        ("task:cancel", "cancel", PendingCaptureType.TASK),
     ],
 )
 async def test_failed_mode_callback_rolls_back_and_retry_applies_exactly_once(
@@ -285,7 +285,7 @@ async def test_failed_mode_callback_rolls_back_and_retry_applies_exactly_once(
     schema_engine: AsyncEngine,
     callback_data: str,
     failing_action: str,
-    expected_before_retry: PendingCaptureMode | None,
+    expected_before_retry: PendingCaptureType | None,
 ) -> None:
     if callback_data == "task:cancel":
         await processor(engine).process(callback(140, "task:await_text"))
@@ -297,9 +297,9 @@ async def test_failed_mode_callback_rolls_back_and_retry_applies_exactly_once(
         ).process(update)
 
     async with create_session_factory(schema_engine)() as session:
-        mode_before_retry = await session.scalar(select(PendingTaskModeModel))
+        mode_before_retry = await session.scalar(select(PendingCaptureSelectionModel))
     assert (
-        None if mode_before_retry is None else mode_before_retry.mode
+        None if mode_before_retry is None else mode_before_retry.selection
     ) is expected_before_retry
     assert await count(schema_engine, TelegramUpdateReceipt) == (
         0 if callback_data == "task:await_text" else 1
@@ -313,12 +313,12 @@ async def test_failed_mode_callback_rolls_back_and_retry_applies_exactly_once(
         else AcknowledgementKind.TASK_MODE_CANCELLED
     )
     async with create_session_factory(schema_engine)() as session:
-        mode_after_retry = await session.scalar(select(PendingTaskModeModel))
+        mode_after_retry = await session.scalar(select(PendingCaptureSelectionModel))
     assert mode_after_retry is not None
-    assert mode_after_retry.mode is (
-        PendingCaptureMode.AWAITING_TASK_TEXT
+    assert mode_after_retry.selection is (
+        PendingCaptureType.TASK
         if callback_data == "task:await_text"
-        else PendingCaptureMode.NORMAL
+        else PendingCaptureType.NOTE
     )
     assert await count(schema_engine, TelegramUpdateReceipt) == (
         1 if callback_data == "task:await_text" else 2
@@ -358,9 +358,9 @@ async def test_failure_rolls_back_mode_source_task_and_receipt_then_retry_succee
     assert await count(schema_engine, TaskProvenanceModel) == 0
     assert await count(schema_engine, TelegramUpdateReceipt) == 1
     async with create_session_factory(schema_engine)() as session:
-        mode = await session.scalar(select(PendingTaskModeModel))
+        mode = await session.scalar(select(PendingCaptureSelectionModel))
     assert mode is not None
-    assert mode.mode is PendingCaptureMode.AWAITING_TASK_TEXT
+    assert mode.selection is PendingCaptureType.TASK
 
     retry = await processor(engine).process(update)
 
