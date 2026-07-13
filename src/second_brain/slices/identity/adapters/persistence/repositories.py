@@ -237,6 +237,11 @@ class PostgresUpdateTransaction:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @property
+    def active_session(self) -> AsyncSession:
+        """Restricted to bootstrap transaction adapters."""
+        return self._session
+
     async def resolve_access_context(
         self, telegram_user_id: int
     ) -> AccessContext | None:

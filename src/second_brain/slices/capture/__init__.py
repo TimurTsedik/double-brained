@@ -1,0 +1,1 @@
+"""Raw source capture slice."""

@@ -81,7 +81,11 @@ class LocalPoller:
                     continue
                 break
             self.offset = update.update_id + 1
-            try:
-                await self._gateway.send_acknowledgement(update, result.kind)
-            except Exception:
-                pass
+            if result.kind not in {
+                AcknowledgementKind.IGNORED,
+                AcknowledgementKind.CAPTURED,
+            }:
+                try:
+                    await self._gateway.send_acknowledgement(update, result.kind)
+                except Exception:
+                    pass

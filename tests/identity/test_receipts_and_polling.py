@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from second_brain.bootstrap.schema import reset_prototype_schema
 from second_brain.shared.trace import TraceContext
 from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
@@ -17,9 +18,6 @@ from second_brain.slices.identity.adapters.persistence.models import (
 )
 from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresUpdateRepository,
-)
-from second_brain.slices.identity.adapters.persistence.schema import (
-    reset_prototype_schema,
 )
 from second_brain.slices.identity.adapters.telegram.dto import TelegramUpdate
 from second_brain.slices.identity.adapters.telegram.poller import (
@@ -36,6 +34,7 @@ from second_brain.slices.identity.ports.repositories import (
     EnrollmentOutcome,
     StoredUpdateReceipt,
 )
+from tests.identity.conftest import IsolatedDatabase
 
 NOW = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
 PEPPER = b"task5-pepper"
@@ -155,8 +154,12 @@ class FailsOnceProcessor:
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def reset_task5_schema(engine: AsyncEngine) -> None:
-    await reset_prototype_schema(engine, confirm=True)
+async def reset_task5_schema(
+    isolated_database: IsolatedDatabase, schema_engine: AsyncEngine
+) -> None:
+    await reset_prototype_schema(
+        schema_engine, confirm=True, schema_name=isolated_database.schema
+    )
 
 
 def private_start(update_id: int, token: str | None = "token") -> TelegramUpdate:

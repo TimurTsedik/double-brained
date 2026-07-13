@@ -1,0 +1,1 @@
+"""Capture application use cases."""

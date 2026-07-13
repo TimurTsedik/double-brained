@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from second_brain.bootstrap.schema import reset_prototype_schema
 from second_brain.shared.clock import Clock
 from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
@@ -23,9 +24,6 @@ from second_brain.slices.identity.adapters.persistence.models import (
 from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresEnrollmentRepository,
 )
-from second_brain.slices.identity.adapters.persistence.schema import (
-    reset_prototype_schema,
-)
 from second_brain.slices.identity.application.enrollment import (
     CreateEnrollmentInvite,
     EnrollTelegramUser,
@@ -34,6 +32,7 @@ from second_brain.slices.identity.ports.repositories import (
     BootstrapInviteUnavailable,
     EnrollmentOutcome,
 )
+from tests.identity.conftest import IsolatedDatabase
 
 PEPPER = b"test-invite-pepper"
 PEPPER_KEY_ID = "test-v1"
@@ -52,8 +51,12 @@ DEFAULT_CLOCK = FixedClock(NOW)
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def reset_enrollment_schema(engine: AsyncEngine) -> None:
-    await reset_prototype_schema(engine, confirm=True)
+async def reset_enrollment_schema(
+    isolated_database: IsolatedDatabase, schema_engine: AsyncEngine
+) -> None:
+    await reset_prototype_schema(
+        schema_engine, confirm=True, schema_name=isolated_database.schema
+    )
 
 
 def repository(engine: AsyncEngine) -> PostgresEnrollmentRepository:

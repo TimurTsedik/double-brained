@@ -5,18 +5,16 @@ from collections.abc import Sequence
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from second_brain.bootstrap.schema import initialize_schema, reset_prototype_schema
 from second_brain.bootstrap.settings import Settings
 from second_brain.shared.clock import SystemClock
 from second_brain.slices.identity.adapters.persistence.database import (
+    assert_non_privileged_application_role,
     create_database_engine,
     create_session_factory,
 )
 from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresEnrollmentRepository,
-)
-from second_brain.slices.identity.adapters.persistence.schema import (
-    initialize_schema,
-    reset_prototype_schema,
 )
 from second_brain.slices.identity.application.enrollment import CreateEnrollmentInvite
 
@@ -41,7 +39,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 async def run(args: argparse.Namespace, settings: Settings) -> None:
-    engine = create_database_engine(settings.database_url)
+    database_url = (
+        settings.schema_database_url
+        if args.command in {"init-db", "reset-db"}
+        else settings.database_url
+    )
+    engine = create_database_engine(database_url)
     try:
         if args.command == "init-db":
             await initialize_schema(engine)
@@ -51,6 +54,7 @@ async def run(args: argparse.Namespace, settings: Settings) -> None:
             await reset_prototype_schema(engine, confirm=args.confirm_prototype_reset)
             return
         if args.command == "create-bootstrap-admin-invite":
+            await assert_non_privileged_application_role(engine)
             await _print_invite(engine, settings)
             return
         raise RuntimeError("unknown identity command")

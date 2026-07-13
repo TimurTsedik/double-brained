@@ -13,11 +13,9 @@ from sqlalchemy import (
     Uuid,
     text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 
-
-class Base(DeclarativeBase):
-    pass
+from second_brain.persistence.base import Base
 
 
 class User(Base):
@@ -130,7 +128,8 @@ class TelegramUpdateReceipt(Base):
     __table_args__ = (
         CheckConstraint(
             "result_kind IN "
-            "('enrolled', 'enrollment_rejected', 'known_user_started', 'ignored')",
+            "('captured', 'enrolled', 'enrollment_rejected', "
+            "'known_user_started', 'ignored')",
             name="ck_telegram_update_receipts_result_kind",
         ),
         CheckConstraint(

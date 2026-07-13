@@ -5,6 +5,10 @@ from hmac import digest
 
 from second_brain.shared.clock import Clock
 from second_brain.shared.trace import TraceContext
+from second_brain.slices.capture.application.contracts import (
+    CaptureTextCommand,
+    CaptureTextPort,
+)
 from second_brain.slices.identity.application.access_context import ResolveAccessContext
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
 from second_brain.slices.identity.ports.repositories import (
@@ -18,6 +22,7 @@ ENROLLMENT_ATTEMPT_WINDOW = timedelta(minutes=15)
 
 
 class AcknowledgementKind(StrEnum):
+    CAPTURED = "captured"
     ENROLLED = "enrolled"
     ENROLLMENT_REJECTED = "enrollment_rejected"
     KNOWN_USER_STARTED = "known_user_started"
@@ -38,11 +43,13 @@ class LocalUpdateProcessor:
         clock: Clock,
         pepper: bytes,
         pepper_key_id: str,
+        capture_text_port: CaptureTextPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._pepper = pepper
         self._pepper_key_id = pepper_key_id
+        self._capture_text_port = capture_text_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -85,7 +92,44 @@ class LocalUpdateProcessor:
             return AcknowledgementKind.IGNORED
 
         command, start_token = _parse_start(update.text)
-        if command != "start":
+        if command == "start":
+            return await self._process_start(
+                transaction, update, context, now, start_token
+            )
+        if _is_command(update.text) or update.text is None or update.text == "":
+            return AcknowledgementKind.IGNORED
+
+        access_context = await ResolveAccessContext(transaction).execute(
+            update.telegram_user_id
+        )
+        if access_context is None or update.telegram_message_id is None:
+            return AcknowledgementKind.IGNORED
+
+        if self._capture_text_port is None:
+            raise RuntimeError("capture text port is required for private text")
+        await self._capture_text_port.capture(
+            CaptureTextCommand(
+                access_context=access_context,
+                bot_id=update.bot_id,
+                telegram_update_id=update.update_id,
+                telegram_message_id=update.telegram_message_id,
+                raw_text=update.text,
+                received_at=now,
+                trace_id=context.trace_id,
+            ),
+            transaction,
+        )
+        return AcknowledgementKind.CAPTURED
+
+    async def _process_start(
+        self,
+        transaction: UpdateTransaction,
+        update: TelegramUpdate,
+        context: TraceContext,
+        now: datetime,
+        start_token: str | None,
+    ) -> str:
+        if update.telegram_user_id is None:
             return AcknowledgementKind.IGNORED
 
         access_context = await ResolveAccessContext(transaction).execute(
@@ -136,3 +180,7 @@ def _parse_start(text: str | None) -> tuple[str | None, str | None]:
     if command != "/start":
         return None, None
     return "start", token.strip() or None
+
+
+def _is_command(text: str | None) -> bool:
+    return text is not None and text.lstrip().startswith("/")

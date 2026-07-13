@@ -32,12 +32,18 @@ tokens, peppers, or database credentials in logs.
 cp .env.example .env
 ```
 
-Set distinct database URLs and the three Telegram/invite secrets in `.env`.
-These examples intentionally contain no secret values:
+Set four distinct database URLs and the three Telegram/invite secrets in `.env`.
+`DATABASE_URL` and `TEST_DATABASE_URL` must use the non-superuser
+`second_brain_app` role. `SCHEMA_DATABASE_URL` and
+`TEST_SCHEMA_DATABASE_URL` are owner-only URLs used for explicit schema
+initialization and isolated test schemas. These examples intentionally contain
+no secret values:
 
 ```dotenv
-DATABASE_URL=postgresql+asyncpg://second_brain@127.0.0.1:55432/second_brain
-TEST_DATABASE_URL=postgresql+asyncpg://second_brain@127.0.0.1:55432/second_brain_test
+DATABASE_URL=postgresql+asyncpg://second_brain_app@127.0.0.1:55432/second_brain
+TEST_DATABASE_URL=postgresql+asyncpg://second_brain_app@127.0.0.1:55432/second_brain_test
+SCHEMA_DATABASE_URL=postgresql+asyncpg://second_brain@127.0.0.1:55432/second_brain
+TEST_SCHEMA_DATABASE_URL=postgresql+asyncpg://second_brain@127.0.0.1:55432/second_brain_test
 TELEGRAM_BOT_TOKEN=
 INVITE_TOKEN_PEPPER=
 INVITE_TOKEN_PEPPER_KEY_ID=
@@ -45,17 +51,18 @@ INVITE_TOKEN_PEPPER_KEY_ID=
 
 ### Initialize and enroll
 
-Initialize the development schema:
-
-```bash
-uv run --env-file .env second-brain-identity init-db
-```
-
-Resetting destroys all prototype data. Only run it when intended, with the
-explicit confirmation flag:
+This slice changes the prototype database-role contract. Existing prototype data
+must be intentionally reset and reinitialized once after updating `.env`; the
+reset destroys all local prototype data:
 
 ```bash
 uv run --env-file .env second-brain-identity reset-db --confirm-prototype-reset
+```
+
+For an empty database, initialize the development schema instead:
+
+```bash
+uv run --env-file .env second-brain-identity init-db
 ```
 
 Create the one-time bootstrap-admin invite after the bot has a Telegram
@@ -77,10 +84,8 @@ uv run --env-file .env second-brain-local-polling
 ## Automated checks
 
 ```bash
-DATABASE_URL=postgresql+asyncpg://second_brain@127.0.0.1:55432/second_brain \
-TEST_DATABASE_URL=postgresql+asyncpg://second_brain@127.0.0.1:55432/second_brain_test \
-uv run pytest -W error
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src
+uv run --env-file .env pytest -W error
+uv run --env-file .env ruff check .
+uv run --env-file .env ruff format --check .
+uv run --env-file .env mypy src
 ```

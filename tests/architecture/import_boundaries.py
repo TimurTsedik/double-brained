@@ -61,6 +61,12 @@ def violation_rule(module_path: tuple[str, ...], imported_module: str) -> str | 
     ):
         return "shared must not import a business slice"
 
+    if identity_persistence_imports_capture_persistence(module_path, imported_module):
+        return "identity persistence must not import capture persistence"
+
+    if capture_persistence_imports_identity_persistence(module_path, imported_module):
+        return "capture persistence must not import identity persistence"
+
     if imports_aiogram(imported_module) and not aiogram_import_allowed(module_path):
         return "aiogram is allowed only in bootstrap or adapters/telegram"
 
@@ -84,6 +90,30 @@ def violation_rule(module_path: tuple[str, ...], imported_module: str) -> str | 
         return "FastAPI is allowed only in bootstrap or adapters/api"
 
     return None
+
+
+def identity_persistence_imports_capture_persistence(
+    module_path: tuple[str, ...], imported_module: str
+) -> bool:
+    return (
+        len(module_path) >= 4
+        and module_path[:4] == ("slices", "identity", "adapters", "persistence")
+        and is_module_or_descendant(
+            imported_module, "second_brain.slices.capture.adapters.persistence"
+        )
+    )
+
+
+def capture_persistence_imports_identity_persistence(
+    module_path: tuple[str, ...], imported_module: str
+) -> bool:
+    return (
+        len(module_path) >= 4
+        and module_path[:4] == ("slices", "capture", "adapters", "persistence")
+        and is_module_or_descendant(
+            imported_module, "second_brain.slices.identity.adapters.persistence"
+        )
+    )
 
 
 def is_shared(module_path: tuple[str, ...]) -> bool:
@@ -133,9 +163,10 @@ def aiogram_import_allowed(module_path: tuple[str, ...]) -> bool:
 
 
 def persistence_import_allowed(module_path: tuple[str, ...]) -> bool:
-    return module_path[:1] == ("bootstrap",) or adapter_import_allowed(
-        module_path, "persistence"
-    )
+    return module_path[:1] in {
+        ("bootstrap",),
+        ("persistence",),
+    } or adapter_import_allowed(module_path, "persistence")
 
 
 def adapter_import_allowed(module_path: tuple[str, ...], adapter: str) -> bool:

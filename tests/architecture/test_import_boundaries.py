@@ -105,6 +105,22 @@ def write_module(root: Path, relative_path: str, source: str) -> None:
             "import asyncpg\n",
             "asyncpg",
         ),
+        (
+            "slices/identity/adapters/persistence/schema.py",
+            (
+                "from second_brain.slices.capture.adapters.persistence.models "
+                "import CaptureEventModel\n"
+            ),
+            "second_brain.slices.capture.adapters.persistence.models",
+        ),
+        (
+            "slices/capture/adapters/persistence/models.py",
+            (
+                "from second_brain.slices.identity.adapters.persistence.models "
+                "import Base\n"
+            ),
+            "second_brain.slices.identity.adapters.persistence.models",
+        ),
     ],
 )
 def test_checker_reports_prohibited_import(
@@ -141,6 +157,7 @@ def test_checker_allows_bootstrap_and_published_contract_imports(
         "slices/identity/adapters/persistence/repository.py",
         "import sqlalchemy\nimport asyncpg\n",
     )
+    write_module(tmp_path, "persistence/base.py", "import sqlalchemy\n")
     write_module(
         tmp_path,
         "slices/tasks/domain/handler.py",
@@ -169,3 +186,22 @@ def test_real_package_obeys_import_boundaries() -> None:
     violations = list(find_violations(package_root))
 
     assert not violations, format_violations(violations)
+
+
+def test_capture_transaction_composition_is_limited_to_bootstrap() -> None:
+    package_root = Path(__file__).parents[2] / "src" / "second_brain"
+    modules_using_both_transaction_and_capture_writer = []
+
+    for path in package_root.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        if (
+            "PostgresUpdateTransaction" in source
+            and "PostgresCaptureEventWriter" in source
+        ):
+            modules_using_both_transaction_and_capture_writer.append(
+                path.relative_to(package_root)
+            )
+
+    assert modules_using_both_transaction_and_capture_writer == [
+        Path("bootstrap/capture_in_transaction.py")
+    ]

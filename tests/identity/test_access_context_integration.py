@@ -5,6 +5,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from second_brain.bootstrap.schema import reset_prototype_schema
 from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
 )
@@ -16,17 +17,19 @@ from second_brain.slices.identity.adapters.persistence.models import (
 from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresAccessContextResolver,
 )
-from second_brain.slices.identity.adapters.persistence.schema import (
-    reset_prototype_schema,
-)
 from second_brain.slices.identity.application.access_context import ResolveAccessContext
+from tests.identity.conftest import IsolatedDatabase
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def reset_access_context_schema(engine: AsyncEngine) -> None:
-    await reset_prototype_schema(engine, confirm=True)
+async def reset_access_context_schema(
+    isolated_database: IsolatedDatabase, schema_engine: AsyncEngine
+) -> None:
+    await reset_prototype_schema(
+        schema_engine, confirm=True, schema_name=isolated_database.schema
+    )
 
 
 async def create_identity(

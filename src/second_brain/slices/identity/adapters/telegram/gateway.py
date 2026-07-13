@@ -29,7 +29,7 @@ class AiogramGateway:
         self, update: TelegramUpdate, kind: AcknowledgementKind
     ) -> None:
         if (
-            kind is AcknowledgementKind.IGNORED
+            kind in {AcknowledgementKind.IGNORED, AcknowledgementKind.CAPTURED}
             or not update.is_private
             or update.telegram_user_id is None
         ):
@@ -56,6 +56,7 @@ class AiogramGateway:
             is_private=message.chat.type == "private",
             telegram_user_id=actor,
             text=message.text if isinstance(message.text, str) else None,
+            telegram_message_id=message.message_id,
         )
 
 

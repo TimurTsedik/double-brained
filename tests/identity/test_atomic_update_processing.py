@@ -6,6 +6,7 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from second_brain.bootstrap.schema import reset_prototype_schema
 from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
 )
@@ -17,14 +18,12 @@ from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresPollerLock,
     PostgresUpdateRepository,
 )
-from second_brain.slices.identity.adapters.persistence.schema import (
-    reset_prototype_schema,
-)
 from second_brain.slices.identity.adapters.telegram.dto import TelegramUpdate
 from second_brain.slices.identity.application.local_updates import (
     AcknowledgementKind,
     LocalUpdateProcessor,
 )
+from tests.identity.conftest import IsolatedDatabase
 
 NOW = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
 PEPPER = b"task5-atomic-pepper"
@@ -37,8 +36,12 @@ class FixedClock:
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def reset_task5_schema(engine: AsyncEngine) -> None:
-    await reset_prototype_schema(engine, confirm=True)
+async def reset_task5_schema(
+    isolated_database: IsolatedDatabase, schema_engine: AsyncEngine
+) -> None:
+    await reset_prototype_schema(
+        schema_engine, confirm=True, schema_name=isolated_database.schema
+    )
 
 
 def raw_start(update_id: int, token: str = "transient-start-token") -> TelegramUpdate:

@@ -5,7 +5,12 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
-from second_brain.slices.identity.application.contracts import AccessContext
+from second_brain.slices.identity.application.contracts import (
+    AccessContext,
+)
+from second_brain.slices.identity.application.contracts import (
+    UpdateTransaction as UpdateTransactionContract,
+)
 
 
 class BootstrapInviteUnavailable(RuntimeError):
@@ -65,7 +70,9 @@ class TelegramAccessContextResolver(Protocol):
     ) -> AccessContext | None: ...
 
 
-class UpdateTransaction(TelegramAccessContextResolver, Protocol):
+class UpdateTransaction(
+    UpdateTransactionContract, TelegramAccessContextResolver, Protocol
+):
     async def reserve_enrollment_attempt(
         self,
         bot_id: int,
