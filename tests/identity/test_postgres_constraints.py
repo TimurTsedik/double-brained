@@ -130,7 +130,7 @@ async def test_reset_requires_confirmation_without_mutating_schema(
 
 
 @pytest.mark.asyncio
-async def test_confirmed_reset_recreates_receipt_constraint_for_task_panel_results(
+async def test_confirmed_reset_recreates_receipt_constraint_for_interaction_results(
     schema_engine: AsyncEngine,
     isolated_database: IsolatedDatabase,
 ) -> None:
@@ -155,6 +155,34 @@ async def test_confirmed_reset_recreates_receipt_constraint_for_task_panel_resul
                     trace_id="2" * 32,
                     created_at=TIMESTAMP,
                 ),
+                TelegramUpdateReceipt(
+                    bot_id=1,
+                    update_id=3,
+                    result_kind="search_mode_set",
+                    trace_id="3" * 32,
+                    created_at=TIMESTAMP,
+                ),
+                TelegramUpdateReceipt(
+                    bot_id=1,
+                    update_id=4,
+                    result_kind="search_mode_cancelled",
+                    trace_id="4" * 32,
+                    created_at=TIMESTAMP,
+                ),
+                TelegramUpdateReceipt(
+                    bot_id=1,
+                    update_id=5,
+                    result_kind="search_query_required",
+                    trace_id="5" * 32,
+                    created_at=TIMESTAMP,
+                ),
+                TelegramUpdateReceipt(
+                    bot_id=1,
+                    update_id=6,
+                    result_kind="search_completed",
+                    trace_id="6" * 32,
+                    created_at=TIMESTAMP,
+                ),
             ]
         )
         await owner_session.commit()
@@ -167,7 +195,14 @@ async def test_confirmed_reset_recreates_receipt_constraint_for_task_panel_resul
             )
         ).all()
 
-    assert result_kinds == ["tasks_listed", "task_completed"]
+    assert result_kinds == [
+        "tasks_listed",
+        "task_completed",
+        "search_mode_set",
+        "search_mode_cancelled",
+        "search_query_required",
+        "search_completed",
+    ]
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,9 @@ import asyncio
 
 from aiogram import Bot
 
+from second_brain.bootstrap.exact_search_in_transaction import (
+    ExactSearchInTransaction,
+)
 from second_brain.bootstrap.settings import Settings
 from second_brain.bootstrap.task_capture_in_transaction import TaskCaptureInTransaction
 from second_brain.shared.clock import SystemClock
@@ -31,6 +34,7 @@ async def run_local_polling(settings: Settings) -> None:
             raise RuntimeError("Telegram bot identity did not include an id")
         session_factory = create_session_factory(engine)
         task_capture = TaskCaptureInTransaction()
+        exact_search = ExactSearchInTransaction()
         processor = LocalUpdateProcessor(
             PostgresUpdateRepository(session_factory),
             SystemClock(),
@@ -39,6 +43,7 @@ async def run_local_polling(settings: Settings) -> None:
             task_capture,
             task_capture,
             task_capture,
+            exact_search,
         )
         poller = LocalPoller(AiogramGateway(bot, bot_user.id), processor, lock)
         while True:

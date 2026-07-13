@@ -17,6 +17,12 @@ from second_brain.slices.identity.ports.repositories import (
     UpdateStore,
     UpdateTransaction,
 )
+from second_brain.slices.retrieval.application.contracts import (
+    ConsumeSearchQueryCommand,
+    ExactSearchPort,
+    SearchPanelResult,
+    SetAwaitingSearchCommand,
+)
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
     CompleteTaskCommand,
@@ -41,6 +47,10 @@ class AcknowledgementKind(StrEnum):
     TASK_MODE_SET = "task_mode_set"
     TASK_COMPLETED = "task_completed"
     TASKS_LISTED = "tasks_listed"
+    SEARCH_COMPLETED = "search_completed"
+    SEARCH_MODE_CANCELLED = "search_mode_cancelled"
+    SEARCH_MODE_SET = "search_mode_set"
+    SEARCH_QUERY_REQUIRED = "search_query_required"
     IGNORED = "ignored"
 
 
@@ -51,11 +61,13 @@ class UpdateResult:
     span_id: str
     fresh: bool
     task_panel: TaskPanelResult | None = None
+    search_panel: SearchPanelResult | None = None
 
 
 @dataclass
 class _TransientUpdatePayload:
     task_panel: TaskPanelResult | None = None
+    search_panel: SearchPanelResult | None = None
 
 
 class LocalUpdateProcessor:
@@ -68,6 +80,7 @@ class LocalUpdateProcessor:
         capture_text_port: CaptureTextPort | None = None,
         task_mode_port: TaskModePort | None = None,
         task_panel_port: TaskPanelPort | None = None,
+        exact_search_port: ExactSearchPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -76,6 +89,7 @@ class LocalUpdateProcessor:
         self._capture_text_port = capture_text_port
         self._task_mode_port = task_mode_port
         self._task_panel_port = task_panel_port
+        self._exact_search_port = exact_search_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -98,6 +112,7 @@ class LocalUpdateProcessor:
             context.span_id,
             fresh=not receipt.existing,
             task_panel=None if receipt.existing else payload.task_panel,
+            search_panel=None if receipt.existing else payload.search_panel,
         )
 
     async def _process_new(
@@ -143,6 +158,20 @@ class LocalUpdateProcessor:
         if access_context is None or update.telegram_message_id is None:
             return AcknowledgementKind.IGNORED
 
+        if self._exact_search_port is not None:
+            search_panel = await self._exact_search_port.consume_query(
+                ConsumeSearchQueryCommand(
+                    access_context=access_context,
+                    query=update.text,
+                ),
+                transaction,
+            )
+            if search_panel is not None:
+                payload.search_panel = search_panel
+                if search_panel.query_required:
+                    return AcknowledgementKind.SEARCH_QUERY_REQUIRED
+                return AcknowledgementKind.SEARCH_COMPLETED
+
         if self._capture_text_port is None:
             raise RuntimeError("capture text port is required for private text")
         await self._capture_text_port.capture(
@@ -186,6 +215,8 @@ class LocalUpdateProcessor:
                 "task:await_text",
                 "task:cancel",
                 "tasks:list",
+                "search:prompt",
+                "search:cancel",
             }
             and not is_task_completion
         ):
@@ -197,6 +228,31 @@ class LocalUpdateProcessor:
         )
         if access_context is None:
             return AcknowledgementKind.IGNORED
+        if update.callback_data == "search:prompt":
+            if self._exact_search_port is None or self._task_mode_port is None:
+                return AcknowledgementKind.IGNORED
+            await self._task_mode_port.cancel(
+                CancelPendingTaskCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            await self._exact_search_port.set_awaiting(
+                SetAwaitingSearchCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            return AcknowledgementKind.SEARCH_MODE_SET
+        if update.callback_data == "search:cancel":
+            if self._exact_search_port is None:
+                return AcknowledgementKind.IGNORED
+            await self._exact_search_port.cancel(access_context, transaction)
+            return AcknowledgementKind.SEARCH_MODE_CANCELLED
         if update.callback_data == "tasks:list":
             if self._task_panel_port is None:
                 return AcknowledgementKind.IGNORED
@@ -231,6 +287,8 @@ class LocalUpdateProcessor:
             return AcknowledgementKind.TASK_COMPLETED
         if self._task_mode_port is None:
             return AcknowledgementKind.IGNORED
+        if self._exact_search_port is not None:
+            await self._exact_search_port.cancel(access_context, transaction)
         if update.callback_data == "task:await_text":
             await self._task_mode_port.set_awaiting_task(
                 SetAwaitingTaskCommand(
