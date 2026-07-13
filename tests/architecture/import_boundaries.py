@@ -61,6 +61,17 @@ def violation_rule(module_path: tuple[str, ...], imported_module: str) -> str | 
     ):
         return "shared must not import a business slice"
 
+    if imports_aiogram(imported_module) and not aiogram_import_allowed(module_path):
+        return "aiogram is allowed only in bootstrap or adapters/telegram"
+
+    if imports_persistence_library(imported_module) and not persistence_import_allowed(
+        module_path
+    ):
+        return (
+            "SQLAlchemy and asyncpg are allowed only in bootstrap or "
+            "adapters/persistence"
+        )
+
     if is_domain(module_path):
         if not domain_import_allowed(module_path, imported_module):
             return "domain import is not allowed"
@@ -99,11 +110,39 @@ def imports_fastapi(imported_module: str) -> bool:
     return imported_module == "fastapi" or imported_module.startswith("fastapi.")
 
 
+def imports_aiogram(imported_module: str) -> bool:
+    return imported_module == "aiogram" or imported_module.startswith("aiogram.")
+
+
+def imports_persistence_library(imported_module: str) -> bool:
+    return imported_module.partition(".")[0] in {"asyncpg", "sqlalchemy"}
+
+
 def fastapi_import_allowed(module_path: tuple[str, ...]) -> bool:
     return module_path[:1] == ("bootstrap",) or (
         len(module_path) >= 4
         and module_path[:1] == ("slices",)
         and module_path[2:4] == ("adapters", "api")
+    )
+
+
+def aiogram_import_allowed(module_path: tuple[str, ...]) -> bool:
+    return module_path[:1] == ("bootstrap",) or adapter_import_allowed(
+        module_path, "telegram"
+    )
+
+
+def persistence_import_allowed(module_path: tuple[str, ...]) -> bool:
+    return module_path[:1] == ("bootstrap",) or adapter_import_allowed(
+        module_path, "persistence"
+    )
+
+
+def adapter_import_allowed(module_path: tuple[str, ...], adapter: str) -> bool:
+    return (
+        len(module_path) >= 4
+        and module_path[:1] == ("slices",)
+        and module_path[2:4] == ("adapters", adapter)
     )
 
 

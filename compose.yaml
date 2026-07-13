@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: second_brain
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: second_brain
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - second_brain_postgres:/var/lib/postgresql/data
+
+volumes:
+  second_brain_postgres:

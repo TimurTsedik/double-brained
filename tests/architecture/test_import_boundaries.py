@@ -80,6 +80,31 @@ def write_module(root: Path, relative_path: str, source: str) -> None:
             "import fileinput\n",
             "fileinput",
         ),
+        (
+            "slices/identity/domain/user.py",
+            "import aiogram\n",
+            "aiogram",
+        ),
+        (
+            "slices/identity/application/enroll.py",
+            "import sqlalchemy\n",
+            "sqlalchemy",
+        ),
+        (
+            "slices/identity/adapters/persistence/repository.py",
+            "import aiogram\n",
+            "aiogram",
+        ),
+        (
+            "slices/identity/adapters/telegram/poller.py",
+            "import sqlalchemy\n",
+            "sqlalchemy",
+        ),
+        (
+            "slices/identity/adapters/telegram/poller.py",
+            "import asyncpg\n",
+            "asyncpg",
+        ),
     ],
 )
 def test_checker_reports_prohibited_import(
@@ -105,6 +130,16 @@ def test_checker_allows_bootstrap_and_published_contract_imports(
         tmp_path,
         "slices/tasks/adapters/api/router.py",
         "from fastapi import FastAPI\n",
+    )
+    write_module(
+        tmp_path,
+        "slices/identity/adapters/telegram/poller.py",
+        "import aiogram\n",
+    )
+    write_module(
+        tmp_path,
+        "slices/identity/adapters/persistence/repository.py",
+        "import sqlalchemy\nimport asyncpg\n",
     )
     write_module(
         tmp_path,
