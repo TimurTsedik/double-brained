@@ -27,6 +27,7 @@ class CaptureEventModel(Base):
         UniqueConstraint(
             "bot_id", "telegram_update_id", name="uq_capture_events_telegram_delivery"
         ),
+        UniqueConstraint("id", "user_space_id", name="uq_capture_events_id_user_space"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)

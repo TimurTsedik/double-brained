@@ -2,8 +2,8 @@ import asyncio
 
 from aiogram import Bot
 
-from second_brain.bootstrap.capture_in_transaction import CaptureInTransaction
 from second_brain.bootstrap.settings import Settings
+from second_brain.bootstrap.task_capture_in_transaction import TaskCaptureInTransaction
 from second_brain.shared.clock import SystemClock
 from second_brain.slices.identity.adapters.persistence.database import (
     assert_non_privileged_application_role,
@@ -30,12 +30,14 @@ async def run_local_polling(settings: Settings) -> None:
         if bot_user.id is None:
             raise RuntimeError("Telegram bot identity did not include an id")
         session_factory = create_session_factory(engine)
+        task_capture = TaskCaptureInTransaction()
         processor = LocalUpdateProcessor(
             PostgresUpdateRepository(session_factory),
             SystemClock(),
             settings.invite_token_pepper,
             settings.invite_token_pepper_key_id,
-            CaptureInTransaction(),
+            task_capture,
+            task_capture,
         )
         poller = LocalPoller(AiogramGateway(bot, bot_user.id), processor, lock)
         while True:

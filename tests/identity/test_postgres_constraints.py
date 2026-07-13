@@ -2,16 +2,18 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from second_brain.bootstrap.schema import reset_prototype_schema
 from second_brain.slices.identity.adapters.persistence.database import (
     create_database_engine,
+    create_session_factory,
 )
 from second_brain.slices.identity.adapters.persistence.models import (
     TelegramIdentity,
+    TelegramUpdateReceipt,
     User,
     UserSpace,
 )
@@ -74,6 +76,9 @@ async def test_initialize_schema_creates_identity_tables(session: AsyncSession) 
         "capture_events",
         "enrollment_attempts",
         "enrollment_invites",
+        "pending_task_modes",
+        "task_provenance",
+        "tasks",
         "telegram_identities",
         "telegram_update_receipts",
         "user_spaces",
@@ -96,11 +101,42 @@ async def test_reset_requires_confirmation_without_mutating_schema(
         "capture_events",
         "enrollment_attempts",
         "enrollment_invites",
+        "pending_task_modes",
+        "task_provenance",
+        "tasks",
         "telegram_identities",
         "telegram_update_receipts",
         "user_spaces",
         "users",
     }
+
+
+@pytest.mark.asyncio
+async def test_confirmed_reset_recreates_receipt_constraint_for_task_panel_results(
+    schema_engine: AsyncEngine,
+    isolated_database: IsolatedDatabase,
+) -> None:
+    await reset_prototype_schema(
+        schema_engine, confirm=True, schema_name=isolated_database.schema
+    )
+
+    async with create_session_factory(schema_engine)() as owner_session:
+        owner_session.add(
+            TelegramUpdateReceipt(
+                bot_id=1,
+                update_id=1,
+                result_kind="panel_shown",
+                trace_id="1" * 32,
+                created_at=TIMESTAMP,
+            )
+        )
+        await owner_session.commit()
+
+        result_kind = await owner_session.scalar(
+            select(TelegramUpdateReceipt.result_kind)
+        )
+
+    assert result_kind == "panel_shown"
 
 
 @pytest.mark.asyncio

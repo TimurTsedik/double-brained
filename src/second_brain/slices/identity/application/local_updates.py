@@ -16,6 +16,11 @@ from second_brain.slices.identity.ports.repositories import (
     UpdateStore,
     UpdateTransaction,
 )
+from second_brain.slices.tasks.application.contracts import (
+    CancelPendingTaskCommand,
+    SetAwaitingTaskCommand,
+    TaskModePort,
+)
 
 MAX_ENROLLMENT_ATTEMPTS = 5
 ENROLLMENT_ATTEMPT_WINDOW = timedelta(minutes=15)
@@ -26,6 +31,9 @@ class AcknowledgementKind(StrEnum):
     ENROLLED = "enrolled"
     ENROLLMENT_REJECTED = "enrollment_rejected"
     KNOWN_USER_STARTED = "known_user_started"
+    PANEL_SHOWN = "panel_shown"
+    TASK_MODE_CANCELLED = "task_mode_cancelled"
+    TASK_MODE_SET = "task_mode_set"
     IGNORED = "ignored"
 
 
@@ -34,6 +42,7 @@ class UpdateResult:
     kind: AcknowledgementKind
     trace_id: str
     span_id: str
+    fresh: bool
 
 
 class LocalUpdateProcessor:
@@ -44,12 +53,14 @@ class LocalUpdateProcessor:
         pepper: bytes,
         pepper_key_id: str,
         capture_text_port: CaptureTextPort | None = None,
+        task_mode_port: TaskModePort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._pepper = pepper
         self._pepper_key_id = pepper_key_id
         self._capture_text_port = capture_text_port
+        self._task_mode_port = task_mode_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -69,6 +80,7 @@ class LocalUpdateProcessor:
             AcknowledgementKind(receipt.result_kind),
             context.trace_id,
             context.span_id,
+            fresh=not receipt.existing,
         )
 
     async def _process_new(
@@ -90,6 +102,9 @@ class LocalUpdateProcessor:
     ) -> str:
         if not update.is_private or update.telegram_user_id is None:
             return AcknowledgementKind.IGNORED
+
+        if update.callback_query_id is not None:
+            return await self._process_callback(transaction, update, context, now)
 
         command, start_token = _parse_start(update.text)
         if command == "start":
@@ -121,6 +136,42 @@ class LocalUpdateProcessor:
         )
         return AcknowledgementKind.CAPTURED
 
+    async def _process_callback(
+        self,
+        transaction: UpdateTransaction,
+        update: TelegramUpdate,
+        context: TraceContext,
+        now: datetime,
+    ) -> str:
+        if update.callback_data not in {"task:await_text", "task:cancel"}:
+            return AcknowledgementKind.IGNORED
+        if update.telegram_user_id is None:
+            return AcknowledgementKind.IGNORED
+        access_context = await ResolveAccessContext(transaction).execute(
+            update.telegram_user_id
+        )
+        if access_context is None or self._task_mode_port is None:
+            return AcknowledgementKind.IGNORED
+        if update.callback_data == "task:await_text":
+            await self._task_mode_port.set_awaiting_task(
+                SetAwaitingTaskCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            return AcknowledgementKind.TASK_MODE_SET
+        await self._task_mode_port.cancel(
+            CancelPendingTaskCommand(
+                access_context=access_context,
+                updated_at=now,
+                trace_id=context.trace_id,
+            ),
+            transaction,
+        )
+        return AcknowledgementKind.TASK_MODE_CANCELLED
+
     async def _process_start(
         self,
         transaction: UpdateTransaction,
@@ -137,7 +188,7 @@ class LocalUpdateProcessor:
         )
         if access_context is not None:
             if start_token is None:
-                return AcknowledgementKind.KNOWN_USER_STARTED
+                return AcknowledgementKind.PANEL_SHOWN
             return AcknowledgementKind.IGNORED
 
         actor_digest = self._actor_digest(update.bot_id, update.telegram_user_id)

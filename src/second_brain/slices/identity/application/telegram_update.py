@@ -11,3 +11,5 @@ class TelegramUpdate:
     telegram_user_id: int | None
     text: str | None = field(repr=False)
     telegram_message_id: int | None = None
+    callback_query_id: str | None = field(default=None, repr=False)
+    callback_data: str | None = field(default=None, repr=False)

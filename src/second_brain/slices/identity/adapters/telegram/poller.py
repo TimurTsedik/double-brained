@@ -30,6 +30,10 @@ class TelegramGateway(Protocol):
         self, update: TelegramUpdate, kind: AcknowledgementKind
     ) -> None: ...
 
+    async def send_panel(self, update: TelegramUpdate) -> None: ...
+
+    async def answer_callback(self, update: TelegramUpdate) -> None: ...
+
 
 class UpdateProcessor(Protocol):
     async def process(self, update: TelegramUpdate) -> UpdateResult: ...
@@ -61,7 +65,9 @@ class LocalPoller:
             bot_id = getattr(self._gateway, "bot_id", None)
             if bot_id is not None and not await self._lock.acquire(bot_id):
                 raise PollerAlreadyRunning("another local poller holds this bot lock")
-            updates = await self._gateway.get_updates(None, ["message"])
+            updates = await self._gateway.get_updates(
+                None, ["message", "callback_query"]
+            )
             if (
                 bot_id is None
                 and updates
@@ -70,9 +76,16 @@ class LocalPoller:
                 raise PollerAlreadyRunning("another local poller holds this bot lock")
             self._started = True
         else:
-            updates = await self._gateway.get_updates(self.offset, ["message"])
+            updates = await self._gateway.get_updates(
+                self.offset, ["message", "callback_query"]
+            )
 
         for update in updates:
+            if update.callback_query_id is not None:
+                try:
+                    await self._gateway.answer_callback(update)
+                except Exception:
+                    pass
             while True:
                 try:
                     result = await self._processor.process(update)
@@ -80,10 +93,23 @@ class LocalPoller:
                     await self._sleep(1.0)
                     continue
                 break
+            if result.kind is AcknowledgementKind.PANEL_SHOWN and getattr(
+                result, "fresh", True
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_panel(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             self.offset = update.update_id + 1
             if result.kind not in {
                 AcknowledgementKind.IGNORED,
                 AcknowledgementKind.CAPTURED,
+                AcknowledgementKind.PANEL_SHOWN,
+                AcknowledgementKind.TASK_MODE_SET,
+                AcknowledgementKind.TASK_MODE_CANCELLED,
             }:
                 try:
                     await self._gateway.send_acknowledgement(update, result.kind)

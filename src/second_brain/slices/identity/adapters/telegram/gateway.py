@@ -1,5 +1,5 @@
 from aiogram import Bot
-from aiogram.types import Update
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
@@ -38,7 +38,47 @@ class AiogramGateway:
             chat_id=update.telegram_user_id, text=_acknowledgement_text(kind)
         )
 
+    async def send_panel(self, update: TelegramUpdate) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text="Выберите действие.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="➕ Задача", callback_data="task:await_text"
+                        ),
+                        InlineKeyboardButton(
+                            text="Отмена", callback_data="task:cancel"
+                        ),
+                    ]
+                ]
+            ),
+        )
+
+    async def answer_callback(self, update: TelegramUpdate) -> None:
+        if update.callback_query_id is None:
+            return
+        await self._bot.answer_callback_query(update.callback_query_id)
+
     def _normalize(self, update: Update) -> TelegramUpdate:
+        callback = getattr(update, "callback_query", None)
+        if callback is not None:
+            message = getattr(callback, "message", None)
+            chat = getattr(message, "chat", None)
+            actor = callback.from_user.id if callback.from_user is not None else None
+            callback_data = callback.data if isinstance(callback.data, str) else None
+            return TelegramUpdate(
+                bot_id=self.bot_id,
+                update_id=update.update_id,
+                is_private=getattr(chat, "type", None) == "private",
+                telegram_user_id=actor,
+                text=None,
+                callback_query_id=callback.id,
+                callback_data=callback_data,
+            )
         message = getattr(update, "message", None)
         if message is None:
             return TelegramUpdate(

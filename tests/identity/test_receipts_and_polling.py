@@ -245,9 +245,7 @@ async def test_processor_ignores_non_private_updates_and_recognizes_known_start(
     known = private_start(4, token=None)
 
     assert (await processor.process(ignored)).kind is AcknowledgementKind.IGNORED
-    assert (
-        await processor.process(known)
-    ).kind is AcknowledgementKind.KNOWN_USER_STARTED
+    assert (await processor.process(known)).kind is AcknowledgementKind.PANEL_SHOWN
 
 
 @pytest.mark.asyncio
@@ -355,7 +353,7 @@ async def test_poller_advances_offset_before_best_effort_reply() -> None:
 
     await poller.run_once()
 
-    assert gateway.allowed_updates == ["message"]
+    assert gateway.allowed_updates == ["message", "callback_query"]
     assert poller.offset == 8
 
 

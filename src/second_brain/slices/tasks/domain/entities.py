@@ -1,0 +1,26 @@
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import StrEnum
+from uuid import UUID
+
+
+class TaskStatus(StrEnum):
+    INBOX = "inbox"
+
+
+class PendingCaptureMode(StrEnum):
+    NORMAL = "normal"
+    AWAITING_TASK_TEXT = "awaiting_task_text"
+
+
+@dataclass(frozen=True)
+class Task:
+    id: UUID
+    user_space_id: UUID
+    title: str = field(repr=False)
+    description: str | None
+    status: TaskStatus
+    source_capture_event_id: UUID
+    created_at: datetime
+    updated_at: datetime
+    trace_id: str

@@ -5,8 +5,8 @@ Python implementation of Second Brain.
 ## Local identity enrollment
 
 This prototype supports one local Telegram bootstrap-admin enrollment flow. It
-accepts only private-chat messages through local polling; webhook mode and
-capture/production ingestion are inactive.
+accepts only private-chat messages and callback buttons through local polling;
+webhook mode and production ingestion are inactive.
 
 ### Start PostgreSQL
 
@@ -51,9 +51,10 @@ INVITE_TOKEN_PEPPER_KEY_ID=
 
 ### Initialize and enroll
 
-This slice changes the prototype database-role contract. Existing prototype data
-must be intentionally reset and reinitialized once after updating `.env`; the
-reset destroys all local prototype data:
+This slice changes the prototype database-role contract and the allowed
+Telegram receipt results. **A database created by an earlier prototype version
+must be reset before running the task-panel bot.** `init-db` does not alter the
+existing receipt constraint. The reset destroys all local prototype data:
 
 ```bash
 uv run --env-file .env second-brain-identity reset-db --confirm-prototype-reset
@@ -73,13 +74,26 @@ the intended administrator and do not retain it in logs or tickets.
 uv run --env-file .env second-brain-identity create-bootstrap-admin-invite
 ```
 
+Open the new one-time link in the private chat to enroll again. Then send
+`/start` to receive the task panel. Resetting the prototype database removes
+the previous Telegram identity, so re-enrollment is required.
+
 Start local polling only after initialization. It polls only Telegram
-`message` updates, handles only private chats, and refuses to start when a
-webhook is configured.
+`message` and `callback_query` updates, handles only private chats, and
+refuses to start when a webhook is configured.
 
 ```bash
 uv run --env-file .env second-brain-local-polling
 ```
+
+### Task panel delivery note
+
+For this local prototype, `/start` first commits its redacted receipt and then
+sends the one visible panel. While the poller remains running, a failed panel
+send is retried before its Telegram offset advances. There is intentionally no
+outbox yet: if the process crashes after the receipt commits but before the
+panel reaches Telegram, a restart treats that old update as a duplicate and
+does not resend it. Send `/start` again to request a new panel.
 
 ## Automated checks
 

@@ -203,5 +203,27 @@ def test_capture_transaction_composition_is_limited_to_bootstrap() -> None:
             )
 
     assert modules_using_both_transaction_and_capture_writer == [
-        Path("bootstrap/capture_in_transaction.py")
+        Path("bootstrap/capture_in_transaction.py"),
+        Path("bootstrap/task_capture_in_transaction.py"),
     ]
+
+
+def test_task_capture_transaction_composition_is_limited_to_bootstrap() -> None:
+    package_root = Path(__file__).parents[2] / "src" / "second_brain"
+    violating_paths: list[Path] = []
+    forbidden_imports = (
+        "second_brain.slices.identity.adapters.persistence",
+        "second_brain.slices.capture.adapters.persistence",
+    )
+
+    for path in package_root.joinpath("slices", "tasks").rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        if any(imported in source for imported in forbidden_imports):
+            violating_paths.append(path.relative_to(package_root))
+
+    assert violating_paths == []
+    composition = package_root / "bootstrap" / "task_capture_in_transaction.py"
+    composition_source = composition.read_text(encoding="utf-8")
+    assert "PostgresUpdateTransaction" in composition_source
+    assert "PostgresCaptureEventWriter" in composition_source
+    assert "PostgresPendingTaskModeWriter" in composition_source
