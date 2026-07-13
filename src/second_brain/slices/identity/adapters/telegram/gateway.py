@@ -3,9 +3,14 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
+from second_brain.slices.retrieval.application.contracts import (
+    SearchPanelResult,
+    SearchRecord,
+)
 from second_brain.slices.tasks.application.contracts import TaskPanelResult
 
 MAX_TASK_TITLE_LENGTH = 160
+MAX_SEARCH_EXCERPT_LENGTH = 240
 
 
 class AiogramGateway:
@@ -52,7 +57,10 @@ class AiogramGateway:
                     [
                         InlineKeyboardButton(
                             text="📋 Мои задачи", callback_data="tasks:list"
-                        )
+                        ),
+                        InlineKeyboardButton(
+                            text="🔎 Поиск", callback_data="search:prompt"
+                        ),
                     ],
                     [
                         InlineKeyboardButton(
@@ -136,6 +144,76 @@ class AiogramGateway:
             text=task_text,
         )
 
+    async def send_search_prompt(
+        self,
+        update: TelegramUpdate,
+        query_required: bool,
+    ) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        text = (
+            "Напишите слово или фразу."
+            if query_required
+            else (
+                "🔎 Что найти?\n\n"
+                "Отправьте слово или фразу. Следующее сообщение станет запросом, "
+                "а не новой записью."
+            )
+        )
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="✖️ Отмена", callback_data="search:cancel"
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    async def send_search_cancelled(self, update: TelegramUpdate) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text="✖️ Поиск отменён.",
+        )
+
+    async def send_search_panel(
+        self,
+        update: TelegramUpdate,
+        result: SearchPanelResult,
+    ) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        if result.items:
+            blocks = [
+                f"{number}. {_search_label(item)}\n{_search_excerpt(item.text)}"
+                for number, item in enumerate(result.items, start=1)
+            ]
+            text = f"🔎 Найдено: {len(result.items)}\n\n" + "\n\n".join(blocks)
+        else:
+            text = (
+                "🔎 Ничего не найдено.\n\n"
+                "Попробуйте другое слово или более короткую фразу."
+            )
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="🔎 Искать ещё", callback_data="search:prompt"
+                        )
+                    ]
+                ]
+            ),
+        )
+
     async def answer_callback(self, update: TelegramUpdate) -> None:
         if update.callback_query_id is None:
             return
@@ -207,3 +285,24 @@ def _truncate_title(title: str) -> str:
     if len(title) <= MAX_TASK_TITLE_LENGTH:
         return title
     return f"{title[: MAX_TASK_TITLE_LENGTH - 1]}…"
+
+
+def _search_label(record: SearchRecord) -> str:
+    record_type = record.record_type.value
+    if record_type == "task":
+        if record.task_completed:
+            return "☑️ Завершённая задача"
+        return "✅ Задача"
+    return {
+        "note": "📝 Заметка",
+        "idea": "💡 Идея",
+        "decision": "⚖️ Решение",
+        "question": "❓ Вопрос",
+    }[record_type]
+
+
+def _search_excerpt(text: str) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= MAX_SEARCH_EXCERPT_LENGTH:
+        return compact
+    return f"{compact[: MAX_SEARCH_EXCERPT_LENGTH - 1]}…"

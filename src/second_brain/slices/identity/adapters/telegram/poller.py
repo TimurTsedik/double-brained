@@ -7,6 +7,7 @@ from second_brain.slices.identity.application.local_updates import (
     AcknowledgementKind,
     UpdateResult,
 )
+from second_brain.slices.retrieval.application.contracts import SearchPanelResult
 from second_brain.slices.tasks.application.contracts import TaskPanelResult
 
 
@@ -40,6 +41,20 @@ class TelegramGateway(Protocol):
         update: TelegramUpdate,
         result: TaskPanelResult,
         is_completion: bool,
+    ) -> None: ...
+
+    async def send_search_prompt(
+        self,
+        update: TelegramUpdate,
+        query_required: bool,
+    ) -> None: ...
+
+    async def send_search_cancelled(self, update: TelegramUpdate) -> None: ...
+
+    async def send_search_panel(
+        self,
+        update: TelegramUpdate,
+        result: SearchPanelResult,
     ) -> None: ...
 
     async def answer_callback(self, update: TelegramUpdate) -> None: ...
@@ -142,6 +157,45 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
+            if result.kind in {
+                AcknowledgementKind.SEARCH_MODE_SET,
+                AcknowledgementKind.SEARCH_QUERY_REQUIRED,
+            } and getattr(result, "fresh", True):
+                while True:
+                    try:
+                        await self._gateway.send_search_prompt(
+                            update,
+                            result.kind is AcknowledgementKind.SEARCH_QUERY_REQUIRED,
+                        )
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            if result.kind is AcknowledgementKind.SEARCH_MODE_CANCELLED and getattr(
+                result, "fresh", True
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_search_cancelled(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            if result.kind is AcknowledgementKind.SEARCH_COMPLETED and getattr(
+                result, "fresh", True
+            ):
+                search_panel = getattr(result, "search_panel", None)
+                if search_panel is None:
+                    raise RuntimeError(
+                        "fresh search action did not return a search panel"
+                    )
+                while True:
+                    try:
+                        await self._gateway.send_search_panel(update, search_panel)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             self.offset = update.update_id + 1
             if result.kind not in {
                 AcknowledgementKind.IGNORED,
@@ -151,6 +205,10 @@ class LocalPoller:
                 AcknowledgementKind.TASK_MODE_CANCELLED,
                 AcknowledgementKind.TASKS_LISTED,
                 AcknowledgementKind.TASK_COMPLETED,
+                AcknowledgementKind.SEARCH_MODE_SET,
+                AcknowledgementKind.SEARCH_MODE_CANCELLED,
+                AcknowledgementKind.SEARCH_QUERY_REQUIRED,
+                AcknowledgementKind.SEARCH_COMPLETED,
             }:
                 try:
                     await self._gateway.send_acknowledgement(update, result.kind)

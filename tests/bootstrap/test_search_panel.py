@@ -1,15 +1,20 @@
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
+from aiogram import Bot
 
 from second_brain.slices.capture.application.contracts import CaptureTextCommand
 from second_brain.slices.capture.domain.entities import CaptureEvent
 from second_brain.slices.identity.adapters.telegram.dto import TelegramUpdate
+from second_brain.slices.identity.adapters.telegram.gateway import AiogramGateway
+from second_brain.slices.identity.adapters.telegram.poller import LocalPoller
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.identity.application.local_updates import (
     AcknowledgementKind,
     LocalUpdateProcessor,
+    UpdateResult,
 )
 from second_brain.slices.identity.ports.repositories import (
     NewUpdateResult,
@@ -376,3 +381,339 @@ async def test_search_prompt_from_group_chat_is_ignored() -> None:
 
     assert result.kind is AcknowledgementKind.IGNORED
     assert operations == []
+
+
+class RecordingAiogramBot:
+    def __init__(self) -> None:
+        self.sent_messages: list[dict[str, Any]] = []
+
+    async def send_message(self, **kwargs: Any) -> None:
+        self.sent_messages.append(kwargs)
+
+
+def search_record(
+    record_number: int,
+    record_type: SearchRecordType,
+    text: str,
+    *,
+    task_completed: bool | None = None,
+) -> SearchRecord:
+    return SearchRecord(
+        id=UUID(int=record_number),
+        record_type=record_type,
+        text=text,
+        source_capture_event_id=UUID(int=record_number + 100),
+        created_at=NOW,
+        task_completed=task_completed,
+        match_quality=MatchQuality.SUBSTRING,
+    )
+
+
+@pytest.mark.asyncio
+async def test_aiogram_gateway_sends_search_prompt_with_cancel_button() -> None:
+    bot = RecordingAiogramBot()
+    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+
+    await gateway.send_search_prompt(
+        callback(300, "search:prompt"), query_required=False
+    )
+
+    message = bot.sent_messages[0]
+    assert message["text"] == (
+        "🔎 Что найти?\n\n"
+        "Отправьте слово или фразу. Следующее сообщение станет запросом, "
+        "а не новой записью."
+    )
+    assert "parse_mode" not in message
+    markup = message["reply_markup"]
+    assert [button.text for button in markup.inline_keyboard[0]] == ["✖️ Отмена"]
+    assert [button.callback_data for button in markup.inline_keyboard[0]] == [
+        "search:cancel"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_aiogram_gateway_reprompts_for_blank_search_query() -> None:
+    bot = RecordingAiogramBot()
+    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+
+    await gateway.send_search_prompt(text_update(301, "  "), query_required=True)
+
+    assert bot.sent_messages[0]["text"] == "Напишите слово или фразу."
+    assert (
+        bot.sent_messages[0]["reply_markup"].inline_keyboard[0][0].callback_data
+        == "search:cancel"
+    )
+
+
+@pytest.mark.asyncio
+async def test_aiogram_gateway_sends_search_cancelled() -> None:
+    bot = RecordingAiogramBot()
+    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+
+    await gateway.send_search_cancelled(callback(302, "search:cancel"))
+
+    assert bot.sent_messages == [{"chat_id": 42, "text": "✖️ Поиск отменён."}]
+
+
+@pytest.mark.asyncio
+async def test_aiogram_gateway_sends_compact_typed_search_results() -> None:
+    bot = RecordingAiogramBot()
+    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    long_note = "  PostgreSQL\n" + "x" * 300
+    result = SearchPanelResult(
+        (
+            search_record(1, SearchRecordType.NOTE, long_note),
+            search_record(
+                2,
+                SearchRecordType.TASK,
+                "Открытая задача",
+                task_completed=False,
+            ),
+            search_record(
+                3,
+                SearchRecordType.TASK,
+                "Закрытая задача",
+                task_completed=True,
+            ),
+            search_record(4, SearchRecordType.IDEA, "Идея"),
+            search_record(5, SearchRecordType.DECISION, "Решение"),
+            search_record(6, SearchRecordType.QUESTION, "Вопрос"),
+        ),
+        query_required=False,
+    )
+
+    await gateway.send_search_panel(text_update(303, "postgres"), result)
+
+    message = bot.sent_messages[0]
+    assert message["text"].startswith("🔎 Найдено: 6\n\n1. 📝 Заметка\n")
+    assert "  PostgreSQL\n" not in message["text"]
+    assert len(message["text"].splitlines()[3]) == 240
+    assert "…\n\n2. ✅ Задача\nОткрытая задача" in message["text"]
+    assert "3. ☑️ Завершённая задача\nЗакрытая задача" in message["text"]
+    assert "4. 💡 Идея\nИдея" in message["text"]
+    assert "5. ⚖️ Решение\nРешение" in message["text"]
+    assert "6. ❓ Вопрос\nВопрос" in message["text"]
+    assert "parse_mode" not in message
+    markup = message["reply_markup"]
+    assert [button.callback_data for button in markup.inline_keyboard[0]] == [
+        "search:prompt"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_aiogram_gateway_sends_exact_empty_search_result() -> None:
+    bot = RecordingAiogramBot()
+    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+
+    await gateway.send_search_panel(
+        text_update(304, "missing"),
+        SearchPanelResult((), query_required=False),
+    )
+
+    message = bot.sent_messages[0]
+    assert message["text"] == (
+        "🔎 Ничего не найдено.\n\nПопробуйте другое слово или более короткую фразу."
+    )
+    assert (
+        message["reply_markup"].inline_keyboard[0][0].callback_data == "search:prompt"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ten_maximum_search_excerpts_fit_telegram_message() -> None:
+    bot = RecordingAiogramBot()
+    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    result = SearchPanelResult(
+        tuple(
+            search_record(number, SearchRecordType.NOTE, "x" * 500)
+            for number in range(1, 11)
+        ),
+        query_required=False,
+    )
+
+    await gateway.send_search_panel(text_update(305, "x"), result)
+
+    assert len(bot.sent_messages[0]["text"]) < 4096
+
+
+class AcquiredPollerLock:
+    async def acquire(self, _bot_id: int) -> bool:
+        return True
+
+
+class StaticSearchProcessor:
+    def __init__(self, result: UpdateResult) -> None:
+        self._result = result
+
+    async def process(self, _update: TelegramUpdate) -> UpdateResult:
+        return self._result
+
+
+class SearchGateway:
+    bot_id = 1
+
+    def __init__(self, update: TelegramUpdate) -> None:
+        self._update = update
+        self.answered_callbacks: list[TelegramUpdate] = []
+        self.prompts: list[tuple[TelegramUpdate, bool]] = []
+        self.cancelled: list[TelegramUpdate] = []
+        self.panels: list[tuple[TelegramUpdate, SearchPanelResult]] = []
+        self.acknowledgements: list[AcknowledgementKind] = []
+
+    async def configured_webhook_url(self) -> None:
+        return None
+
+    async def get_updates(
+        self, _offset: int | None, _allowed_updates: list[str]
+    ) -> list[TelegramUpdate]:
+        return [self._update]
+
+    async def answer_callback(self, update: TelegramUpdate) -> None:
+        self.answered_callbacks.append(update)
+
+    async def send_search_prompt(
+        self, update: TelegramUpdate, query_required: bool
+    ) -> None:
+        self.prompts.append((update, query_required))
+
+    async def send_search_cancelled(self, update: TelegramUpdate) -> None:
+        self.cancelled.append(update)
+
+    async def send_search_panel(
+        self, update: TelegramUpdate, result: SearchPanelResult
+    ) -> None:
+        self.panels.append((update, result))
+
+    async def send_acknowledgement(
+        self, _update: TelegramUpdate, kind: AcknowledgementKind
+    ) -> None:
+        self.acknowledgements.append(kind)
+
+
+class FailsOnceSearchPanelGateway(SearchGateway):
+    def __init__(self, update: TelegramUpdate) -> None:
+        super().__init__(update)
+        self.panel_attempts = 0
+
+    async def send_search_panel(
+        self, update: TelegramUpdate, result: SearchPanelResult
+    ) -> None:
+        self.panel_attempts += 1
+        if self.panel_attempts == 1:
+            raise RuntimeError("Telegram search panel send failed")
+        await super().send_search_panel(update, result)
+
+
+async def no_sleep(_seconds: float) -> None:
+    return None
+
+
+def search_update_result(
+    kind: AcknowledgementKind,
+    *,
+    fresh: bool = True,
+    panel: SearchPanelResult | None = None,
+) -> UpdateResult:
+    return UpdateResult(
+        kind,
+        "1" * 32,
+        "2" * 16,
+        fresh=fresh,
+        search_panel=panel,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "query_required"),
+    [
+        (AcknowledgementKind.SEARCH_MODE_SET, False),
+        (AcknowledgementKind.SEARCH_QUERY_REQUIRED, True),
+    ],
+)
+async def test_poller_sends_fresh_search_prompt(
+    kind: AcknowledgementKind, query_required: bool
+) -> None:
+    update = callback(400, "search:prompt")
+    gateway = SearchGateway(update)
+
+    await LocalPoller(
+        gateway,
+        StaticSearchProcessor(search_update_result(kind)),
+        AcquiredPollerLock(),
+    ).run_once()
+
+    assert gateway.prompts == [(update, query_required)]
+    assert gateway.acknowledgements == []
+
+
+@pytest.mark.asyncio
+async def test_poller_sends_fresh_search_cancelled() -> None:
+    update = callback(401, "search:cancel")
+    gateway = SearchGateway(update)
+
+    await LocalPoller(
+        gateway,
+        StaticSearchProcessor(
+            search_update_result(AcknowledgementKind.SEARCH_MODE_CANCELLED)
+        ),
+        AcquiredPollerLock(),
+    ).run_once()
+
+    assert gateway.cancelled == [update]
+    assert gateway.acknowledgements == []
+
+
+@pytest.mark.asyncio
+async def test_poller_sends_fresh_search_panel_and_not_duplicate() -> None:
+    update = text_update(402, "postgres")
+    panel = SearchPanelResult((SEARCH_RECORD,), query_required=False)
+    fresh_gateway = SearchGateway(update)
+
+    await LocalPoller(
+        fresh_gateway,
+        StaticSearchProcessor(
+            search_update_result(AcknowledgementKind.SEARCH_COMPLETED, panel=panel)
+        ),
+        AcquiredPollerLock(),
+    ).run_once()
+
+    assert fresh_gateway.panels == [(update, panel)]
+    assert fresh_gateway.acknowledgements == []
+
+    duplicate_gateway = SearchGateway(update)
+    await LocalPoller(
+        duplicate_gateway,
+        StaticSearchProcessor(
+            search_update_result(
+                AcknowledgementKind.SEARCH_COMPLETED,
+                fresh=False,
+            )
+        ),
+        AcquiredPollerLock(),
+    ).run_once()
+
+    assert duplicate_gateway.panels == []
+    assert duplicate_gateway.acknowledgements == []
+
+
+@pytest.mark.asyncio
+async def test_poller_retries_search_panel_before_advancing_offset() -> None:
+    update = text_update(403, "postgres")
+    panel = SearchPanelResult((SEARCH_RECORD,), query_required=False)
+    gateway = FailsOnceSearchPanelGateway(update)
+    poller = LocalPoller(
+        gateway,
+        StaticSearchProcessor(
+            search_update_result(AcknowledgementKind.SEARCH_COMPLETED, panel=panel)
+        ),
+        AcquiredPollerLock(),
+        sleep=no_sleep,
+    )
+
+    await poller.run_once()
+
+    assert gateway.panel_attempts == 2
+    assert gateway.panels == [(update, panel)]
+    assert poller.offset == update.update_id + 1

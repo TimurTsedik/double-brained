@@ -67,6 +67,9 @@ def violation_rule(module_path: tuple[str, ...], imported_module: str) -> str | 
     if capture_persistence_imports_identity_persistence(module_path, imported_module):
         return "capture persistence must not import identity persistence"
 
+    if imports_internal_module_of_another_slice(module_path, imported_module):
+        return "cross-slice imports must use published application contracts"
+
     if imports_aiogram(imported_module) and not aiogram_import_allowed(module_path):
         return "aiogram is allowed only in bootstrap or adapters/telegram"
 
@@ -90,6 +93,35 @@ def violation_rule(module_path: tuple[str, ...], imported_module: str) -> str | 
         return "FastAPI is allowed only in bootstrap or adapters/api"
 
     return None
+
+
+def imports_internal_module_of_another_slice(
+    module_path: tuple[str, ...], imported_module: str
+) -> bool:
+    if len(module_path) < 2 or module_path[0] != "slices":
+        return False
+    imported_parts = imported_module.split(".")
+    if len(imported_parts) < 4 or imported_parts[:2] != ["second_brain", "slices"]:
+        return False
+    if imported_parts[2] == module_path[1] or is_published_contract(imported_module):
+        return False
+    return not is_documented_retrieval_read_model_import(module_path, imported_module)
+
+
+def is_documented_retrieval_read_model_import(
+    module_path: tuple[str, ...], imported_module: str
+) -> bool:
+    return module_path == (
+        "slices",
+        "retrieval",
+        "adapters",
+        "persistence",
+        "repository",
+    ) and imported_module in {
+        "second_brain.slices.knowledge.adapters.persistence.models",
+        "second_brain.slices.tasks.adapters.persistence.models",
+        "second_brain.slices.tasks.domain.entities",
+    }
 
 
 def identity_persistence_imports_capture_persistence(

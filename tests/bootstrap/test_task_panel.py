@@ -408,6 +408,7 @@ async def test_aiogram_gateway_sends_fixed_inline_task_panel_and_answers_callbac
     markup = bot.sent_messages[0]["reply_markup"]
     assert [button.callback_data for button in markup.inline_keyboard[0]] == [
         "tasks:list",
+        "search:prompt",
     ]
     assert [button.callback_data for button in markup.inline_keyboard[1]] == [
         "capture:note",

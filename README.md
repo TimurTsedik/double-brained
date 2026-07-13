@@ -52,11 +52,11 @@ INVITE_TOKEN_PEPPER_KEY_ID=
 ### Initialize and enroll
 
 This slice changes the prototype database-role contract, the allowed Telegram
-receipt results, the pending-capture schema, and the allowed `tasks.status`
-values. **A database created by an earlier prototype version must be reset
-before running the actionable task bot.** `init-db` does not alter existing
-constraints or rename the former pending-task table. The reset destroys all
-local prototype data:
+receipt results, the pending-capture and pending-search schemas, the allowed
+`tasks.status` values, and the full-text indexes. **A database created by an
+earlier prototype version must be reset before running the actionable task and
+search bot.** `init-db` does not alter existing constraints or rename former
+tables. The reset destroys all local prototype data:
 
 ```bash
 uv run --env-file .env second-brain-identity reset-db --confirm-prototype-reset
@@ -77,9 +77,11 @@ uv run --env-file .env second-brain-identity create-bootstrap-admin-invite
 ```
 
 Open the new one-time link in the private chat to enroll again. Then send
-`/start` to receive the capture panel. Its `📋 Мои задачи` button opens the
-actionable task list. Resetting the prototype database removes the previous
-Telegram identity, so re-enrollment is required.
+`/start` to receive the capture panel. `📋 Мои задачи` opens the actionable
+task list. `🔎 Поиск` makes the next private text a one-shot exact search across
+your Notes, Tasks, Ideas, Decisions, and Questions instead of saving it as new
+content. Resetting the prototype database removes the previous Telegram
+identity, so re-enrollment is required.
 
 Start local polling only after initialization. It polls only Telegram
 `message` and `callback_query` updates, handles only private chats, and

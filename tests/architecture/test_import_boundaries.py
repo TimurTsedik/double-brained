@@ -122,6 +122,14 @@ def write_module(root: Path, relative_path: str, source: str) -> None:
             ),
             "second_brain.slices.identity.adapters.persistence.models",
         ),
+        (
+            "slices/identity/adapters/telegram/gateway.py",
+            (
+                "from second_brain.slices.retrieval.domain.entities "
+                "import SearchRecord\n"
+            ),
+            "second_brain.slices.retrieval.domain.entities",
+        ),
     ],
 )
 def test_checker_reports_prohibited_import(
@@ -151,7 +159,11 @@ def test_checker_allows_bootstrap_and_published_contract_imports(
     write_module(
         tmp_path,
         "slices/identity/adapters/telegram/poller.py",
-        "import aiogram\n",
+        (
+            "import aiogram\n"
+            "from second_brain.slices.retrieval.application.contracts "
+            "import SearchPanelResult\n"
+        ),
     )
     write_module(
         tmp_path,

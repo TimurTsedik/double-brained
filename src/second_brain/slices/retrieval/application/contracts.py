@@ -6,7 +6,7 @@ from second_brain.slices.identity.application.contracts import (
     AccessContext,
     UpdateTransaction,
 )
-from second_brain.slices.retrieval.domain.entities import SearchRecord
+from second_brain.slices.retrieval.domain.entities import SearchRecord as SearchRecord
 
 
 @dataclass(frozen=True)
