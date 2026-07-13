@@ -37,6 +37,36 @@ async def test_application_role_has_no_delete_privilege(
 
 
 @pytest.mark.asyncio
+async def test_application_role_can_mutate_only_pending_search_state(
+    session: AsyncSession,
+) -> None:
+    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT has_table_privilege(current_user, "
+                    "'pending_search_modes', :privilege)"
+                ),
+                {"privilege": privilege},
+            )
+            is True
+        )
+
+    for table_name in ("notes", "ideas", "decisions", "questions"):
+        for privilege in ("UPDATE", "DELETE"):
+            assert (
+                await session.scalar(
+                    text(
+                        "SELECT has_table_privilege(current_user, :table_name, "
+                        ":privilege)"
+                    ),
+                    {"table_name": table_name, "privilege": privilege},
+                )
+                is False
+            )
+
+
+@pytest.mark.asyncio
 async def test_application_role_lacks_update_on_immutable_identity_tables(
     session: AsyncSession,
 ) -> None:

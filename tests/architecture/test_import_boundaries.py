@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 import pytest
@@ -227,3 +228,34 @@ def test_task_capture_transaction_composition_is_limited_to_bootstrap() -> None:
     assert "PostgresUpdateTransaction" in composition_source
     assert "PostgresCaptureEventWriter" in composition_source
     assert "PostgresPendingCaptureSelectionWriter" in composition_source
+
+
+def test_retrieval_cross_slice_read_model_is_explicit_and_read_only() -> None:
+    package_root = Path(__file__).parents[2] / "src" / "second_brain"
+    retrieval_root = package_root / "slices" / "retrieval"
+    direct_model_imports: list[Path] = []
+
+    for path in retrieval_root.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        if (
+            "knowledge.adapters.persistence.models" in source
+            or "tasks.adapters.persistence.models" in source
+        ):
+            direct_model_imports.append(path.relative_to(package_root))
+
+    assert direct_model_imports == [
+        Path("slices/retrieval/adapters/persistence/repository.py")
+    ]
+    repository_source = (
+        retrieval_root / "adapters" / "persistence" / "repository.py"
+    ).read_text(encoding="utf-8")
+    repository_tree = ast.parse(repository_source)
+    sqlalchemy_imports = {
+        alias.name
+        for node in ast.walk(repository_tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "sqlalchemy"
+        for alias in node.names
+    }
+    assert "update" not in sqlalchemy_imports
+    assert "delete(TaskModel" not in repository_source
+    assert "delete(NoteModel" not in repository_source

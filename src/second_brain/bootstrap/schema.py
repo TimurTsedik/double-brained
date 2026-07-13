@@ -21,6 +21,9 @@ from second_brain.slices.knowledge.adapters.persistence.models import (
     QuestionModel,
     QuestionProvenanceModel,
 )
+from second_brain.slices.retrieval.adapters.persistence.models import (
+    PendingSearchModeModel,
+)
 from second_brain.slices.tasks.adapters.persistence.models import (
     PendingCaptureSelectionModel,
     TaskModel,
@@ -43,6 +46,7 @@ KNOWLEDGE_TABLES = (
     cast(Table, QuestionModel.__table__),
     cast(Table, QuestionProvenanceModel.__table__),
 )
+PENDING_SEARCH_MODE_TABLE = cast(Table, PendingSearchModeModel.__table__)
 
 
 async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") -> None:
@@ -50,6 +54,7 @@ async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") ->
     await _initialize_capture_schema(engine, schema_name)
     await _initialize_task_schema(engine, schema_name)
     await _initialize_knowledge_schema(engine, schema_name)
+    await _initialize_retrieval_schema(engine, schema_name)
 
 
 async def reset_prototype_schema(
@@ -58,6 +63,7 @@ async def reset_prototype_schema(
     if not confirm:
         await reset_identity_prototype_schema(engine, confirm, schema_name)
         return
+    await _drop_retrieval_schema(engine)
     await _drop_task_schema(engine)
     await _drop_knowledge_schema(engine)
     await _drop_capture_schema(engine)
@@ -65,6 +71,7 @@ async def reset_prototype_schema(
     await _initialize_capture_schema(engine, schema_name)
     await _initialize_task_schema(engine, schema_name)
     await _initialize_knowledge_schema(engine, schema_name)
+    await _initialize_retrieval_schema(engine, schema_name)
 
 
 async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> None:
@@ -117,6 +124,19 @@ async def _drop_knowledge_schema(engine: AsyncEngine) -> None:
         await connection.run_sync(_drop_knowledge_tables)
 
 
+async def _initialize_retrieval_schema(engine: AsyncEngine, schema_name: str) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_create_pending_search_mode_table)
+        await _configure_user_space_rls(connection, schema_name, "pending_search_modes")
+        await _grant_retrieval_privileges(connection, schema_name)
+        await _create_full_text_indexes(connection, schema_name)
+
+
+async def _drop_retrieval_schema(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_drop_pending_search_mode_table)
+
+
 def _create_capture_event_table(connection: Connection) -> None:
     CAPTURE_EVENT_TABLE.create(connection, checkfirst=True)
 
@@ -143,6 +163,14 @@ def _create_knowledge_tables(connection: Connection) -> None:
 def _drop_knowledge_tables(connection: Connection) -> None:
     for table in reversed(KNOWLEDGE_TABLES):
         table.drop(connection, checkfirst=True)
+
+
+def _create_pending_search_mode_table(connection: Connection) -> None:
+    PENDING_SEARCH_MODE_TABLE.create(connection, checkfirst=True)
+
+
+def _drop_pending_search_mode_table(connection: Connection) -> None:
+    PENDING_SEARCH_MODE_TABLE.drop(connection, checkfirst=True)
 
 
 async def _configure_capture_event_rls(
@@ -220,6 +248,42 @@ async def _grant_knowledge_privileges(
     await connection.execute(
         text(f"GRANT SELECT, INSERT ON TABLE {knowledge_tables} TO {APPLICATION_ROLE}")
     )
+
+
+async def _grant_retrieval_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    table = f'{_quote_identifier(schema_name)}."pending_search_modes"'
+    await connection.execute(
+        text(f"REVOKE ALL PRIVILEGES ON TABLE {table} FROM {APPLICATION_ROLE}")
+    )
+    await connection.execute(
+        text(
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table} "
+            f"TO {APPLICATION_ROLE}"
+        )
+    )
+
+
+async def _create_full_text_indexes(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    schema = _quote_identifier(schema_name)
+    for index_name, table_name, column_name in (
+        ("ix_notes_text_fts", "notes", "text"),
+        ("ix_tasks_title_fts", "tasks", "title"),
+        ("ix_ideas_text_fts", "ideas", "text"),
+        ("ix_decisions_text_fts", "decisions", "text"),
+        ("ix_questions_text_fts", "questions", "text"),
+    ):
+        await connection.execute(
+            text(
+                f"CREATE INDEX IF NOT EXISTS {_quote_identifier(index_name)} "
+                f"ON {schema}.{_quote_identifier(table_name)} USING GIN "
+                "(to_tsvector('simple'::regconfig, "
+                f"{_quote_identifier(column_name)}))"
+            )
+        )
 
 
 def _quote_identifier(value: str) -> str:
