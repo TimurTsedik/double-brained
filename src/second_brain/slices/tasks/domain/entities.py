@@ -6,6 +6,7 @@ from uuid import UUID
 
 class TaskStatus(StrEnum):
     INBOX = "inbox"
+    COMPLETED = "completed"
 
 
 class PendingCaptureType(StrEnum):

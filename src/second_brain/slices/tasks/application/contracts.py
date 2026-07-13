@@ -19,6 +19,26 @@ class CreateTaskCommand:
 
 
 @dataclass(frozen=True)
+class TaskListItem:
+    id: UUID
+    title: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class TaskPanelResult:
+    items: tuple[TaskListItem, ...]
+    completion_changed: bool | None
+
+
+@dataclass(frozen=True)
+class CompleteTaskCommand:
+    access_context: AccessContext
+    task_id: UUID
+    completed_at: datetime
+    trace_id: str
+
+
+@dataclass(frozen=True)
 class SetAwaitingTaskCommand:
     access_context: AccessContext
     updated_at: datetime
@@ -65,3 +85,13 @@ class TaskModePort(Protocol):
     async def cancel(
         self, command: CancelPendingTaskCommand, transaction: UpdateTransaction
     ) -> None: ...
+
+
+class TaskPanelPort(Protocol):
+    async def list_open(
+        self, access_context: AccessContext, transaction: UpdateTransaction
+    ) -> TaskPanelResult: ...
+
+    async def complete(
+        self, command: CompleteTaskCommand, transaction: UpdateTransaction
+    ) -> TaskPanelResult: ...

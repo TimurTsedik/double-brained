@@ -1,7 +1,9 @@
 from typing import Protocol
 
+from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
+    CompleteTaskCommand,
     ConsumePendingTaskTextCommand,
     CreateTaskCommand,
     SetAwaitingTaskCommand,
@@ -12,6 +14,14 @@ from second_brain.slices.tasks.domain.entities import PendingCaptureType, Task
 
 class TaskWriter(Protocol):
     async def create(self, command: CreateTaskCommand) -> Task: ...
+
+
+class TaskPanelStore(Protocol):
+    async def list_inbox(
+        self, access_context: AccessContext, limit: int
+    ) -> tuple[Task, ...]: ...
+
+    async def complete(self, command: CompleteTaskCommand) -> bool: ...
 
 
 class PendingCaptureSelectionStore(Protocol):

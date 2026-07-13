@@ -189,7 +189,8 @@ async def _grant_task_privileges(connection: AsyncConnection, schema_name: str) 
     await connection.execute(
         text(
             "GRANT UPDATE ON TABLE "
-            f"{quoted_schema}.pending_capture_selections TO {APPLICATION_ROLE}"
+            f"{quoted_schema}.tasks, {quoted_schema}.pending_capture_selections "
+            f"TO {APPLICATION_ROLE}"
         )
     )
 

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from second_brain.slices.identity.application.contracts import AccessContext
@@ -12,6 +12,7 @@ from second_brain.slices.tasks.adapters.persistence.models import (
 )
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
+    CompleteTaskCommand,
     ConsumePendingTaskTextCommand,
     CreateTaskCommand,
     SetAwaitingTaskCommand,
@@ -66,6 +67,64 @@ class PostgresTaskWriter:
         )
         await self._session.flush()
         return _to_entity(model)
+
+
+class PostgresTaskPanelRepository:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def list_inbox(
+        self, access_context: AccessContext, limit: int
+    ) -> tuple[Task, ...]:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresTaskPanelWriter(session).list_inbox(
+                    access_context, limit
+                )
+
+    async def complete(self, command: CompleteTaskCommand) -> bool:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresTaskPanelWriter(session).complete(command)
+
+
+class PostgresTaskPanelWriter:
+    """Lists and completes tasks through a transaction owned by the caller."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_inbox(
+        self, access_context: AccessContext, limit: int
+    ) -> tuple[Task, ...]:
+        await _set_user_space_scope(self._session, access_context)
+        models = await self._session.scalars(
+            select(TaskModel)
+            .where(
+                TaskModel.user_space_id == access_context.user_space_id,
+                TaskModel.status == TaskStatus.INBOX,
+            )
+            .order_by(TaskModel.created_at, TaskModel.id)
+            .limit(limit)
+        )
+        return tuple(_to_entity(model) for model in models)
+
+    async def complete(self, command: CompleteTaskCommand) -> bool:
+        await _set_user_space_scope(self._session, command.access_context)
+        completed_task_id = await self._session.scalar(
+            update(TaskModel)
+            .where(
+                TaskModel.id == command.task_id,
+                TaskModel.user_space_id == command.access_context.user_space_id,
+                TaskModel.status == TaskStatus.INBOX,
+            )
+            .values(
+                status=TaskStatus.COMPLETED,
+                updated_at=command.completed_at,
+            )
+            .returning(TaskModel.id)
+        )
+        return completed_task_id is not None
 
 
 class PostgresPendingCaptureSelectionRepository:

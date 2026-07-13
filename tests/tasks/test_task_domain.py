@@ -42,3 +42,7 @@ def test_task_repr_does_not_include_submitted_title() -> None:
     )
 
     assert submitted_text not in repr(task)
+
+
+def test_task_supports_completed_status() -> None:
+    assert TaskStatus.COMPLETED.value == "completed"

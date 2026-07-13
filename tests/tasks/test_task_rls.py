@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -24,9 +24,11 @@ from second_brain.slices.tasks.adapters.persistence.models import (
 )
 from second_brain.slices.tasks.adapters.persistence.repository import (
     PostgresPendingCaptureSelectionRepository,
+    PostgresTaskPanelRepository,
     PostgresTaskRepository,
 )
 from second_brain.slices.tasks.application.contracts import (
+    CompleteTaskCommand,
     CreateTaskCommand,
     SetAwaitingTaskCommand,
 )
@@ -104,6 +106,11 @@ async def task_repository(engine: AsyncEngine) -> PostgresTaskRepository:
     return PostgresTaskRepository(create_session_factory(engine))
 
 
+@pytest_asyncio.fixture
+async def task_panel_store(engine: AsyncEngine) -> PostgresTaskPanelRepository:
+    return PostgresTaskPanelRepository(create_session_factory(engine))
+
+
 def capture_command(
     access_context: AccessContext, *, update_id: int
 ) -> CaptureTextCommand:
@@ -119,15 +126,101 @@ def capture_command(
 
 
 def task_command(
-    access_context: AccessContext, *, source_capture_event_id: UUID
+    access_context: AccessContext,
+    *,
+    source_capture_event_id: UUID,
+    title: str = "  task title  ",
+    created_at: datetime = NOW,
 ) -> CreateTaskCommand:
     return CreateTaskCommand(
         access_context=access_context,
-        title="  task title  ",
+        title=title,
         source_capture_event_id=source_capture_event_id,
-        created_at=NOW,
+        created_at=created_at,
         trace_id="1" * 32,
     )
+
+
+@pytest.mark.asyncio
+async def test_task_panel_lists_oldest_open_tasks_and_completes_own_task(
+    capture_repository: PostgresCaptureEventRepository,
+    task_repository: PostgresTaskRepository,
+    task_panel_store: PostgresTaskPanelRepository,
+    schema_engine: AsyncEngine,
+) -> None:
+    old_source = await capture_repository.create(
+        capture_command(ACCESS_A, update_id=180)
+    )
+    new_source = await capture_repository.create(
+        capture_command(ACCESS_A, update_id=181)
+    )
+    old_task = await task_repository.create(
+        task_command(
+            ACCESS_A,
+            source_capture_event_id=old_source.id,
+            title="old task",
+            created_at=NOW,
+        )
+    )
+    new_task = await task_repository.create(
+        task_command(
+            ACCESS_A,
+            source_capture_event_id=new_source.id,
+            title="new task",
+            created_at=NOW + timedelta(minutes=1),
+        )
+    )
+
+    listed = await task_panel_store.list_inbox(ACCESS_A, 10)
+    changed = await task_panel_store.complete(
+        CompleteTaskCommand(
+            access_context=ACCESS_A,
+            task_id=old_task.id,
+            completed_at=NOW + timedelta(hours=1),
+            trace_id="2" * 32,
+        )
+    )
+    refreshed = await task_panel_store.list_inbox(ACCESS_A, 10)
+
+    assert [task.id for task in listed] == [old_task.id, new_task.id]
+    assert changed is True
+    assert [task.id for task in refreshed] == [new_task.id]
+    async with create_session_factory(schema_engine)() as session:
+        completed = await session.get(TaskModel, old_task.id)
+    assert completed is not None
+    assert completed.status is TaskStatus.COMPLETED
+    assert completed.updated_at == NOW + timedelta(hours=1)
+    assert completed.trace_id == "1" * 32
+
+
+@pytest.mark.asyncio
+async def test_task_panel_cannot_list_or_complete_another_space_task(
+    capture_repository: PostgresCaptureEventRepository,
+    task_repository: PostgresTaskRepository,
+    task_panel_store: PostgresTaskPanelRepository,
+    schema_engine: AsyncEngine,
+) -> None:
+    source_b = await capture_repository.create(capture_command(ACCESS_B, update_id=190))
+    task_b = await task_repository.create(
+        task_command(ACCESS_B, source_capture_event_id=source_b.id, title="secret b")
+    )
+
+    listed = await task_panel_store.list_inbox(ACCESS_A, 10)
+    changed = await task_panel_store.complete(
+        CompleteTaskCommand(
+            access_context=ACCESS_A,
+            task_id=task_b.id,
+            completed_at=NOW + timedelta(hours=1),
+            trace_id="2" * 32,
+        )
+    )
+
+    assert listed == ()
+    assert changed is False
+    async with create_session_factory(schema_engine)() as session:
+        untouched = await session.get(TaskModel, task_b.id)
+    assert untouched is not None
+    assert untouched.status is TaskStatus.INBOX
 
 
 @pytest.mark.asyncio
@@ -338,20 +431,25 @@ async def test_task_tables_have_forced_row_level_security(
 
 
 @pytest.mark.asyncio
-async def test_app_role_cannot_update_or_delete_task_tables(
+async def test_app_role_can_update_only_tasks_and_cannot_delete_task_tables(
     session: AsyncSession,
 ) -> None:
+    task_update_allowed = await session.scalar(
+        text("SELECT has_table_privilege(current_user, 'tasks', 'UPDATE')")
+    )
+    provenance_update_allowed = await session.scalar(
+        text("SELECT has_table_privilege(current_user, 'task_provenance', 'UPDATE')")
+    )
+
+    assert task_update_allowed is True
+    assert provenance_update_allowed is False
+
     for table_name in ("tasks", "task_provenance"):
-        update_allowed = await session.scalar(
-            text("SELECT has_table_privilege(current_user, :table_name, 'UPDATE')"),
-            {"table_name": table_name},
-        )
         delete_allowed = await session.scalar(
             text("SELECT has_table_privilege(current_user, :table_name, 'DELETE')"),
             {"table_name": table_name},
         )
 
-        assert update_allowed is False
         assert delete_allowed is False
 
 
