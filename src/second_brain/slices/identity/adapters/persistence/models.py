@@ -130,7 +130,7 @@ class TelegramUpdateReceipt(Base):
             "result_kind IN "
             "('captured', 'enrolled', 'enrollment_rejected', "
             "'known_user_started', 'panel_shown', 'task_mode_set', "
-            "'task_mode_cancelled', 'ignored')",
+            "'task_mode_cancelled', 'tasks_listed', 'task_completed', 'ignored')",
             name="ck_telegram_update_receipts_result_kind",
         ),
         CheckConstraint(

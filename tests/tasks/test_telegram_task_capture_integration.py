@@ -131,6 +131,7 @@ def processor(engine: AsyncEngine) -> LocalUpdateProcessor:
         "test-key",
         transaction_port,
         transaction_port,
+        transaction_port,
     )
 
 
@@ -206,6 +207,38 @@ async def test_duplicate_callback_is_idempotent_and_keeps_one_pending_mode(
     assert first.trace_id == duplicate.trace_id
     assert await count(schema_engine, PendingCaptureSelectionModel) == 1
     assert await count(schema_engine, TelegramUpdateReceipt) == 1
+
+
+@pytest.mark.asyncio
+async def test_task_list_and_completion_are_atomic_and_idempotent(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    app = processor(engine)
+    await app.process(callback(116, "task:await_text"))
+    await app.process(text_update(117, "finish me"))
+    async with create_session_factory(schema_engine)() as session:
+        task = await session.scalar(select(TaskModel))
+    assert task is not None
+
+    listed = await app.process(callback(118, "tasks:list"))
+    completion_update = callback(119, f"tasks:complete:{task.id}")
+    completed = await app.process(completion_update)
+    duplicate = await app.process(completion_update)
+
+    assert listed.kind is AcknowledgementKind.TASKS_LISTED
+    assert listed.task_panel is not None
+    assert [item.id for item in listed.task_panel.items] == [task.id]
+    assert completed.kind is AcknowledgementKind.TASK_COMPLETED
+    assert completed.task_panel is not None
+    assert completed.task_panel.completion_changed is True
+    assert completed.task_panel.items == ()
+    assert duplicate.kind is AcknowledgementKind.TASK_COMPLETED
+    assert duplicate.fresh is False
+    assert duplicate.task_panel is None
+    async with create_session_factory(schema_engine)() as session:
+        stored = await session.get(TaskModel, task.id)
+    assert stored is not None
+    assert stored.status is TaskStatus.COMPLETED
 
 
 @pytest.mark.asyncio

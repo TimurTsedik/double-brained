@@ -12,25 +12,33 @@ from second_brain.slices.capture.domain.entities import CaptureEvent
 from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresUpdateTransaction,
 )
-from second_brain.slices.identity.application.contracts import UpdateTransaction
+from second_brain.slices.identity.application.contracts import (
+    AccessContext,
+    UpdateTransaction,
+)
 from second_brain.slices.knowledge.adapters.persistence.repository import (
     PostgresKnowledgeWriter,
 )
 from second_brain.slices.tasks.adapters.persistence.repository import (
     PostgresPendingCaptureSelectionWriter,
+    PostgresTaskPanelWriter,
     PostgresTaskWriter,
 )
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
+    CompleteTaskCommand,
     ConsumePendingTaskTextCommand,
     SetAwaitingTaskCommand,
     SetPendingCaptureSelectionCommand,
     TaskModePort,
+    TaskPanelPort,
+    TaskPanelResult,
 )
 from second_brain.slices.tasks.application.task_capture import TaskCapture
+from second_brain.slices.tasks.application.task_panel import TaskPanel
 
 
-class TaskCaptureInTransaction(CaptureTextPort, TaskModePort):
+class TaskCaptureInTransaction(CaptureTextPort, TaskModePort, TaskPanelPort):
     """Bootstrap-only composition for receipt, source, task, and mode writes."""
 
     async def capture(
@@ -68,6 +76,20 @@ class TaskCaptureInTransaction(CaptureTextPort, TaskModePort):
     ) -> None:
         task_capture = _typed_task_capture(_active_session(transaction))
         await task_capture.cancel(command)
+
+    async def list_open(
+        self, access_context: AccessContext, transaction: UpdateTransaction
+    ) -> TaskPanelResult:
+        return await TaskPanel(
+            PostgresTaskPanelWriter(_active_session(transaction))
+        ).list_open(access_context)
+
+    async def complete(
+        self, command: CompleteTaskCommand, transaction: UpdateTransaction
+    ) -> TaskPanelResult:
+        return await TaskPanel(
+            PostgresTaskPanelWriter(_active_session(transaction))
+        ).complete(command)
 
 
 def _active_session(transaction: UpdateTransaction) -> AsyncSession:

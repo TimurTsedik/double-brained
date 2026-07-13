@@ -38,6 +38,7 @@ async def run_local_polling(settings: Settings) -> None:
             settings.invite_token_pepper_key_id,
             task_capture,
             task_capture,
+            task_capture,
         )
         poller = LocalPoller(AiogramGateway(bot, bot_user.id), processor, lock)
         while True:

@@ -19,7 +19,10 @@ from second_brain.slices.identity.ports.repositories import (
 )
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
+    CompleteTaskCommand,
     SetAwaitingTaskCommand,
+    TaskListItem,
+    TaskPanelResult,
 )
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
@@ -370,6 +373,28 @@ class RecordingTaskModePort:
         self.cancel_commands.append(command)
 
 
+class RecordingTaskPanelPort:
+    def __init__(self) -> None:
+        self.list_access: list[AccessContext] = []
+        self.complete_commands: list[CompleteTaskCommand] = []
+        self.item = TaskListItem(
+            id=UUID("00000000-0000-0000-0000-000000000301"),
+            title="private task",
+        )
+
+    async def list_open(
+        self, access_context: AccessContext, _transaction: object
+    ) -> TaskPanelResult:
+        self.list_access.append(access_context)
+        return TaskPanelResult(items=(self.item,), completion_changed=None)
+
+    async def complete(
+        self, command: CompleteTaskCommand, _transaction: object
+    ) -> TaskPanelResult:
+        self.complete_commands.append(command)
+        return TaskPanelResult(items=(), completion_changed=True)
+
+
 def private_callback(update_id: int, data: str) -> TelegramUpdate:
     return TelegramUpdate(
         1,
@@ -380,6 +405,71 @@ def private_callback(update_id: int, data: str) -> TelegramUpdate:
         callback_query_id=f"callback-{update_id}",
         callback_data=data,
     )
+
+
+@pytest.mark.asyncio
+async def test_known_private_tasks_list_returns_transient_task_panel() -> None:
+    task_panel_port = RecordingTaskPanelPort()
+    processor = LocalUpdateProcessor(
+        KnownActorStore(),
+        FixedClock(),
+        b"test-pepper",
+        "test-key",
+        task_panel_port=task_panel_port,
+    )
+
+    result = await processor.process(private_callback(200, "tasks:list"))
+
+    assert result.kind is AcknowledgementKind.TASKS_LISTED
+    assert result.task_panel == TaskPanelResult(
+        items=(task_panel_port.item,), completion_changed=None
+    )
+    assert task_panel_port.list_access == [ACCESS]
+
+
+@pytest.mark.asyncio
+async def test_valid_task_completion_uses_trusted_access_context() -> None:
+    task_panel_port = RecordingTaskPanelPort()
+    processor = LocalUpdateProcessor(
+        KnownActorStore(),
+        FixedClock(),
+        b"test-pepper",
+        "test-key",
+        task_panel_port=task_panel_port,
+    )
+
+    result = await processor.process(
+        private_callback(201, f"tasks:complete:{task_panel_port.item.id}")
+    )
+
+    assert result.kind is AcknowledgementKind.TASK_COMPLETED
+    assert result.task_panel == TaskPanelResult(items=(), completion_changed=True)
+    assert len(task_panel_port.complete_commands) == 1
+    command = task_panel_port.complete_commands[0]
+    assert command.access_context == ACCESS
+    assert command.task_id == task_panel_port.item.id
+    assert command.completed_at == NOW
+
+
+@pytest.mark.asyncio
+async def test_malformed_task_completion_returns_safe_own_list() -> None:
+    task_panel_port = RecordingTaskPanelPort()
+    processor = LocalUpdateProcessor(
+        KnownActorStore(),
+        FixedClock(),
+        b"test-pepper",
+        "test-key",
+        task_panel_port=task_panel_port,
+    )
+
+    result = await processor.process(private_callback(202, "tasks:complete:not-a-uuid"))
+
+    assert result.kind is AcknowledgementKind.TASK_COMPLETED
+    assert result.task_panel == TaskPanelResult(
+        items=(task_panel_port.item,), completion_changed=False
+    )
+    assert task_panel_port.complete_commands == []
+    assert task_panel_port.list_access == [ACCESS]
 
 
 @pytest.mark.asyncio

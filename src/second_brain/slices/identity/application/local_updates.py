@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from hmac import digest
+from uuid import UUID
 
 from second_brain.shared.clock import Clock
 from second_brain.shared.trace import TraceContext
@@ -18,9 +19,12 @@ from second_brain.slices.identity.ports.repositories import (
 )
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
+    CompleteTaskCommand,
     SetAwaitingTaskCommand,
     SetPendingCaptureSelectionCommand,
     TaskModePort,
+    TaskPanelPort,
+    TaskPanelResult,
 )
 
 MAX_ENROLLMENT_ATTEMPTS = 5
@@ -35,6 +39,8 @@ class AcknowledgementKind(StrEnum):
     PANEL_SHOWN = "panel_shown"
     TASK_MODE_CANCELLED = "task_mode_cancelled"
     TASK_MODE_SET = "task_mode_set"
+    TASK_COMPLETED = "task_completed"
+    TASKS_LISTED = "tasks_listed"
     IGNORED = "ignored"
 
 
@@ -44,6 +50,12 @@ class UpdateResult:
     trace_id: str
     span_id: str
     fresh: bool
+    task_panel: TaskPanelResult | None = None
+
+
+@dataclass
+class _TransientUpdatePayload:
+    task_panel: TaskPanelResult | None = None
 
 
 class LocalUpdateProcessor:
@@ -55,6 +67,7 @@ class LocalUpdateProcessor:
         pepper_key_id: str,
         capture_text_port: CaptureTextPort | None = None,
         task_mode_port: TaskModePort | None = None,
+        task_panel_port: TaskPanelPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -62,14 +75,16 @@ class LocalUpdateProcessor:
         self._pepper_key_id = pepper_key_id
         self._capture_text_port = capture_text_port
         self._task_mode_port = task_mode_port
+        self._task_panel_port = task_panel_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
+        payload = _TransientUpdatePayload()
         receipt = await self._store.process_once(
             update.bot_id,
             update.update_id,
             now,
-            lambda transaction: self._process_new(transaction, update, now),
+            lambda transaction: self._process_new(transaction, update, now, payload),
         )
         if receipt.existing:
             context = TraceContext(receipt.trace_id, "1" * 16).new_attempt()
@@ -82,6 +97,7 @@ class LocalUpdateProcessor:
             context.trace_id,
             context.span_id,
             fresh=not receipt.existing,
+            task_panel=None if receipt.existing else payload.task_panel,
         )
 
     async def _process_new(
@@ -89,9 +105,12 @@ class LocalUpdateProcessor:
         transaction: UpdateTransaction,
         update: TelegramUpdate,
         now: datetime,
+        payload: _TransientUpdatePayload,
     ) -> NewUpdateResult:
         context = TraceContext.new_root()
-        kind = await self._process_after_receipt_lock(transaction, update, context, now)
+        kind = await self._process_after_receipt_lock(
+            transaction, update, context, now, payload
+        )
         return NewUpdateResult(kind, context.trace_id, context.span_id)
 
     async def _process_after_receipt_lock(
@@ -100,12 +119,15 @@ class LocalUpdateProcessor:
         update: TelegramUpdate,
         context: TraceContext,
         now: datetime,
+        payload: _TransientUpdatePayload,
     ) -> str:
         if not update.is_private or update.telegram_user_id is None:
             return AcknowledgementKind.IGNORED
 
         if update.callback_query_id is not None:
-            return await self._process_callback(transaction, update, context, now)
+            return await self._process_callback(
+                transaction, update, context, now, payload
+            )
 
         command, start_token = _parse_start(update.text)
         if command == "start":
@@ -143,6 +165,7 @@ class LocalUpdateProcessor:
         update: TelegramUpdate,
         context: TraceContext,
         now: datetime,
+        payload: _TransientUpdatePayload,
     ) -> str:
         selections = {
             "capture:note": "note",
@@ -151,19 +174,62 @@ class LocalUpdateProcessor:
             "capture:decision": "decision",
             "capture:question": "question",
         }
-        if update.callback_data not in {
-            *selections,
-            "capture:cancel",
-            "task:await_text",
-            "task:cancel",
-        }:
+        is_task_completion = (
+            update.callback_data is not None
+            and update.callback_data.startswith("tasks:complete:")
+        )
+        if (
+            update.callback_data
+            not in {
+                *selections,
+                "capture:cancel",
+                "task:await_text",
+                "task:cancel",
+                "tasks:list",
+            }
+            and not is_task_completion
+        ):
             return AcknowledgementKind.IGNORED
         if update.telegram_user_id is None:
             return AcknowledgementKind.IGNORED
         access_context = await ResolveAccessContext(transaction).execute(
             update.telegram_user_id
         )
-        if access_context is None or self._task_mode_port is None:
+        if access_context is None:
+            return AcknowledgementKind.IGNORED
+        if update.callback_data == "tasks:list":
+            if self._task_panel_port is None:
+                return AcknowledgementKind.IGNORED
+            payload.task_panel = await self._task_panel_port.list_open(
+                access_context, transaction
+            )
+            return AcknowledgementKind.TASKS_LISTED
+        if is_task_completion:
+            if self._task_panel_port is None or update.callback_data is None:
+                return AcknowledgementKind.IGNORED
+            raw_task_id = update.callback_data.removeprefix("tasks:complete:")
+            try:
+                task_id = UUID(raw_task_id)
+            except ValueError:
+                listed = await self._task_panel_port.list_open(
+                    access_context, transaction
+                )
+                payload.task_panel = TaskPanelResult(
+                    items=listed.items,
+                    completion_changed=False,
+                )
+            else:
+                payload.task_panel = await self._task_panel_port.complete(
+                    CompleteTaskCommand(
+                        access_context=access_context,
+                        task_id=task_id,
+                        completed_at=now,
+                        trace_id=context.trace_id,
+                    ),
+                    transaction,
+                )
+            return AcknowledgementKind.TASK_COMPLETED
+        if self._task_mode_port is None:
             return AcknowledgementKind.IGNORED
         if update.callback_data == "task:await_text":
             await self._task_mode_port.set_awaiting_task(

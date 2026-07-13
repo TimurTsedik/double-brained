@@ -137,22 +137,35 @@ async def test_confirmed_reset_recreates_receipt_constraint_for_task_panel_resul
     )
 
     async with create_session_factory(schema_engine)() as owner_session:
-        owner_session.add(
-            TelegramUpdateReceipt(
-                bot_id=1,
-                update_id=1,
-                result_kind="panel_shown",
-                trace_id="1" * 32,
-                created_at=TIMESTAMP,
-            )
+        owner_session.add_all(
+            [
+                TelegramUpdateReceipt(
+                    bot_id=1,
+                    update_id=1,
+                    result_kind="tasks_listed",
+                    trace_id="1" * 32,
+                    created_at=TIMESTAMP,
+                ),
+                TelegramUpdateReceipt(
+                    bot_id=1,
+                    update_id=2,
+                    result_kind="task_completed",
+                    trace_id="2" * 32,
+                    created_at=TIMESTAMP,
+                ),
+            ]
         )
         await owner_session.commit()
 
-        result_kind = await owner_session.scalar(
-            select(TelegramUpdateReceipt.result_kind)
-        )
+        result_kinds = (
+            await owner_session.scalars(
+                select(TelegramUpdateReceipt.result_kind).order_by(
+                    TelegramUpdateReceipt.update_id
+                )
+            )
+        ).all()
 
-    assert result_kind == "panel_shown"
+    assert result_kinds == ["tasks_listed", "task_completed"]
 
 
 @pytest.mark.asyncio
