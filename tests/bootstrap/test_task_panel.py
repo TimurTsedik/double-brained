@@ -87,6 +87,7 @@ class PanelGateway:
         self._update = update
         self.panels: list[TelegramUpdate] = []
         self.selection_feedback: list[TelegramUpdate] = []
+        self.task_panels: list[tuple[TelegramUpdate, TaskPanelResult, bool]] = []
         self.answered_callbacks: list[TelegramUpdate] = []
         self.acknowledgements: list[AcknowledgementKind] = []
 
@@ -103,6 +104,14 @@ class PanelGateway:
 
     async def send_selection_feedback(self, update: TelegramUpdate) -> None:
         self.selection_feedback.append(update)
+
+    async def send_task_panel(
+        self,
+        update: TelegramUpdate,
+        result: TaskPanelResult,
+        is_completion: bool,
+    ) -> None:
+        self.task_panels.append((update, result, is_completion))
 
     async def answer_callback(self, update: TelegramUpdate) -> None:
         self.answered_callbacks.append(update)
@@ -151,15 +160,36 @@ class FailsOncePanelGateway(PanelGateway):
         await super().send_panel(update)
 
 
+class FailsOnceTaskPanelGateway(PanelGateway):
+    def __init__(self, update: TelegramUpdate) -> None:
+        super().__init__(update)
+        self.task_panel_attempts = 0
+
+    async def send_task_panel(
+        self,
+        update: TelegramUpdate,
+        result: TaskPanelResult,
+        is_completion: bool,
+    ) -> None:
+        self.task_panel_attempts += 1
+        if self.task_panel_attempts == 1:
+            raise RuntimeError("Telegram task panel send failed")
+        await super().send_task_panel(update, result, is_completion)
+
+
 async def no_sleep(_seconds: float) -> None:
     return None
 
 
-def update_result(kind: AcknowledgementKind, fresh: bool) -> object:
+def update_result(
+    kind: AcknowledgementKind,
+    fresh: bool,
+    task_panel: TaskPanelResult | None = None,
+) -> object:
     return type(
         "Result",
         (),
-        {"kind": kind, "fresh": fresh},
+        {"kind": kind, "fresh": fresh, "task_panel": task_panel},
     )()
 
 
@@ -238,6 +268,40 @@ async def test_fresh_note_selection_sends_feedback_once_and_duplicate_sends_none
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "is_completion"),
+    [
+        (AcknowledgementKind.TASKS_LISTED, False),
+        (AcknowledgementKind.TASK_COMPLETED, True),
+    ],
+)
+async def test_fresh_task_action_sends_panel_once(
+    kind: AcknowledgementKind, is_completion: bool
+) -> None:
+    update = private_callback(106, "tasks:list")
+    task_panel = TaskPanelResult(items=(), completion_changed=is_completion)
+    fresh_gateway = PanelGateway(update)
+
+    await LocalPoller(
+        fresh_gateway,
+        StaticProcessor(update_result(kind, True, task_panel)),
+        AcquiredPollerLock(),
+    ).run_once()
+
+    assert fresh_gateway.task_panels == [(update, task_panel, is_completion)]
+    assert fresh_gateway.acknowledgements == []
+
+    duplicate_gateway = PanelGateway(update)
+    await LocalPoller(
+        duplicate_gateway,
+        StaticProcessor(update_result(kind, False, None)),
+        AcquiredPollerLock(),
+    ).run_once()
+
+    assert duplicate_gateway.task_panels == []
+
+
+@pytest.mark.asyncio
 async def test_callback_spinner_is_answered_before_a_processor_retry() -> None:
     update = TelegramUpdate(
         1,
@@ -286,6 +350,27 @@ async def test_fresh_panel_send_retries_before_offset_advances() -> None:
     assert poller.offset == update.update_id + 1
 
 
+@pytest.mark.asyncio
+async def test_fresh_task_panel_send_retries_before_offset_advances() -> None:
+    update = private_callback(109, "tasks:list")
+    gateway = FailsOnceTaskPanelGateway(update)
+    task_panel = TaskPanelResult(items=(), completion_changed=None)
+
+    poller = LocalPoller(
+        gateway,
+        StaticProcessor(
+            update_result(AcknowledgementKind.TASKS_LISTED, True, task_panel)
+        ),
+        AcquiredPollerLock(),
+        sleep=no_sleep,
+    )
+    await poller.run_once()
+
+    assert gateway.task_panel_attempts == 2
+    assert gateway.task_panels == [(update, task_panel, False)]
+    assert poller.offset == update.update_id + 1
+
+
 class RecordingAiogramBot:
     def __init__(self) -> None:
         self.sent_messages: list[dict[str, Any]] = []
@@ -322,16 +407,78 @@ async def test_aiogram_gateway_sends_fixed_inline_task_panel_and_answers_callbac
     assert len(bot.sent_messages) == 1
     markup = bot.sent_messages[0]["reply_markup"]
     assert [button.callback_data for button in markup.inline_keyboard[0]] == [
+        "tasks:list",
+    ]
+    assert [button.callback_data for button in markup.inline_keyboard[1]] == [
         "capture:note",
         "capture:task",
         "capture:idea",
     ]
-    assert [button.callback_data for button in markup.inline_keyboard[1]] == [
+    assert [button.callback_data for button in markup.inline_keyboard[2]] == [
         "capture:decision",
         "capture:question",
         "capture:cancel",
     ]
     assert "task:await_text" not in repr(callback_update)
+
+
+@pytest.mark.asyncio
+async def test_aiogram_gateway_sends_numbered_open_tasks_with_completion_buttons() -> (
+    None
+):
+    bot = RecordingAiogramBot()
+    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    long_title = "x" * 161
+    first_id = UUID("00000000-0000-0000-0000-000000000301")
+    second_id = UUID("00000000-0000-0000-0000-000000000302")
+
+    await gateway.send_task_panel(
+        private_callback(107, "tasks:list"),
+        TaskPanelResult(
+            items=(
+                TaskListItem(first_id, "Купить молоко"),
+                TaskListItem(second_id, long_title),
+            ),
+            completion_changed=None,
+        ),
+        is_completion=False,
+    )
+
+    message = bot.sent_messages[0]
+    assert message["text"] == (
+        f"📋 Открытые задачи\n\n1. Купить молоко\n2. {'x' * 159}…"
+    )
+    assert "parse_mode" not in message
+    markup = message["reply_markup"]
+    assert [row[0].text for row in markup.inline_keyboard] == ["✅ 1", "✅ 2"]
+    assert [row[0].callback_data for row in markup.inline_keyboard] == [
+        f"tasks:complete:{first_id}",
+        f"tasks:complete:{second_id}",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changed", "prefix"),
+    [
+        (True, "✅ Выполнено."),
+        (False, "Задача уже закрыта или недоступна."),
+    ],
+)
+async def test_aiogram_gateway_sends_safe_completion_outcome(
+    changed: bool, prefix: str
+) -> None:
+    bot = RecordingAiogramBot()
+    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+
+    await gateway.send_task_panel(
+        private_callback(108, "tasks:complete:any"),
+        TaskPanelResult(items=(), completion_changed=changed),
+        is_completion=True,
+    )
+
+    assert bot.sent_messages[0]["text"] == (f"{prefix}\n\n📋 Открытых задач нет.")
+    assert "reply_markup" not in bot.sent_messages[0]
 
 
 @pytest.mark.asyncio

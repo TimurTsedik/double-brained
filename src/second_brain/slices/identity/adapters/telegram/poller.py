@@ -7,6 +7,7 @@ from second_brain.slices.identity.application.local_updates import (
     AcknowledgementKind,
     UpdateResult,
 )
+from second_brain.slices.tasks.application.contracts import TaskPanelResult
 
 
 class WebhookConfigured(RuntimeError):
@@ -33,6 +34,13 @@ class TelegramGateway(Protocol):
     async def send_panel(self, update: TelegramUpdate) -> None: ...
 
     async def send_selection_feedback(self, update: TelegramUpdate) -> None: ...
+
+    async def send_task_panel(
+        self,
+        update: TelegramUpdate,
+        result: TaskPanelResult,
+        is_completion: bool,
+    ) -> None: ...
 
     async def answer_callback(self, update: TelegramUpdate) -> None: ...
 
@@ -105,17 +113,31 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
-            if (
-                result.kind
-                in {
-                    AcknowledgementKind.TASK_MODE_SET,
-                    AcknowledgementKind.TASK_MODE_CANCELLED,
-                }
-                and getattr(result, "fresh", True)
-            ):
+            if result.kind in {
+                AcknowledgementKind.TASK_MODE_SET,
+                AcknowledgementKind.TASK_MODE_CANCELLED,
+            } and getattr(result, "fresh", True):
                 while True:
                     try:
                         await self._gateway.send_selection_feedback(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            if result.kind in {
+                AcknowledgementKind.TASKS_LISTED,
+                AcknowledgementKind.TASK_COMPLETED,
+            } and getattr(result, "fresh", True):
+                task_panel = getattr(result, "task_panel", None)
+                if task_panel is None:
+                    raise RuntimeError("fresh task action did not return a task panel")
+                while True:
+                    try:
+                        await self._gateway.send_task_panel(
+                            update,
+                            task_panel,
+                            result.kind is AcknowledgementKind.TASK_COMPLETED,
+                        )
                     except Exception:
                         await self._sleep(1.0)
                         continue
@@ -127,6 +149,8 @@ class LocalPoller:
                 AcknowledgementKind.PANEL_SHOWN,
                 AcknowledgementKind.TASK_MODE_SET,
                 AcknowledgementKind.TASK_MODE_CANCELLED,
+                AcknowledgementKind.TASKS_LISTED,
+                AcknowledgementKind.TASK_COMPLETED,
             }:
                 try:
                     await self._gateway.send_acknowledgement(update, result.kind)

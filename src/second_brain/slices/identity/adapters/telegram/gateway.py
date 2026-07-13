@@ -3,6 +3,9 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
+from second_brain.slices.tasks.application.contracts import TaskPanelResult
+
+MAX_TASK_TITLE_LENGTH = 160
 
 
 class AiogramGateway:
@@ -48,6 +51,11 @@ class AiogramGateway:
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
+                            text="📋 Мои задачи", callback_data="tasks:list"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
                             text="📝 Заметка", callback_data="capture:note"
                         ),
                         InlineKeyboardButton(
@@ -67,7 +75,7 @@ class AiogramGateway:
                         InlineKeyboardButton(
                             text="Отмена", callback_data="capture:cancel"
                         ),
-                    ]
+                    ],
                 ]
             ),
         )
@@ -79,6 +87,54 @@ class AiogramGateway:
         if text is None:
             return
         await self._bot.send_message(chat_id=update.telegram_user_id, text=text)
+
+    async def send_task_panel(
+        self,
+        update: TelegramUpdate,
+        result: TaskPanelResult,
+        is_completion: bool,
+    ) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+
+        if result.items:
+            task_text = "📋 Открытые задачи\n\n" + "\n".join(
+                f"{number}. {_truncate_title(item.title)}"
+                for number, item in enumerate(result.items, start=1)
+            )
+        else:
+            task_text = "📋 Открытых задач нет."
+
+        if is_completion:
+            outcome = (
+                "✅ Выполнено."
+                if result.completion_changed is True
+                else "Задача уже закрыта или недоступна."
+            )
+            task_text = f"{outcome}\n\n{task_text}"
+
+        if result.items:
+            reply_markup = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"✅ {number}",
+                            callback_data=f"tasks:complete:{item.id}",
+                        )
+                    ]
+                    for number, item in enumerate(result.items, start=1)
+                ]
+            )
+            await self._bot.send_message(
+                chat_id=update.telegram_user_id,
+                text=task_text,
+                reply_markup=reply_markup,
+            )
+            return
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=task_text,
+        )
 
     async def answer_callback(self, update: TelegramUpdate) -> None:
         if update.callback_query_id is None:
@@ -145,3 +201,9 @@ def _selection_feedback_text(callback_data: str | None) -> str | None:
         "task:cancel": "✖️ Отменено",
     }
     return messages.get(callback_data)
+
+
+def _truncate_title(title: str) -> str:
+    if len(title) <= MAX_TASK_TITLE_LENGTH:
+        return title
+    return f"{title[: MAX_TASK_TITLE_LENGTH - 1]}…"
