@@ -32,6 +32,10 @@ from second_brain.slices.identity.application.local_updates import (
     AcknowledgementKind,
     LocalUpdateProcessor,
 )
+from second_brain.slices.knowledge.adapters.persistence.models import (
+    NoteModel,
+    NoteProvenanceModel,
+)
 from second_brain.slices.tasks.adapters.persistence.models import (
     PendingCaptureSelectionModel,
     TaskModel,
@@ -205,15 +209,28 @@ async def test_duplicate_callback_is_idempotent_and_keeps_one_pending_mode(
 
 
 @pytest.mark.asyncio
-async def test_normal_text_without_mode_is_capture_only(
+async def test_normal_text_without_mode_creates_source_note_and_provenance(
     engine: AsyncEngine, schema_engine: AsyncEngine
 ) -> None:
     result = await processor(engine).process(text_update(120, "just remember this"))
 
     assert result.kind is AcknowledgementKind.CAPTURED
     assert await count(schema_engine, CaptureEventModel) == 1
+    assert await count(schema_engine, NoteModel) == 1
+    assert await count(schema_engine, NoteProvenanceModel) == 1
     assert await count(schema_engine, TaskModel) == 0
     assert await count(schema_engine, TaskProvenanceModel) == 0
+    async with create_session_factory(schema_engine)() as session:
+        note = await session.scalar(select(NoteModel))
+        source = await session.scalar(select(CaptureEventModel))
+        provenance = await session.scalar(select(NoteProvenanceModel))
+    assert note is not None
+    assert source is not None
+    assert provenance is not None
+    assert note.text == "just remember this"
+    assert note.user_space_id == source.user_space_id == provenance.user_space_id
+    assert note.source_capture_event_id == source.id
+    assert provenance.note_id == note.id
 
 
 @pytest.mark.asyncio
