@@ -27,4 +27,3 @@ class TaskPanel:
             items=refreshed.items,
             completion_changed=changed,
         )
-
