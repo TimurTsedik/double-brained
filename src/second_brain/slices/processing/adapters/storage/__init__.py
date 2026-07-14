@@ -1,0 +1,1 @@
+"""Controlled voice storage adapters."""

@@ -40,3 +40,25 @@ class FailProcessingStepCommand:
     step_id: UUID
     failed_at: datetime
     safe_error_code: str
+
+
+@dataclass(frozen=True)
+class StoreVoiceCommand:
+    access_context: AccessContext
+    capture_event_id: UUID
+    content: bytes = field(repr=False)
+    mime_type: str | None
+
+
+@dataclass(frozen=True)
+class StoredVoice:
+    storage_key: str = field(repr=False)
+    local_path: str = field(repr=False)
+    sha256: str
+    size: int
+    mime_type: str
+
+
+@dataclass(frozen=True)
+class TranscribeVoiceCommand:
+    local_path: str = field(repr=False)

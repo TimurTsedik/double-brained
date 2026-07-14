@@ -51,6 +51,8 @@ def test_settings_keeps_secrets_out_of_repr(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv(
         "SCHEMA_DATABASE_URL", "postgresql+asyncpg://schema-secret@example"
     )
+    monkeypatch.setenv("VOICE_STORAGE_ROOT", "/private/voice-storage")
+    monkeypatch.setenv("MLX_WHISPER_MODEL", "local-test-model")
 
     settings = Settings.from_environment()
 
@@ -59,6 +61,24 @@ def test_settings_keeps_secrets_out_of_repr(monkeypatch: pytest.MonkeyPatch) -> 
     assert "bot-secret" not in repr(settings)
     assert "pepper-secret" not in repr(settings)
     assert "schema-secret" not in repr(settings)
+    assert "/private/voice-storage" not in repr(settings)
+    assert settings.voice_storage_root == "/private/voice-storage"
+    assert settings.mlx_whisper_model == "local-test-model"
+
+
+def test_voice_settings_have_local_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://app@example")
+    monkeypatch.setenv("SCHEMA_DATABASE_URL", "postgresql+asyncpg://owner@example")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("INVITE_TOKEN_PEPPER", "pepper")
+    monkeypatch.setenv("INVITE_TOKEN_PEPPER_KEY_ID", "key-1")
+    monkeypatch.delenv("VOICE_STORAGE_ROOT", raising=False)
+    monkeypatch.delenv("MLX_WHISPER_MODEL", raising=False)
+
+    settings = Settings.from_environment()
+
+    assert settings.voice_storage_root == ".data/voice"
+    assert settings.mlx_whisper_model == "mlx-community/whisper-large-v3-turbo"
 
 
 def test_reset_command_requires_the_explicit_prototype_confirmation_flag() -> None:

@@ -31,3 +31,6 @@ dist/
 # Local tooling
 .uv-cache/
 .worktrees/
+
+# Local personal content
+.data/
