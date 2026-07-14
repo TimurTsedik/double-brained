@@ -14,6 +14,13 @@ from second_brain.slices.processing.application.contracts import (
     CompleteVoiceDownloadCommand,
     CompleteVoiceTranscriptionCommand,
 )
+from second_brain.slices.projects.adapters.persistence.repository import (
+    PostgresProjectContentLinkWriter,
+)
+from second_brain.slices.projects.application.contracts import (
+    InheritCaptureProjectLinksCommand,
+)
+from second_brain.slices.projects.domain.entities import ProjectContentKind
 from second_brain.slices.tasks.adapters.persistence.repository import (
     PostgresPendingCaptureSelectionWriter,
     PostgresTaskWriter,
@@ -61,7 +68,7 @@ class VoiceTranscriptionCompletionInTransaction:
                 target = await processing.lock_transcription_target(
                     command.access_context, command.step_id
                 )
-                await TaskCapture(
+                record = await TaskCapture(
                     PostgresPendingCaptureSelectionWriter(session),
                     PostgresTaskWriter(session),
                     PostgresKnowledgeWriter(session),
@@ -71,6 +78,16 @@ class VoiceTranscriptionCompletionInTransaction:
                         selection=PendingCaptureType(target.output_type.value),
                         text=command.draft.text,
                         source_capture_event_id=target.capture_event_id,
+                        created_at=command.completed_at,
+                        trace_id=target.trace_id,
+                    )
+                )
+                await PostgresProjectContentLinkWriter(session).inherit_capture_links(
+                    InheritCaptureProjectLinksCommand(
+                        access_context=command.access_context,
+                        source_capture_event_id=target.capture_event_id,
+                        content_kind=ProjectContentKind(target.output_type.value),
+                        content_id=record.id,
                         created_at=command.completed_at,
                         trace_id=target.trace_id,
                     )

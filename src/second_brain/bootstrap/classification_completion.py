@@ -24,6 +24,13 @@ from second_brain.slices.processing.adapters.persistence.repository import (
 from second_brain.slices.processing.application.contracts import (
     SucceedProcessingStepCommand,
 )
+from second_brain.slices.projects.adapters.persistence.repository import (
+    PostgresProjectContentLinkWriter,
+)
+from second_brain.slices.projects.application.contracts import (
+    InheritCaptureProjectLinksCommand,
+)
+from second_brain.slices.projects.domain.entities import ProjectContentKind
 from second_brain.slices.tasks.adapters.persistence.repository import (
     PostgresPendingCaptureSelectionWriter,
     PostgresTaskWriter,
@@ -108,6 +115,16 @@ async def _materialize_candidate(
             selection=PendingCaptureType(candidate.candidate_type.value),
             text=candidate.source_quote,
             source_capture_event_id=capture_event_id,
+            created_at=command.completed_at,
+            trace_id=trace_id,
+        )
+    )
+    await PostgresProjectContentLinkWriter(session).inherit_capture_links(
+        InheritCaptureProjectLinksCommand(
+            access_context=command.access_context,
+            source_capture_event_id=capture_event_id,
+            content_kind=ProjectContentKind(candidate.candidate_type.value),
+            content_id=record.id,
             created_at=command.completed_at,
             trace_id=trace_id,
         )

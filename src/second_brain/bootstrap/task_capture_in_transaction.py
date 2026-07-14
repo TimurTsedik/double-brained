@@ -27,6 +27,14 @@ from second_brain.slices.processing.application.contracts import (
     CreateTextProcessingRunCommand,
 )
 from second_brain.slices.processing.domain.entities import TranscriptionOutputType
+from second_brain.slices.projects.adapters.persistence.repository import (
+    PostgresProjectContentLinkWriter,
+)
+from second_brain.slices.projects.application.contracts import (
+    InheritCaptureProjectLinksCommand,
+    LinkCurrentProjectToCaptureCommand,
+)
+from second_brain.slices.projects.domain.entities import ProjectContentKind
 from second_brain.slices.tasks.adapters.persistence.repository import (
     PostgresPendingCaptureSelectionWriter,
     PostgresTaskPanelWriter,
@@ -55,6 +63,15 @@ class TaskCaptureInTransaction(CaptureTextPort, TaskModePort, TaskPanelPort):
     ) -> CaptureEvent:
         session = _active_session(transaction)
         source = await CaptureText(PostgresCaptureEventWriter(session)).execute(command)
+        project_links = PostgresProjectContentLinkWriter(session)
+        await project_links.link_current_to_capture(
+            LinkCurrentProjectToCaptureCommand(
+                access_context=command.access_context,
+                capture_event_id=source.id,
+                created_at=command.received_at,
+                trace_id=command.trace_id,
+            )
+        )
         task_capture = _typed_task_capture(session)
         record = await task_capture.consume_for_text(
             ConsumePendingTaskTextCommand(
@@ -68,6 +85,16 @@ class TaskCaptureInTransaction(CaptureTextPort, TaskModePort, TaskPanelPort):
             )
         )
         if record is not None:
+            await project_links.inherit_capture_links(
+                InheritCaptureProjectLinksCommand(
+                    access_context=command.access_context,
+                    source_capture_event_id=source.id,
+                    content_kind=_record_project_kind(record),
+                    content_id=record.id,
+                    created_at=command.received_at,
+                    trace_id=command.trace_id,
+                )
+            )
             await PostgresProcessingWriter(session).create_text_run(
                 CreateTextProcessingRunCommand(
                     access_context=command.access_context,
@@ -137,3 +164,17 @@ def _record_output_type(
     if isinstance(record, Decision):
         return TranscriptionOutputType.DECISION
     return TranscriptionOutputType.QUESTION
+
+
+def _record_project_kind(
+    record: Task | Note | Idea | Decision | Question,
+) -> ProjectContentKind:
+    if isinstance(record, Task):
+        return ProjectContentKind.TASK
+    if isinstance(record, Note):
+        return ProjectContentKind.NOTE
+    if isinstance(record, Idea):
+        return ProjectContentKind.IDEA
+    if isinstance(record, Decision):
+        return ProjectContentKind.DECISION
+    return ProjectContentKind.QUESTION

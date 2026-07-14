@@ -4,6 +4,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from second_brain.slices.capture.application.contracts import TelegramVoiceMetadata
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
+from second_brain.slices.projects.application.contracts import ProjectPanelResult
 from second_brain.slices.retrieval.application.contracts import (
     SearchPanelResult,
     SearchRecord,
@@ -12,6 +13,8 @@ from second_brain.slices.tasks.application.contracts import TaskPanelResult
 
 MAX_TASK_TITLE_LENGTH = 160
 MAX_SEARCH_EXCERPT_LENGTH = 240
+MAX_PROJECT_BUTTON_LENGTH = 48
+MAX_PROJECT_DISPLAY_LENGTH = 160
 
 
 class AiogramGateway:
@@ -61,6 +64,9 @@ class AiogramGateway:
                         ),
                         InlineKeyboardButton(
                             text="🔎 Поиск", callback_data="search:prompt"
+                        ),
+                        InlineKeyboardButton(
+                            text="📁 Проекты", callback_data="projects:list"
                         ),
                     ],
                     [
@@ -223,6 +229,83 @@ class AiogramGateway:
             ),
         )
 
+    async def send_project_name_prompt(
+        self,
+        update: TelegramUpdate,
+        name_required: bool,
+    ) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        text = (
+            "Название не может быть пустым. Напишите название проекта."
+            if name_required
+            else (
+                "📁 Напишите название проекта.\n\n"
+                "Следующее сообщение станет названием, а не новой записью."
+            )
+        )
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="✖️ Отмена", callback_data="projects:list"
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    async def send_project_panel(
+        self,
+        update: TelegramUpdate,
+        result: ProjectPanelResult,
+        kind: AcknowledgementKind,
+    ) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        current = next(
+            (item for item in result.items if item.id == result.current_project_id),
+            None,
+        )
+        current_name = (
+            "не выбран"
+            if current is None
+            else _truncate_project_name(current.name, MAX_PROJECT_DISPLAY_LENGTH)
+        )
+        announcement = _project_announcement(kind, result.action_succeeded)
+        panel_text = f"📁 Проекты\n\nТекущий: {current_name}"
+        if announcement is not None:
+            panel_text = f"{announcement}\n\n{panel_text}"
+        project_rows = [
+            [
+                InlineKeyboardButton(
+                    text=_project_button_text(
+                        item.name, item.id == result.current_project_id
+                    ),
+                    callback_data=f"projects:select:{item.id}",
+                )
+            ]
+            for item in result.items
+        ]
+        project_rows.append(
+            [
+                InlineKeyboardButton(
+                    text="➕ Новый проект", callback_data="projects:create"
+                ),
+                InlineKeyboardButton(
+                    text="✖️ Без проекта", callback_data="projects:clear"
+                ),
+            ]
+        )
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=panel_text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=project_rows),
+        )
+
     async def answer_callback(self, update: TelegramUpdate) -> None:
         if update.callback_query_id is None:
             return
@@ -326,3 +409,36 @@ def _search_excerpt(text: str) -> str:
     if len(compact) <= MAX_SEARCH_EXCERPT_LENGTH:
         return compact
     return f"{compact[: MAX_SEARCH_EXCERPT_LENGTH - 1]}…"
+
+
+def _project_announcement(
+    kind: AcknowledgementKind, action_succeeded: bool | None
+) -> str | None:
+    if kind is AcknowledgementKind.PROJECT_CREATED:
+        return "✅ Проект выбран."
+    if kind is AcknowledgementKind.PROJECT_SELECTED:
+        return (
+            "✅ Текущий проект изменён."
+            if action_succeeded
+            else "Проект недоступен. Контекст не изменён."
+        )
+    if kind is AcknowledgementKind.PROJECT_CLEARED:
+        return (
+            "✅ Контекст проекта очищен."
+            if action_succeeded
+            else "Проект уже не выбран."
+        )
+    return None
+
+
+def _project_button_text(name: str, current: bool) -> str:
+    prefix = "✓ " if current else ""
+    available = MAX_PROJECT_BUTTON_LENGTH - len(prefix)
+    return f"{prefix}{_truncate_project_name(name, available)}"
+
+
+def _truncate_project_name(name: str, limit: int) -> str:
+    compact = " ".join(name.split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[: limit - 1]}…"

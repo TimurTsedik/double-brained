@@ -105,23 +105,37 @@ def imports_internal_module_of_another_slice(
         return False
     if imported_parts[2] == module_path[1] or is_published_contract(imported_module):
         return False
-    return not is_documented_retrieval_read_model_import(module_path, imported_module)
+    return not is_documented_persistence_model_import(module_path, imported_module)
 
 
-def is_documented_retrieval_read_model_import(
+def is_documented_persistence_model_import(
     module_path: tuple[str, ...], imported_module: str
 ) -> bool:
-    return module_path == (
-        "slices",
-        "retrieval",
-        "adapters",
-        "persistence",
-        "repository",
-    ) and imported_module in {
-        "second_brain.slices.knowledge.adapters.persistence.models",
-        "second_brain.slices.tasks.adapters.persistence.models",
-        "second_brain.slices.tasks.domain.entities",
+    documented_imports: dict[tuple[str, ...], set[str]] = {
+        (
+            "slices",
+            "retrieval",
+            "adapters",
+            "persistence",
+            "repository",
+        ): {
+            "second_brain.slices.knowledge.adapters.persistence.models",
+            "second_brain.slices.tasks.adapters.persistence.models",
+            "second_brain.slices.tasks.domain.entities",
+        },
+        (
+            "slices",
+            "projects",
+            "adapters",
+            "persistence",
+            "repository",
+        ): {
+            "second_brain.slices.capture.adapters.persistence.models",
+            "second_brain.slices.knowledge.adapters.persistence.models",
+            "second_brain.slices.tasks.adapters.persistence.models",
+        },
     }
+    return imported_module in documented_imports.get(module_path, set())
 
 
 def identity_persistence_imports_capture_persistence(

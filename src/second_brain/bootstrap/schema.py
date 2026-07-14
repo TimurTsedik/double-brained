@@ -33,6 +33,16 @@ from second_brain.slices.processing.adapters.persistence.models import (
     ProcessingStepModel,
     TranscriptModel,
 )
+from second_brain.slices.projects.adapters.persistence.models import (
+    ProjectCaptureEventLinkModel,
+    ProjectContextModel,
+    ProjectDecisionLinkModel,
+    ProjectIdeaLinkModel,
+    ProjectModel,
+    ProjectNoteLinkModel,
+    ProjectQuestionLinkModel,
+    ProjectTaskLinkModel,
+)
 from second_brain.slices.retrieval.adapters.persistence.models import (
     PendingSearchModeModel,
 )
@@ -69,6 +79,16 @@ PROCESSING_TABLES = (
 )
 CLASSIFICATION_TABLES = (cast(Table, ClassificationResultModel.__table__),)
 PENDING_SEARCH_MODE_TABLE = cast(Table, PendingSearchModeModel.__table__)
+PROJECT_TABLES = (
+    cast(Table, ProjectModel.__table__),
+    cast(Table, ProjectContextModel.__table__),
+    cast(Table, ProjectCaptureEventLinkModel.__table__),
+    cast(Table, ProjectNoteLinkModel.__table__),
+    cast(Table, ProjectTaskLinkModel.__table__),
+    cast(Table, ProjectIdeaLinkModel.__table__),
+    cast(Table, ProjectDecisionLinkModel.__table__),
+    cast(Table, ProjectQuestionLinkModel.__table__),
+)
 
 
 async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") -> None:
@@ -78,6 +98,7 @@ async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") ->
     await _initialize_classification_schema(engine, schema_name)
     await _initialize_task_schema(engine, schema_name)
     await _initialize_knowledge_schema(engine, schema_name)
+    await _initialize_project_schema(engine, schema_name)
     await _initialize_retrieval_schema(engine, schema_name)
 
 
@@ -88,6 +109,7 @@ async def reset_prototype_schema(
         await reset_identity_prototype_schema(engine, confirm, schema_name)
         return
     await _drop_retrieval_schema(engine)
+    await _drop_project_schema(engine)
     await _drop_task_schema(engine)
     await _drop_knowledge_schema(engine)
     await _drop_classification_schema(engine)
@@ -99,6 +121,7 @@ async def reset_prototype_schema(
     await _initialize_classification_schema(engine, schema_name)
     await _initialize_task_schema(engine, schema_name)
     await _initialize_knowledge_schema(engine, schema_name)
+    await _initialize_project_schema(engine, schema_name)
     await _initialize_retrieval_schema(engine, schema_name)
 
 
@@ -188,6 +211,28 @@ async def _drop_knowledge_schema(engine: AsyncEngine) -> None:
         await connection.run_sync(_drop_knowledge_tables)
 
 
+async def _initialize_project_schema(engine: AsyncEngine, schema_name: str) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_create_project_tables)
+        for table_name in (
+            "projects",
+            "project_contexts",
+            "project_capture_event_links",
+            "project_note_links",
+            "project_task_links",
+            "project_idea_links",
+            "project_decision_links",
+            "project_question_links",
+        ):
+            await _configure_user_space_rls(connection, schema_name, table_name)
+        await _grant_project_privileges(connection, schema_name)
+
+
+async def _drop_project_schema(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_drop_project_tables)
+
+
 async def _initialize_retrieval_schema(engine: AsyncEngine, schema_name: str) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_create_pending_search_mode_table)
@@ -248,6 +293,16 @@ def _create_knowledge_tables(connection: Connection) -> None:
 
 def _drop_knowledge_tables(connection: Connection) -> None:
     for table in reversed(KNOWLEDGE_TABLES):
+        table.drop(connection, checkfirst=True)
+
+
+def _create_project_tables(connection: Connection) -> None:
+    for table in PROJECT_TABLES:
+        table.create(connection, checkfirst=True)
+
+
+def _drop_project_tables(connection: Connection) -> None:
+    for table in reversed(PROJECT_TABLES):
         table.drop(connection, checkfirst=True)
 
 
@@ -403,6 +458,41 @@ async def _grant_retrieval_privileges(
             f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table} "
             f"TO {APPLICATION_ROLE}"
         )
+    )
+
+
+async def _grant_project_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    schema = _quote_identifier(schema_name)
+    project_table = f'{schema}."projects"'
+    context_table = f'{schema}."project_contexts"'
+    link_tables = ", ".join(
+        f"{schema}.{_quote_identifier(table_name)}"
+        for table_name in (
+            "project_capture_event_links",
+            "project_note_links",
+            "project_task_links",
+            "project_idea_links",
+            "project_decision_links",
+            "project_question_links",
+        )
+    )
+    all_tables = f"{project_table}, {context_table}, {link_tables}"
+    await connection.execute(
+        text(f"REVOKE ALL PRIVILEGES ON TABLE {all_tables} FROM {APPLICATION_ROLE}")
+    )
+    await connection.execute(
+        text(f"GRANT SELECT, INSERT ON TABLE {project_table} TO {APPLICATION_ROLE}")
+    )
+    await connection.execute(
+        text(
+            f"GRANT SELECT, INSERT, UPDATE ON TABLE {context_table} "
+            f"TO {APPLICATION_ROLE}"
+        )
+    )
+    await connection.execute(
+        text(f"GRANT SELECT, INSERT ON TABLE {link_tables} TO {APPLICATION_ROLE}")
     )
 
 

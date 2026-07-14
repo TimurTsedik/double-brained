@@ -18,6 +18,12 @@ from second_brain.slices.processing.application.contracts import (
     CreateVoiceProcessingRunCommand,
 )
 from second_brain.slices.processing.domain.entities import TranscriptionOutputType
+from second_brain.slices.projects.adapters.persistence.repository import (
+    PostgresProjectContentLinkWriter,
+)
+from second_brain.slices.projects.application.contracts import (
+    LinkCurrentProjectToCaptureCommand,
+)
 from second_brain.slices.tasks.adapters.persistence.repository import (
     PostgresPendingCaptureSelectionWriter,
 )
@@ -47,6 +53,14 @@ class VoiceCaptureInTransaction(CaptureVoicePort):
         )
         source = await CaptureVoice(PostgresCaptureEventWriter(session)).execute(
             command
+        )
+        await PostgresProjectContentLinkWriter(session).link_current_to_capture(
+            LinkCurrentProjectToCaptureCommand(
+                access_context=command.access_context,
+                capture_event_id=source.id,
+                created_at=command.received_at,
+                trace_id=command.trace_id,
+            )
         )
         await PostgresProcessingWriter(session).create_voice_run(
             CreateVoiceProcessingRunCommand(

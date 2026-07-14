@@ -19,6 +19,15 @@ from second_brain.slices.identity.ports.repositories import (
     UpdateStore,
     UpdateTransaction,
 )
+from second_brain.slices.projects.application.contracts import (
+    BeginProjectCreationCommand,
+    CancelProjectCreationCommand,
+    ClearCurrentProjectCommand,
+    ConsumeProjectNameCommand,
+    ProjectPanelPort,
+    ProjectPanelResult,
+    SelectProjectCommand,
+)
 from second_brain.slices.retrieval.application.contracts import (
     ConsumeSearchQueryCommand,
     ExactSearchPort,
@@ -53,6 +62,12 @@ class AcknowledgementKind(StrEnum):
     SEARCH_MODE_CANCELLED = "search_mode_cancelled"
     SEARCH_MODE_SET = "search_mode_set"
     SEARCH_QUERY_REQUIRED = "search_query_required"
+    PROJECTS_LISTED = "projects_listed"
+    PROJECT_NAME_MODE_SET = "project_name_mode_set"
+    PROJECT_NAME_REQUIRED = "project_name_required"
+    PROJECT_CREATED = "project_created"
+    PROJECT_SELECTED = "project_selected"
+    PROJECT_CLEARED = "project_cleared"
     VOICE_QUEUED = "voice_queued"
     IGNORED = "ignored"
 
@@ -65,12 +80,14 @@ class UpdateResult:
     fresh: bool
     task_panel: TaskPanelResult | None = None
     search_panel: SearchPanelResult | None = None
+    project_panel: ProjectPanelResult | None = None
 
 
 @dataclass
 class _TransientUpdatePayload:
     task_panel: TaskPanelResult | None = None
     search_panel: SearchPanelResult | None = None
+    project_panel: ProjectPanelResult | None = None
 
 
 class LocalUpdateProcessor:
@@ -85,6 +102,7 @@ class LocalUpdateProcessor:
         task_panel_port: TaskPanelPort | None = None,
         exact_search_port: ExactSearchPort | None = None,
         capture_voice_port: CaptureVoicePort | None = None,
+        project_panel_port: ProjectPanelPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -95,6 +113,7 @@ class LocalUpdateProcessor:
         self._task_panel_port = task_panel_port
         self._exact_search_port = exact_search_port
         self._capture_voice_port = capture_voice_port
+        self._project_panel_port = project_panel_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -118,6 +137,7 @@ class LocalUpdateProcessor:
             fresh=not receipt.existing,
             task_panel=None if receipt.existing else payload.task_panel,
             search_panel=None if receipt.existing else payload.search_panel,
+            project_panel=None if receipt.existing else payload.project_panel,
         )
 
     async def _process_new(
@@ -166,6 +186,15 @@ class LocalUpdateProcessor:
         if update.voice is not None:
             if self._exact_search_port is not None:
                 await self._exact_search_port.cancel(access_context, transaction)
+            if self._project_panel_port is not None:
+                await self._project_panel_port.cancel_creation(
+                    CancelProjectCreationCommand(
+                        access_context=access_context,
+                        updated_at=now,
+                        trace_id=context.trace_id,
+                    ),
+                    transaction,
+                )
             if self._capture_voice_port is None:
                 raise RuntimeError("capture voice port is required for private voice")
             await self._capture_voice_port.capture(
@@ -184,6 +213,22 @@ class LocalUpdateProcessor:
 
         if update.text is None or update.text == "":
             return AcknowledgementKind.IGNORED
+
+        if self._project_panel_port is not None:
+            project_panel = await self._project_panel_port.consume_name(
+                ConsumeProjectNameCommand(
+                    access_context=access_context,
+                    name=update.text,
+                    created_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            if project_panel is not None:
+                payload.project_panel = project_panel
+                if project_panel.name_required:
+                    return AcknowledgementKind.PROJECT_NAME_REQUIRED
+                return AcknowledgementKind.PROJECT_CREATED
 
         if self._exact_search_port is not None:
             search_panel = await self._exact_search_port.consume_query(
@@ -234,6 +279,10 @@ class LocalUpdateProcessor:
             update.callback_data is not None
             and update.callback_data.startswith("tasks:complete:")
         )
+        is_project_selection = (
+            update.callback_data is not None
+            and update.callback_data.startswith("projects:select:")
+        )
         if (
             update.callback_data
             not in {
@@ -244,8 +293,12 @@ class LocalUpdateProcessor:
                 "tasks:list",
                 "search:prompt",
                 "search:cancel",
+                "projects:list",
+                "projects:create",
+                "projects:clear",
             }
             and not is_task_completion
+            and not is_project_selection
         ):
             return AcknowledgementKind.IGNORED
         if update.telegram_user_id is None:
@@ -255,6 +308,90 @@ class LocalUpdateProcessor:
         )
         if access_context is None:
             return AcknowledgementKind.IGNORED
+        if update.callback_data == "projects:list":
+            if self._project_panel_port is None:
+                return AcknowledgementKind.IGNORED
+            await self._project_panel_port.cancel_creation(
+                CancelProjectCreationCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            payload.project_panel = await self._project_panel_port.list_projects(
+                access_context, transaction
+            )
+            return AcknowledgementKind.PROJECTS_LISTED
+        if update.callback_data == "projects:create":
+            if self._project_panel_port is None:
+                return AcknowledgementKind.IGNORED
+            if self._task_mode_port is not None:
+                await self._task_mode_port.cancel(
+                    CancelPendingTaskCommand(
+                        access_context=access_context,
+                        updated_at=now,
+                        trace_id=context.trace_id,
+                    ),
+                    transaction,
+                )
+            if self._exact_search_port is not None:
+                await self._exact_search_port.cancel(access_context, transaction)
+            await self._project_panel_port.begin_creation(
+                BeginProjectCreationCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            return AcknowledgementKind.PROJECT_NAME_MODE_SET
+        if update.callback_data == "projects:clear":
+            if self._project_panel_port is None:
+                return AcknowledgementKind.IGNORED
+            payload.project_panel = await self._project_panel_port.clear(
+                ClearCurrentProjectCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            return AcknowledgementKind.PROJECT_CLEARED
+        if is_project_selection:
+            if self._project_panel_port is None or update.callback_data is None:
+                return AcknowledgementKind.IGNORED
+            await self._project_panel_port.cancel_creation(
+                CancelProjectCreationCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            raw_project_id = update.callback_data.removeprefix("projects:select:")
+            try:
+                project_id = UUID(raw_project_id)
+            except ValueError:
+                listed_projects = await self._project_panel_port.list_projects(
+                    access_context, transaction
+                )
+                payload.project_panel = ProjectPanelResult(
+                    items=listed_projects.items,
+                    current_project_id=listed_projects.current_project_id,
+                    action_succeeded=False,
+                )
+            else:
+                payload.project_panel = await self._project_panel_port.select(
+                    SelectProjectCommand(
+                        access_context=access_context,
+                        project_id=project_id,
+                        updated_at=now,
+                        trace_id=context.trace_id,
+                    ),
+                    transaction,
+                )
+            return AcknowledgementKind.PROJECT_SELECTED
         if update.callback_data == "search:prompt":
             if self._exact_search_port is None or self._task_mode_port is None:
                 return AcknowledgementKind.IGNORED
@@ -266,6 +403,15 @@ class LocalUpdateProcessor:
                 ),
                 transaction,
             )
+            if self._project_panel_port is not None:
+                await self._project_panel_port.cancel_creation(
+                    CancelProjectCreationCommand(
+                        access_context=access_context,
+                        updated_at=now,
+                        trace_id=context.trace_id,
+                    ),
+                    transaction,
+                )
             await self._exact_search_port.set_awaiting(
                 SetAwaitingSearchCommand(
                     access_context=access_context,
@@ -294,11 +440,11 @@ class LocalUpdateProcessor:
             try:
                 task_id = UUID(raw_task_id)
             except ValueError:
-                listed = await self._task_panel_port.list_open(
+                listed_tasks = await self._task_panel_port.list_open(
                     access_context, transaction
                 )
                 payload.task_panel = TaskPanelResult(
-                    items=listed.items,
+                    items=listed_tasks.items,
                     completion_changed=False,
                 )
             else:
@@ -316,6 +462,15 @@ class LocalUpdateProcessor:
             return AcknowledgementKind.IGNORED
         if self._exact_search_port is not None:
             await self._exact_search_port.cancel(access_context, transaction)
+        if self._project_panel_port is not None:
+            await self._project_panel_port.cancel_creation(
+                CancelProjectCreationCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
         if update.callback_data == "task:await_text":
             await self._task_mode_port.set_awaiting_task(
                 SetAwaitingTaskCommand(

@@ -194,6 +194,39 @@ def test_checker_allows_bootstrap_and_published_contract_imports(
     assert not violations, format_violations(violations)
 
 
+def test_checker_allows_only_the_typed_project_link_persistence_adapter(
+    tmp_path: Path,
+) -> None:
+    repository = "slices/projects/adapters/persistence/repository.py"
+    write_module(
+        tmp_path,
+        repository,
+        (
+            "from second_brain.slices.capture.adapters.persistence.models "
+            "import CaptureEventModel\n"
+            "from second_brain.slices.knowledge.adapters.persistence.models "
+            "import NoteModel\n"
+            "from second_brain.slices.tasks.adapters.persistence.models "
+            "import TaskModel\n"
+        ),
+    )
+    write_module(
+        tmp_path,
+        "slices/projects/application/leak.py",
+        (
+            "from second_brain.slices.tasks.adapters.persistence.models "
+            "import TaskModel\n"
+        ),
+    )
+
+    violations = list(find_violations(tmp_path))
+
+    paths = [
+        violation.path.relative_to(tmp_path).as_posix() for violation in violations
+    ]
+    assert paths == ["slices/projects/application/leak.py"]
+
+
 def test_real_package_obeys_import_boundaries() -> None:
     package_root = Path(__file__).parents[2] / "src" / "second_brain"
     violations = list(find_violations(package_root))

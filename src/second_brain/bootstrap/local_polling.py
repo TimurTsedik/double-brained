@@ -5,6 +5,9 @@ from aiogram import Bot
 from second_brain.bootstrap.exact_search_in_transaction import (
     ExactSearchInTransaction,
 )
+from second_brain.bootstrap.project_context_in_transaction import (
+    ProjectContextInTransaction,
+)
 from second_brain.bootstrap.settings import Settings
 from second_brain.bootstrap.task_capture_in_transaction import TaskCaptureInTransaction
 from second_brain.bootstrap.voice_capture_in_transaction import (
@@ -38,6 +41,7 @@ async def run_local_polling(settings: Settings) -> None:
         session_factory = create_session_factory(engine)
         task_capture = TaskCaptureInTransaction()
         exact_search = ExactSearchInTransaction()
+        project_context = ProjectContextInTransaction()
         processor = LocalUpdateProcessor(
             store=PostgresUpdateRepository(session_factory),
             clock=SystemClock(),
@@ -48,6 +52,7 @@ async def run_local_polling(settings: Settings) -> None:
             task_panel_port=task_capture,
             exact_search_port=exact_search,
             capture_voice_port=VoiceCaptureInTransaction(),
+            project_panel_port=project_context,
         )
         poller = LocalPoller(AiogramGateway(bot, bot_user.id), processor, lock)
         while True:

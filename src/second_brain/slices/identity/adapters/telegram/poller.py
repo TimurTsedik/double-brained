@@ -7,6 +7,7 @@ from second_brain.slices.identity.application.local_updates import (
     AcknowledgementKind,
     UpdateResult,
 )
+from second_brain.slices.projects.application.contracts import ProjectPanelResult
 from second_brain.slices.retrieval.application.contracts import SearchPanelResult
 from second_brain.slices.tasks.application.contracts import TaskPanelResult
 
@@ -57,6 +58,19 @@ class TelegramGateway(Protocol):
         self,
         update: TelegramUpdate,
         result: SearchPanelResult,
+    ) -> None: ...
+
+    async def send_project_name_prompt(
+        self,
+        update: TelegramUpdate,
+        name_required: bool,
+    ) -> None: ...
+
+    async def send_project_panel(
+        self,
+        update: TelegramUpdate,
+        result: ProjectPanelResult,
+        kind: AcknowledgementKind,
     ) -> None: ...
 
     async def answer_callback(self, update: TelegramUpdate) -> None: ...
@@ -208,6 +222,40 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
+            if result.kind in {
+                AcknowledgementKind.PROJECT_NAME_MODE_SET,
+                AcknowledgementKind.PROJECT_NAME_REQUIRED,
+            } and getattr(result, "fresh", True):
+                while True:
+                    try:
+                        await self._gateway.send_project_name_prompt(
+                            update,
+                            result.kind is AcknowledgementKind.PROJECT_NAME_REQUIRED,
+                        )
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            if result.kind in {
+                AcknowledgementKind.PROJECTS_LISTED,
+                AcknowledgementKind.PROJECT_CREATED,
+                AcknowledgementKind.PROJECT_SELECTED,
+                AcknowledgementKind.PROJECT_CLEARED,
+            } and getattr(result, "fresh", True):
+                project_panel = getattr(result, "project_panel", None)
+                if project_panel is None:
+                    raise RuntimeError(
+                        "fresh project action did not return a project panel"
+                    )
+                while True:
+                    try:
+                        await self._gateway.send_project_panel(
+                            update, project_panel, result.kind
+                        )
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             self.offset = update.update_id + 1
             if result.kind not in {
                 AcknowledgementKind.IGNORED,
@@ -221,6 +269,12 @@ class LocalPoller:
                 AcknowledgementKind.SEARCH_MODE_CANCELLED,
                 AcknowledgementKind.SEARCH_QUERY_REQUIRED,
                 AcknowledgementKind.SEARCH_COMPLETED,
+                AcknowledgementKind.PROJECTS_LISTED,
+                AcknowledgementKind.PROJECT_NAME_MODE_SET,
+                AcknowledgementKind.PROJECT_NAME_REQUIRED,
+                AcknowledgementKind.PROJECT_CREATED,
+                AcknowledgementKind.PROJECT_SELECTED,
+                AcknowledgementKind.PROJECT_CLEARED,
                 AcknowledgementKind.VOICE_QUEUED,
             }:
                 try:
