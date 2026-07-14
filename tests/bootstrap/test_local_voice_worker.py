@@ -7,8 +7,12 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from second_brain.bootstrap.local_voice_worker import process_access_once
+from second_brain.bootstrap.local_voice_worker import (
+    build_classification_model,
+    process_access_once,
+)
 from second_brain.bootstrap.schema import reset_prototype_schema
+from second_brain.bootstrap.settings import Settings
 from second_brain.bootstrap.voice_processing_completion import (
     VoiceDownloadCompletionInTransaction,
     VoiceTranscriptionCompletionInTransaction,
@@ -16,6 +20,9 @@ from second_brain.bootstrap.voice_processing_completion import (
 from second_brain.slices.capture.adapters.persistence.models import (
     CaptureEventModel,
     TelegramAttachmentModel,
+)
+from second_brain.slices.classification.adapters.openrouter.model import (
+    OpenRouterClassificationModel,
 )
 from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
@@ -72,6 +79,29 @@ ACCESS_B = AccessContext(
     UUID("00000000-0000-0000-0000-000000000012"),
 )
 TRACE_ID = "7" * 32
+
+
+def _settings(open_router_ai_key: str | None) -> Settings:
+    return Settings(
+        database_url="postgresql+asyncpg://app@example/database",
+        schema_database_url="postgresql+asyncpg://owner@example/database",
+        telegram_bot_token="bot-token",
+        invite_token_pepper=b"pepper",
+        invite_token_pepper_key_id="local-v1",
+        open_router_ai_key=open_router_ai_key,
+    )
+
+
+def test_worker_requires_openrouter_key_before_composition() -> None:
+    with pytest.raises(RuntimeError, match="OPEN_ROUTER_AI_KEY must be configured"):
+        build_classification_model(_settings(None))
+
+
+def test_worker_builds_openrouter_classifier_from_configured_key() -> None:
+    model = build_classification_model(_settings("private-openrouter-key"))
+
+    assert isinstance(model, OpenRouterClassificationModel)
+    assert "private-openrouter-key" not in repr(model)
 
 
 @pytest_asyncio.fixture(autouse=True)

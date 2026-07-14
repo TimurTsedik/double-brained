@@ -53,8 +53,7 @@ def test_settings_keeps_secrets_out_of_repr(monkeypatch: pytest.MonkeyPatch) -> 
     )
     monkeypatch.setenv("VOICE_STORAGE_ROOT", "/private/voice-storage")
     monkeypatch.setenv("MLX_WHISPER_MODEL", "local-test-model")
-    monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    monkeypatch.setenv("CLASSIFICATION_MODEL", "test-classifier")
+    monkeypatch.setenv("OPEN_ROUTER_AI_KEY", "openrouter-secret")
 
     settings = Settings.from_environment()
 
@@ -64,13 +63,15 @@ def test_settings_keeps_secrets_out_of_repr(monkeypatch: pytest.MonkeyPatch) -> 
     assert "pepper-secret" not in repr(settings)
     assert "schema-secret" not in repr(settings)
     assert "/private/voice-storage" not in repr(settings)
+    assert "openrouter-secret" not in repr(settings)
     assert settings.voice_storage_root == "/private/voice-storage"
     assert settings.mlx_whisper_model == "local-test-model"
-    assert settings.ollama_base_url == "http://127.0.0.1:11434"
-    assert settings.classification_model == "test-classifier"
+    assert settings.open_router_ai_key == "openrouter-secret"
 
 
-def test_voice_settings_have_local_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_voice_settings_have_local_defaults_and_optional_openrouter_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://app@example")
     monkeypatch.setenv("SCHEMA_DATABASE_URL", "postgresql+asyncpg://owner@example")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
@@ -78,15 +79,13 @@ def test_voice_settings_have_local_defaults(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("INVITE_TOKEN_PEPPER_KEY_ID", "key-1")
     monkeypatch.delenv("VOICE_STORAGE_ROOT", raising=False)
     monkeypatch.delenv("MLX_WHISPER_MODEL", raising=False)
-    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
-    monkeypatch.delenv("CLASSIFICATION_MODEL", raising=False)
+    monkeypatch.delenv("OPEN_ROUTER_AI_KEY", raising=False)
 
     settings = Settings.from_environment()
 
     assert settings.voice_storage_root == ".data/voice"
     assert settings.mlx_whisper_model == "mlx-community/whisper-large-v3-turbo"
-    assert settings.ollama_base_url == "http://127.0.0.1:11434"
-    assert settings.classification_model == "qwen3:4b"
+    assert settings.open_router_ai_key is None
 
 
 def test_reset_command_requires_the_explicit_prototype_confirmation_flag() -> None:

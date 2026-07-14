@@ -20,8 +20,8 @@ from second_brain.shared.clock import SystemClock
 from second_brain.slices.capture.adapters.persistence.repository import (
     PostgresVoiceSourceRepository,
 )
-from second_brain.slices.classification.adapters.ollama.model import (
-    OllamaClassificationModel,
+from second_brain.slices.classification.adapters.openrouter.model import (
+    OpenRouterClassificationModel,
 )
 from second_brain.slices.classification.application.extraction import ClassifySource
 from second_brain.slices.identity.adapters.persistence.database import (
@@ -64,6 +64,13 @@ class StepWorker(Protocol):
     ) -> bool: ...
 
 
+def build_classification_model(settings: Settings) -> OpenRouterClassificationModel:
+    api_key = settings.open_router_ai_key
+    if api_key is None:
+        raise RuntimeError("OPEN_ROUTER_AI_KEY must be configured")
+    return OpenRouterClassificationModel(api_key=api_key)
+
+
 async def process_access_once(
     *,
     access_context: AccessContext,
@@ -98,6 +105,7 @@ async def process_access_once(
 
 
 async def run_local_voice_worker(settings: Settings) -> None:
+    classification_model = build_classification_model(settings)
     engine = create_database_engine(settings.database_url)
     bot: Bot | None = None
     try:
@@ -124,12 +132,7 @@ async def run_local_voice_worker(settings: Settings) -> None:
         classification_worker = ClassificationWorker(
             queue=processing,
             source_reader=PostgresClassificationSourceReader(session_factory),
-            classifier=ClassifySource(
-                OllamaClassificationModel(
-                    settings.ollama_base_url,
-                    settings.classification_model,
-                )
-            ),
+            classifier=ClassifySource(classification_model),
             completion=ClassificationCompletionInTransaction(session_factory),
         )
         notifier = AiogramVoiceNotifier(bot)
