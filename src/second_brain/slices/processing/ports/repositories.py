@@ -62,6 +62,10 @@ class ProcessingRepository(Protocol):
         self, access_context: AccessContext, step_id: UUID
     ) -> ProcessingCompletionTarget: ...
 
+    async def lock_indexing_target(
+        self, access_context: AccessContext, step_id: UUID
+    ) -> ProcessingCompletionTarget: ...
+
     async def complete_voice_transcription(
         self, command: CompleteVoiceTranscriptionCommand
     ) -> ProcessingStep: ...

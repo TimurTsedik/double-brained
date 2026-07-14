@@ -35,6 +35,7 @@ def test_processing_enums_are_fixed() -> None:
         "audio_download",
         "transcription",
         "classification",
+        "indexing",
     ]
     assert [output.value for output in TranscriptionOutputType] == [
         "note",

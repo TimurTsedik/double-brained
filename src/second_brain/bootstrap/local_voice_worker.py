@@ -11,6 +11,9 @@ from second_brain.bootstrap.classification_source import (
     PostgresClassificationSourceReader,
 )
 from second_brain.bootstrap.classification_worker import ClassificationWorker
+from second_brain.bootstrap.indexing_completion import IndexingCompletionInTransaction
+from second_brain.bootstrap.indexing_source import PostgresIndexingSourceReader
+from second_brain.bootstrap.indexing_worker import IndexingWorker
 from second_brain.bootstrap.settings import Settings
 from second_brain.bootstrap.voice_processing_completion import (
     VoiceDownloadCompletionInTransaction,
@@ -56,6 +59,8 @@ from second_brain.slices.processing.application.contracts import (
 from second_brain.slices.processing.application.voice_worker import VoiceWorker
 from second_brain.slices.processing.ports.repositories import ProcessingRepository
 from second_brain.slices.processing.ports.voice import ProcessingNotifier
+from second_brain.slices.retrieval.adapters.embedding.e5 import E5EmbeddingModel
+from second_brain.slices.retrieval.application.indexing import IndexSource
 
 
 class StepWorker(Protocol):
@@ -77,13 +82,15 @@ async def process_access_once(
     now: datetime,
     worker: StepWorker,
     classification_worker: StepWorker,
+    indexing_worker: StepWorker,
     processing_repository: ProcessingRepository,
     identity_repository: WorkerIdentityPort,
     notifier: ProcessingNotifier,
 ) -> bool:
     worked = await worker.process_once(access_context, now)
     classified = await classification_worker.process_once(access_context, now)
-    worked = worked or classified
+    indexed = await indexing_worker.process_once(access_context, now)
+    worked = worked or classified or indexed
     notice = await processing_repository.claim_due_notice(access_context, now)
     if notice is None:
         return worked
@@ -135,6 +142,14 @@ async def run_local_voice_worker(settings: Settings) -> None:
             classifier=ClassifySource(classification_model),
             completion=ClassificationCompletionInTransaction(session_factory),
         )
+        # The E5 weights load lazily on the first indexing step, so the
+        # embedding model is not a startup dependency of the process.
+        indexing_worker = IndexingWorker(
+            queue=processing,
+            source_reader=PostgresIndexingSourceReader(session_factory),
+            indexer=IndexSource(E5EmbeddingModel()),
+            completion=IndexingCompletionInTransaction(session_factory),
+        )
         notifier = AiogramVoiceNotifier(bot)
         clock = SystemClock()
         while True:
@@ -146,6 +161,7 @@ async def run_local_voice_worker(settings: Settings) -> None:
                         now=clock.now(),
                         worker=worker,
                         classification_worker=classification_worker,
+                        indexing_worker=indexing_worker,
                         processing_repository=processing,
                         identity_repository=identities,
                         notifier=notifier,

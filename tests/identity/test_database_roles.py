@@ -67,6 +67,24 @@ async def test_application_role_can_mutate_only_pending_search_state(
 
 
 @pytest.mark.asyncio
+async def test_application_role_can_only_read_and_append_semantic_index_tables(
+    session: AsyncSession,
+) -> None:
+    expected = {"SELECT": True, "INSERT": True, "UPDATE": False, "DELETE": False}
+
+    for table_name in ("semantic_documents", "indexing_targets"):
+        for privilege, allowed in expected.items():
+            actual = await session.scalar(
+                text(
+                    "SELECT has_table_privilege(current_user, :table_name, :privilege)"
+                ),
+                {"table_name": table_name, "privilege": privilege},
+            )
+
+            assert actual is allowed, (table_name, privilege)
+
+
+@pytest.mark.asyncio
 async def test_application_role_lacks_update_on_immutable_identity_tables(
     session: AsyncSession,
 ) -> None:

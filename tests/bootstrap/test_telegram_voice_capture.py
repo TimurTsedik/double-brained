@@ -348,7 +348,7 @@ async def test_fresh_voice_atomically_creates_source_attachment_run_steps_and_re
     assert await count(schema_engine, CaptureEventModel) == 1
     assert await count(schema_engine, TelegramAttachmentModel) == 1
     assert await count(schema_engine, ProcessingRunModel) == 1
-    assert await count(schema_engine, ProcessingStepModel) == 3
+    assert await count(schema_engine, ProcessingStepModel) == 4
     assert await count(schema_engine, TelegramUpdateReceipt) == 1
 
     async with create_session_factory(schema_engine)() as session:
@@ -467,7 +467,7 @@ async def test_voice_failure_rolls_back_every_row_and_retry_succeeds_once(
     assert await count(schema_engine, CaptureEventModel) == 1
     assert await count(schema_engine, TelegramAttachmentModel) == 1
     assert await count(schema_engine, ProcessingRunModel) == 1
-    assert await count(schema_engine, ProcessingStepModel) == 3
+    assert await count(schema_engine, ProcessingStepModel) == 4
     assert await count(schema_engine, TelegramUpdateReceipt) == 1
 
 

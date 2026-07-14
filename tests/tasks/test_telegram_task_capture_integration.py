@@ -165,20 +165,20 @@ async def test_button_then_text_atomically_creates_source_task_and_provenance(
     assert await count(schema_engine, TaskModel) == 1
     assert await count(schema_engine, TaskProvenanceModel) == 1
     assert await count(schema_engine, ProcessingRunModel) == 1
-    assert await count(schema_engine, ProcessingStepModel) == 1
+    assert await count(schema_engine, ProcessingStepModel) == 2
     async with create_session_factory(schema_engine)() as session:
         task = await session.scalar(select(TaskModel))
         source = await session.scalar(select(CaptureEventModel))
         provenance = await session.scalar(select(TaskProvenanceModel))
         mode = await session.scalar(select(PendingCaptureSelectionModel))
         run = await session.scalar(select(ProcessingRunModel))
-        step = await session.scalar(select(ProcessingStepModel))
+        steps = tuple(await session.scalars(select(ProcessingStepModel)))
     assert task is not None
     assert source is not None
     assert provenance is not None
     assert mode is not None
     assert run is not None
-    assert step is not None
+    assert len(steps) == 2
     assert task.title == "  Купить молоко  "
     assert task.status is TaskStatus.INBOX
     assert task.user_space_id == source.user_space_id == provenance.user_space_id
@@ -189,9 +189,13 @@ async def test_button_then_text_atomically_creates_source_task_and_provenance(
     assert run.capture_event_id == source.id
     assert run.output_type is TranscriptionOutputType.TASK
     assert run.trace_id == source.trace_id
-    assert step.processing_run_id == run.id
-    assert step.step_type is ProcessingStepType.CLASSIFICATION
-    assert step.status == ProcessingStepStatus.PENDING.value
+    assert {step.step_type for step in steps} == {
+        ProcessingStepType.CLASSIFICATION,
+        ProcessingStepType.INDEXING,
+    }
+    for step in steps:
+        assert step.processing_run_id == run.id
+        assert step.status == ProcessingStepStatus.PENDING.value
 
 
 @pytest.mark.asyncio
@@ -275,7 +279,7 @@ async def test_normal_text_without_mode_creates_source_note_and_provenance(
     assert await count(schema_engine, TaskModel) == 0
     assert await count(schema_engine, TaskProvenanceModel) == 0
     assert await count(schema_engine, ProcessingRunModel) == 1
-    assert await count(schema_engine, ProcessingStepModel) == 1
+    assert await count(schema_engine, ProcessingStepModel) == 2
     async with create_session_factory(schema_engine)() as session:
         note = await session.scalar(select(NoteModel))
         source = await session.scalar(select(CaptureEventModel))

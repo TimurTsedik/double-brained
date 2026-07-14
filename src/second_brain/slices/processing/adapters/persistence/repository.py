@@ -38,6 +38,12 @@ from second_brain.slices.processing.domain.entities import (
 MAX_ATTEMPTS = 3
 FIRST_RETRY_DELAY = timedelta(minutes=1)
 SECOND_RETRY_DELAY = timedelta(minutes=5)
+_STEP_ORDER = {
+    ProcessingStepType.AUDIO_DOWNLOAD: 0,
+    ProcessingStepType.TRANSCRIPTION: 1,
+    ProcessingStepType.CLASSIFICATION: 2,
+    ProcessingStepType.INDEXING: 3,
+}
 
 
 class PostgresProcessingRepository:
@@ -122,6 +128,15 @@ class PostgresProcessingRepository:
                     session
                 ).lock_transcription_target(access_context, step_id)
 
+    async def lock_indexing_target(
+        self, access_context: AccessContext, step_id: UUID
+    ) -> ProcessingCompletionTarget:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresProcessingWriter(session).lock_indexing_target(
+                    access_context, step_id
+                )
+
     async def complete_voice_transcription(
         self, command: CompleteVoiceTranscriptionCommand
     ) -> ProcessingStep:
@@ -160,7 +175,10 @@ class PostgresProcessingWriter:
     async def create_text_run(
         self, command: CreateTextProcessingRunCommand
     ) -> ProcessingRun:
-        return await self._create_run(command, (ProcessingStepType.CLASSIFICATION,))
+        return await self._create_run(
+            command,
+            (ProcessingStepType.CLASSIFICATION, ProcessingStepType.INDEXING),
+        )
 
     async def _create_run(
         self,
@@ -283,6 +301,10 @@ class PostgresProcessingWriter:
                         == ProcessingStepType.CLASSIFICATION,
                         or_(not_(transcription_exists), transcription_succeeded),
                     ),
+                    and_(
+                        ProcessingStepModel.step_type == ProcessingStepType.INDEXING,
+                        or_(not_(transcription_exists), transcription_succeeded),
+                    ),
                 ),
             )
             .order_by(
@@ -297,7 +319,12 @@ class PostgresProcessingWriter:
                         == ProcessingStepType.TRANSCRIPTION,
                         1,
                     ),
-                    else_=2,
+                    (
+                        ProcessingStepModel.step_type
+                        == ProcessingStepType.CLASSIFICATION,
+                        2,
+                    ),
+                    else_=3,
                 ),
                 ProcessingStepModel.created_at,
                 ProcessingStepModel.id,
@@ -394,6 +421,23 @@ class PostgresProcessingWriter:
             trace_id=run.trace_id,
         )
 
+    async def lock_indexing_target(
+        self, access_context: AccessContext, step_id: UUID
+    ) -> ProcessingCompletionTarget:
+        step, run = await self._lock_step_and_run(access_context, step_id)
+        if step.step_type is not ProcessingStepType.INDEXING:
+            raise ValueError("processing step is not an indexing step")
+        if step.status != ProcessingStepStatus.RUNNING.value:
+            raise ValueError("only a running indexing step can complete")
+        return ProcessingCompletionTarget(
+            step_id=step.id,
+            run_id=run.id,
+            capture_event_id=run.capture_event_id,
+            output_type=run.output_type,
+            version=run.version,
+            trace_id=run.trace_id,
+        )
+
     async def complete_voice_transcription(
         self, command: CompleteVoiceTranscriptionCommand
     ) -> ProcessingStep:
@@ -455,13 +499,14 @@ class PostgresProcessingWriter:
                     step.step_type,
                     command.failed_at,
                 )
-            await self._create_notice(
-                command.access_context,
-                step.processing_run_id,
-                ProcessingNoticeKind.FAILURE,
-                command.failed_at,
-                step.trace_id,
-            )
+            if step.step_type is not ProcessingStepType.INDEXING:
+                await self._create_notice(
+                    command.access_context,
+                    step.processing_run_id,
+                    ProcessingNoticeKind.FAILURE,
+                    command.failed_at,
+                    step.trace_id,
+                )
         else:
             step.status = ProcessingStepStatus.PENDING.value
             step.next_attempt_at = command.failed_at + _retry_delay(step.attempt_count)
@@ -586,7 +631,12 @@ class PostgresProcessingWriter:
                             == ProcessingStepType.TRANSCRIPTION,
                             1,
                         ),
-                        else_=2,
+                        (
+                            ProcessingStepModel.step_type
+                            == ProcessingStepType.CLASSIFICATION,
+                            2,
+                        ),
+                        else_=3,
                     )
                 )
             )
@@ -696,9 +746,13 @@ class PostgresProcessingWriter:
         completed_at: datetime,
     ) -> None:
         dependent_types = (
-            (ProcessingStepType.TRANSCRIPTION, ProcessingStepType.CLASSIFICATION)
+            (
+                ProcessingStepType.TRANSCRIPTION,
+                ProcessingStepType.CLASSIFICATION,
+                ProcessingStepType.INDEXING,
+            )
             if failed_step_type is ProcessingStepType.AUDIO_DOWNLOAD
-            else (ProcessingStepType.CLASSIFICATION,)
+            else (ProcessingStepType.CLASSIFICATION, ProcessingStepType.INDEXING)
         )
         dependents = tuple(
             await self._session.scalars(
@@ -752,13 +806,14 @@ class PostgresProcessingWriter:
                     step.step_type,
                     now,
                 )
-            await self._create_notice(
-                access_context,
-                step.processing_run_id,
-                ProcessingNoticeKind.FAILURE,
-                now,
-                step.trace_id,
-            )
+            if step.step_type is not ProcessingStepType.INDEXING:
+                await self._create_notice(
+                    access_context,
+                    step.processing_run_id,
+                    ProcessingNoticeKind.FAILURE,
+                    now,
+                    step.trace_id,
+                )
         if exhausted:
             await self._session.flush()
 
@@ -818,13 +873,7 @@ def _to_run(
 ) -> ProcessingRun:
     ordered_steps = sorted(
         steps,
-        key=lambda step: (
-            0
-            if step.step_type is ProcessingStepType.AUDIO_DOWNLOAD
-            else 1
-            if step.step_type is ProcessingStepType.TRANSCRIPTION
-            else 2
-        ),
+        key=lambda step: _STEP_ORDER[step.step_type],
     )
     return ProcessingRun(
         id=model.id,

@@ -130,6 +130,31 @@ def write_module(root: Path, relative_path: str, source: str) -> None:
             ),
             "second_brain.slices.retrieval.domain.entities",
         ),
+        (
+            "slices/retrieval/adapters/persistence/leak.py",
+            "import sentence_transformers\n",
+            "sentence_transformers",
+        ),
+        (
+            "slices/processing/adapters/transcription/leak.py",
+            "import torch\n",
+            "torch",
+        ),
+        (
+            "slices/retrieval/adapters/telegram/leak.py",
+            "from transformers import AutoTokenizer\n",
+            "transformers",
+        ),
+        (
+            "slices/retrieval/adapters/embedding/leak.py",
+            "import pgvector\n",
+            "pgvector",
+        ),
+        (
+            "slices/retrieval/adapters/telegram/vector_leak.py",
+            "from pgvector.sqlalchemy import Vector\n",
+            "pgvector.sqlalchemy",
+        ),
     ],
 )
 def test_checker_reports_prohibited_import(
@@ -188,6 +213,32 @@ def test_checker_allows_bootstrap_and_published_contract_imports(
             "from second_brain.slices.tasks.ports.clock import TaskClock\n"
         ),
     )
+
+    violations = list(find_violations(tmp_path))
+
+    assert not violations, format_violations(violations)
+
+
+def test_checker_allows_embedding_runtime_only_in_embedding_adapter_and_bootstrap(
+    tmp_path: Path,
+) -> None:
+    write_module(
+        tmp_path,
+        "slices/retrieval/adapters/embedding/e5.py",
+        "import sentence_transformers\nimport torch\nimport transformers\n",
+    )
+    write_module(
+        tmp_path,
+        "bootstrap/local_voice_worker.py",
+        "import sentence_transformers\n",
+    )
+    write_module(
+        tmp_path,
+        "slices/retrieval/adapters/persistence/models.py",
+        "from pgvector.sqlalchemy import Vector\n",
+    )
+    write_module(tmp_path, "persistence/vector.py", "import pgvector\n")
+    write_module(tmp_path, "bootstrap/schema.py", "import pgvector\n")
 
     violations = list(find_violations(tmp_path))
 

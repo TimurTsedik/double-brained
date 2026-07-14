@@ -35,6 +35,13 @@ from second_brain.slices.projects.application.contracts import (
     LinkCurrentProjectToCaptureCommand,
 )
 from second_brain.slices.projects.domain.entities import ProjectContentKind
+from second_brain.slices.retrieval.adapters.persistence.repository import (
+    PostgresSemanticIndexWriter,
+)
+from second_brain.slices.retrieval.application.contracts import (
+    RegisterIndexingTargetCommand,
+)
+from second_brain.slices.retrieval.domain.entities import SearchRecordType
 from second_brain.slices.tasks.adapters.persistence.repository import (
     PostgresPendingCaptureSelectionWriter,
     PostgresTaskPanelWriter,
@@ -95,11 +102,21 @@ class TaskCaptureInTransaction(CaptureTextPort, TaskModePort, TaskPanelPort):
                     trace_id=command.trace_id,
                 )
             )
-            await PostgresProcessingWriter(session).create_text_run(
+            run = await PostgresProcessingWriter(session).create_text_run(
                 CreateTextProcessingRunCommand(
                     access_context=command.access_context,
                     capture_event_id=source.id,
                     output_type=_record_output_type(record),
+                    created_at=command.received_at,
+                    trace_id=command.trace_id,
+                )
+            )
+            await PostgresSemanticIndexWriter(session).register_target(
+                RegisterIndexingTargetCommand(
+                    access_context=command.access_context,
+                    processing_run_id=run.id,
+                    record_kind=SearchRecordType(_record_output_type(record).value),
+                    record_id=record.id,
                     created_at=command.received_at,
                     trace_id=command.trace_id,
                 )

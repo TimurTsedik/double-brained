@@ -21,6 +21,13 @@ from second_brain.slices.projects.application.contracts import (
     InheritCaptureProjectLinksCommand,
 )
 from second_brain.slices.projects.domain.entities import ProjectContentKind
+from second_brain.slices.retrieval.adapters.persistence.repository import (
+    PostgresSemanticIndexWriter,
+)
+from second_brain.slices.retrieval.application.contracts import (
+    RegisterIndexingTargetCommand,
+)
+from second_brain.slices.retrieval.domain.entities import SearchRecordType
 from second_brain.slices.tasks.adapters.persistence.repository import (
     PostgresPendingCaptureSelectionWriter,
     PostgresTaskWriter,
@@ -78,6 +85,16 @@ class VoiceTranscriptionCompletionInTransaction:
                         selection=PendingCaptureType(target.output_type.value),
                         text=command.draft.text,
                         source_capture_event_id=target.capture_event_id,
+                        created_at=command.completed_at,
+                        trace_id=target.trace_id,
+                    )
+                )
+                await PostgresSemanticIndexWriter(session).register_target(
+                    RegisterIndexingTargetCommand(
+                        access_context=command.access_context,
+                        processing_run_id=target.run_id,
+                        record_kind=SearchRecordType(target.output_type.value),
+                        record_id=record.id,
                         created_at=command.completed_at,
                         trace_id=target.trace_id,
                     )

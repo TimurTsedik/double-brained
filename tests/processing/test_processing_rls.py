@@ -134,7 +134,7 @@ async def _create_run(
 
 
 @pytest.mark.asyncio
-async def test_voice_run_starts_with_three_ordered_pending_steps(
+async def test_voice_run_starts_with_four_ordered_pending_steps(
     engine: AsyncEngine, schema_engine: AsyncEngine
 ) -> None:
     _, run, _ = await _create_run(engine, schema_engine, ACCESS_A, update_id=101)
@@ -145,8 +145,10 @@ async def test_voice_run_starts_with_three_ordered_pending_steps(
         ProcessingStepType.AUDIO_DOWNLOAD,
         ProcessingStepType.TRANSCRIPTION,
         ProcessingStepType.CLASSIFICATION,
+        ProcessingStepType.INDEXING,
     ]
     assert [step.status for step in run.steps] == [
+        ProcessingStepStatus.PENDING,
         ProcessingStepStatus.PENDING,
         ProcessingStepStatus.PENDING,
         ProcessingStepStatus.PENDING,
@@ -265,6 +267,7 @@ async def test_retry_backoff_and_final_download_failure_skip_transcription(
         ProcessingStepStatus.FAILED,
         ProcessingStepStatus.SKIPPED,
         ProcessingStepStatus.SKIPPED,
+        ProcessingStepStatus.SKIPPED,
     ]
     assert loaded.overall_status is ProcessingStepStatus.FAILED
 
@@ -306,7 +309,7 @@ async def test_rls_hides_and_prevents_claiming_another_space(
 
 
 @pytest.mark.asyncio
-async def test_text_run_has_only_immediately_claimable_classification(
+async def test_text_run_has_immediately_claimable_classification_and_indexing(
     engine: AsyncEngine, schema_engine: AsyncEngine
 ) -> None:
     capture_event_id = await _add_capture(schema_engine, ACCESS_A, update_id=110)
@@ -322,7 +325,10 @@ async def test_text_run_has_only_immediately_claimable_classification(
         )
     )
 
-    assert [step.step_type for step in run.steps] == [ProcessingStepType.CLASSIFICATION]
+    assert [step.step_type for step in run.steps] == [
+        ProcessingStepType.CLASSIFICATION,
+        ProcessingStepType.INDEXING,
+    ]
     assert await repository.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS) is None
     claim = await repository.claim_due_step(ACCESS_A, NOW, LEASE, CLASSIFICATION_STEPS)
     assert claim is not None
@@ -367,6 +373,13 @@ async def test_classification_waits_for_voice_transcription_and_can_be_skipped(
     )
     assert skipped.status is ProcessingStepStatus.SKIPPED
     assert skipped.safe_error_code == "credential_detected"
+    indexing = await repository.claim_due_step(
+        ACCESS_A, NOW, LEASE, (ProcessingStepType.INDEXING,)
+    )
+    assert indexing is not None
+    await repository.succeed_step(
+        SucceedProcessingStepCommand(ACCESS_A, indexing.step_id, NOW)
+    )
     loaded = await repository.get_run(ACCESS_A, run.id)
     assert loaded is not None
     assert loaded.overall_status is ProcessingStepStatus.SUCCEEDED

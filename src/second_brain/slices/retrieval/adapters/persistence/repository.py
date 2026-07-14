@@ -1,9 +1,10 @@
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Boolean,
     ColumnElement,
+    and_,
     case,
     cast,
     delete,
@@ -28,16 +29,27 @@ from second_brain.slices.knowledge.adapters.persistence.models import (
     NoteModel,
     QuestionModel,
 )
+from second_brain.slices.processing.adapters.persistence.models import (
+    ProcessingRunModel,
+)
 from second_brain.slices.retrieval.adapters.persistence.models import (
+    IndexingTargetModel,
     PendingSearchModeModel,
+    SemanticDocumentModel,
 )
 from second_brain.slices.retrieval.application.contracts import (
+    EMBEDDING_MODEL_NAME,
+    INDEX_VERSION,
+    RegisterIndexingTargetCommand,
     SetAwaitingSearchCommand,
+    StoreSemanticChunksCommand,
 )
 from second_brain.slices.retrieval.domain.entities import (
+    IndexingTarget,
     MatchQuality,
     SearchRecord,
     SearchRecordType,
+    SemanticMatch,
 )
 from second_brain.slices.tasks.adapters.persistence.models import TaskModel
 from second_brain.slices.tasks.domain.entities import TaskStatus
@@ -169,6 +181,171 @@ class PostgresExactSearchWriter:
         )
         rows = (await self._session.execute(statement)).mappings()
         return tuple(_to_record(row) for row in rows)
+
+
+class PostgresSemanticIndexWriter:
+    """Stores the semantic projection and indexing targets in a caller-owned
+    transaction. The no-rows/matched/diverged completion policy lives above."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def register_target(self, command: RegisterIndexingTargetCommand) -> None:
+        await _set_user_space_scope(self._session, command.access_context)
+        statement = (
+            postgresql_insert(IndexingTargetModel)
+            .values(
+                processing_run_id=command.processing_run_id,
+                user_space_id=command.access_context.user_space_id,
+                record_kind=command.record_kind,
+                record_id=command.record_id,
+                created_at=command.created_at,
+                trace_id=command.trace_id,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[IndexingTargetModel.processing_run_id]
+            )
+        )
+        await self._session.execute(statement)
+
+    async def read_target(
+        self, access_context: AccessContext, processing_run_id: UUID
+    ) -> IndexingTarget | None:
+        await _set_user_space_scope(self._session, access_context)
+        statement = (
+            select(
+                IndexingTargetModel.record_kind,
+                IndexingTargetModel.record_id,
+                ProcessingRunModel.capture_event_id,
+            )
+            .select_from(IndexingTargetModel)
+            .join(
+                ProcessingRunModel,
+                and_(
+                    ProcessingRunModel.id == IndexingTargetModel.processing_run_id,
+                    ProcessingRunModel.user_space_id
+                    == IndexingTargetModel.user_space_id,
+                ),
+            )
+            .where(
+                IndexingTargetModel.processing_run_id == processing_run_id,
+                IndexingTargetModel.user_space_id == access_context.user_space_id,
+            )
+        )
+        row = (await self._session.execute(statement)).one_or_none()
+        if row is None:
+            return None
+        return IndexingTarget(
+            record_kind=row.record_kind,
+            record_id=row.record_id,
+            capture_event_id=row.capture_event_id,
+        )
+
+    async def existing_chunks(
+        self,
+        access_context: AccessContext,
+        record_kind: SearchRecordType,
+        record_id: UUID,
+        index_version: int,
+    ) -> tuple[tuple[int, str], ...]:
+        await _set_user_space_scope(self._session, access_context)
+        statement = (
+            select(
+                SemanticDocumentModel.chunk_number,
+                SemanticDocumentModel.content_sha256,
+            )
+            .where(
+                SemanticDocumentModel.user_space_id == access_context.user_space_id,
+                SemanticDocumentModel.source_kind == record_kind,
+                SemanticDocumentModel.source_record_id == record_id,
+                SemanticDocumentModel.index_version == index_version,
+            )
+            .order_by(SemanticDocumentModel.chunk_number)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return tuple((row.chunk_number, row.content_sha256) for row in rows)
+
+    async def insert_chunks(self, command: StoreSemanticChunksCommand) -> None:
+        if not command.chunks:
+            # An empty batch would compile to INSERT ... DEFAULT VALUES.
+            return
+        await _set_user_space_scope(self._session, command.access_context)
+        statement = (
+            postgresql_insert(SemanticDocumentModel)
+            .values(
+                [
+                    {
+                        "id": uuid4(),
+                        "user_space_id": command.access_context.user_space_id,
+                        "source_kind": command.record_kind,
+                        "source_record_id": command.record_id,
+                        "source_capture_event_id": command.source_capture_event_id,
+                        "chunk_number": chunk.chunk_number,
+                        "content_sha256": chunk.content_sha256,
+                        "chunk_text": chunk.text,
+                        "embedding_model": command.embedding_model,
+                        "index_version": command.index_version,
+                        "embedding": list(chunk.embedding),
+                        "created_at": command.created_at,
+                        "trace_id": command.trace_id,
+                    }
+                    for chunk in command.chunks
+                ]
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    SemanticDocumentModel.user_space_id,
+                    SemanticDocumentModel.source_kind,
+                    SemanticDocumentModel.source_record_id,
+                    SemanticDocumentModel.index_version,
+                    SemanticDocumentModel.chunk_number,
+                ]
+            )
+        )
+        await self._session.execute(statement)
+
+    async def search_similar(
+        self,
+        access_context: AccessContext,
+        query_vector: tuple[float, ...],
+        limit: int,
+    ) -> tuple[SemanticMatch, ...]:
+        await _set_user_space_scope(self._session, access_context)
+        distance = SemanticDocumentModel.embedding.cosine_distance(list(query_vector))
+        statement = (
+            select(
+                SemanticDocumentModel.source_kind,
+                SemanticDocumentModel.source_record_id,
+                SemanticDocumentModel.source_capture_event_id,
+                SemanticDocumentModel.chunk_number,
+                SemanticDocumentModel.chunk_text,
+                SemanticDocumentModel.created_at,
+            )
+            .where(
+                SemanticDocumentModel.user_space_id == access_context.user_space_id,
+                SemanticDocumentModel.index_version == INDEX_VERSION,
+                SemanticDocumentModel.embedding_model == EMBEDDING_MODEL_NAME,
+            )
+            .order_by(
+                distance,
+                SemanticDocumentModel.source_kind,
+                SemanticDocumentModel.source_record_id,
+                SemanticDocumentModel.chunk_number,
+            )
+            .limit(limit)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return tuple(
+            SemanticMatch(
+                record_kind=row.source_kind,
+                record_id=row.source_record_id,
+                source_capture_event_id=row.source_capture_event_id,
+                chunk_number=row.chunk_number,
+                text=row.chunk_text,
+                created_at=row.created_at,
+            )
+            for row in rows
+        )
 
 
 def _search_branch(

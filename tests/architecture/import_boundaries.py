@@ -73,11 +73,19 @@ def violation_rule(module_path: tuple[str, ...], imported_module: str) -> str | 
     if imports_aiogram(imported_module) and not aiogram_import_allowed(module_path):
         return "aiogram is allowed only in bootstrap or adapters/telegram"
 
+    if imports_embedding_runtime(imported_module) and not embedding_import_allowed(
+        module_path
+    ):
+        return (
+            "sentence-transformers, transformers and torch are allowed only in "
+            "bootstrap or adapters/embedding"
+        )
+
     if imports_persistence_library(imported_module) and not persistence_import_allowed(
         module_path
     ):
         return (
-            "SQLAlchemy and asyncpg are allowed only in bootstrap or "
+            "SQLAlchemy, asyncpg and pgvector are allowed only in bootstrap or "
             "adapters/persistence"
         )
 
@@ -120,6 +128,7 @@ def is_documented_persistence_model_import(
             "repository",
         ): {
             "second_brain.slices.knowledge.adapters.persistence.models",
+            "second_brain.slices.processing.adapters.persistence.models",
             "second_brain.slices.tasks.adapters.persistence.models",
             "second_brain.slices.tasks.domain.entities",
         },
@@ -191,7 +200,15 @@ def imports_aiogram(imported_module: str) -> bool:
 
 
 def imports_persistence_library(imported_module: str) -> bool:
-    return imported_module.partition(".")[0] in {"asyncpg", "sqlalchemy"}
+    return imported_module.partition(".")[0] in {"asyncpg", "pgvector", "sqlalchemy"}
+
+
+def imports_embedding_runtime(imported_module: str) -> bool:
+    return imported_module.partition(".")[0] in {
+        "sentence_transformers",
+        "torch",
+        "transformers",
+    }
 
 
 def fastapi_import_allowed(module_path: tuple[str, ...]) -> bool:
@@ -205,6 +222,12 @@ def fastapi_import_allowed(module_path: tuple[str, ...]) -> bool:
 def aiogram_import_allowed(module_path: tuple[str, ...]) -> bool:
     return module_path[:1] == ("bootstrap",) or adapter_import_allowed(
         module_path, "telegram"
+    )
+
+
+def embedding_import_allowed(module_path: tuple[str, ...]) -> bool:
+    return module_path[:1] == ("bootstrap",) or adapter_import_allowed(
+        module_path, "embedding"
     )
 
 

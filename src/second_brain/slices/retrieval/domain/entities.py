@@ -18,6 +18,47 @@ class MatchQuality(IntEnum):
 
 
 @dataclass(frozen=True)
+class IndexedChunk:
+    chunk_number: int
+    content_sha256: str
+    text: str = field(repr=False)
+    embedding: tuple[float, ...] = field(repr=False)
+
+
+@dataclass(frozen=True)
+class IndexingTarget:
+    record_kind: SearchRecordType
+    record_id: UUID = field(repr=False)
+    capture_event_id: UUID = field(repr=False)
+
+
+@dataclass(frozen=True)
+class SemanticMatch:
+    record_kind: SearchRecordType
+    record_id: UUID = field(repr=False)
+    source_capture_event_id: UUID = field(repr=False)
+    chunk_number: int
+    text: str = field(repr=False)
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class EvidenceChunk:
+    record_kind: SearchRecordType
+    record_id: UUID = field(repr=False)
+    source_capture_event_id: UUID = field(repr=False)
+    chunk_number: int | None  # None = full-record FTS hit (pseudo-chunk)
+    text: str = field(repr=False)
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class EvidenceBundle:
+    chunks: tuple[EvidenceChunk, ...]
+    current_project_id: UUID | None = field(repr=False)
+
+
+@dataclass(frozen=True)
 class SearchRecord:
     id: UUID
     record_type: SearchRecordType

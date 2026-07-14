@@ -107,7 +107,9 @@ async def session(
     session_factory = create_session_factory(engine)
 
     async with session_factory() as session:
-        await session.execute(text(f'SET search_path TO "{isolated_database.schema}"'))
+        await session.execute(
+            text(f'SET search_path TO "{isolated_database.schema}", public')
+        )
         try:
             yield session
         finally:
