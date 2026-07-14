@@ -21,7 +21,10 @@ from second_brain.slices.identity.adapters.persistence.models import (
     User,
     UserSpace,
 )
-from second_brain.slices.identity.application.contracts import AccessContext
+from second_brain.slices.identity.application.contracts import (
+    AccessContext,
+    TelegramRecipient,
+)
 from second_brain.slices.identity.ports.repositories import (
     BootstrapInviteUnavailable,
     EnrollmentAttemptReservation,
@@ -208,6 +211,53 @@ class PostgresAccessContextResolver:
     ) -> AccessContext | None:
         async with self._session_factory() as session:
             return await resolve_access_context_in_session(session, telegram_user_id)
+
+
+class PostgresWorkerIdentityRepository:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def list_active_access_contexts(self) -> tuple[AccessContext, ...]:
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(User.id, UserSpace.id)
+                .select_from(TelegramIdentity)
+                .join(User, User.id == TelegramIdentity.user_id)
+                .join(UserSpace, UserSpace.owner_user_id == User.id)
+                .where(
+                    TelegramIdentity.is_active.is_(True),
+                    User.is_active.is_(True),
+                    UserSpace.is_active.is_(True),
+                )
+                .order_by(UserSpace.id)
+            )
+            return tuple(
+                AccessContext(user_id=row[0], user_space_id=row[1]) for row in rows
+            )
+
+    async def resolve_telegram_recipient(
+        self, access_context: AccessContext
+    ) -> TelegramRecipient:
+        async with self._session_factory() as session:
+            telegram_user_id = await session.scalar(
+                select(TelegramIdentity.telegram_user_id)
+                .select_from(TelegramIdentity)
+                .join(User, User.id == TelegramIdentity.user_id)
+                .join(UserSpace, UserSpace.owner_user_id == User.id)
+                .where(
+                    TelegramIdentity.user_id == access_context.user_id,
+                    User.id == access_context.user_id,
+                    UserSpace.id == access_context.user_space_id,
+                    UserSpace.owner_user_id == access_context.user_id,
+                    TelegramIdentity.is_active.is_(True),
+                    User.is_active.is_(True),
+                    UserSpace.is_active.is_(True),
+                )
+                .limit(1)
+            )
+        if telegram_user_id is None:
+            raise LookupError("active Telegram recipient was not found")
+        return TelegramRecipient(telegram_user_id=telegram_user_id)
 
 
 async def resolve_access_context_in_session(

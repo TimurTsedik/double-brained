@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import UUID
 
@@ -7,6 +7,19 @@ from uuid import UUID
 class AccessContext:
     user_id: UUID
     user_space_id: UUID
+
+
+@dataclass(frozen=True)
+class TelegramRecipient:
+    telegram_user_id: int = field(repr=False)
+
+
+class WorkerIdentityPort(Protocol):
+    async def list_active_access_contexts(self) -> tuple[AccessContext, ...]: ...
+
+    async def resolve_telegram_recipient(
+        self, access_context: AccessContext
+    ) -> TelegramRecipient: ...
 
 
 class UpdateTransaction(Protocol):

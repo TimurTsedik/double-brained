@@ -11,6 +11,7 @@ from second_brain.slices.tasks.application.contracts import (
     ConsumePendingCaptureSelectionCommand,
     ConsumePendingTaskTextCommand,
     CreateTaskCommand,
+    CreateTypedCaptureCommand,
     SetAwaitingTaskCommand,
     SetPendingCaptureSelectionCommand,
 )
@@ -68,7 +69,23 @@ class TaskCapture:
         )
         if command.text is None:
             raise ValueError("eligible typed capture text must not be None")
-        if selection is PendingCaptureType.TASK:
+        return await self.create_for_selection(
+            CreateTypedCaptureCommand(
+                access_context=command.access_context,
+                selection=selection,
+                text=command.text,
+                source_capture_event_id=command.source_capture_event_id,
+                created_at=command.created_at,
+                trace_id=command.trace_id,
+            )
+        )
+
+    async def create_for_selection(
+        self, command: CreateTypedCaptureCommand
+    ) -> Task | KnowledgeRecord:
+        if self._task_writer is None or self._knowledge_capture is None:
+            raise RuntimeError("typed task capture writers are incomplete")
+        if command.selection is PendingCaptureType.TASK:
             return await self._task_writer.create(
                 CreateTaskCommand(
                     access_context=command.access_context,
@@ -78,7 +95,7 @@ class TaskCapture:
                     trace_id=command.trace_id,
                 )
             )
-        if selection is PendingCaptureType.NOTE:
+        if command.selection is PendingCaptureType.NOTE:
             return await self._knowledge_capture.create_note(
                 CreateNoteCommand(
                     access_context=command.access_context,
@@ -88,7 +105,7 @@ class TaskCapture:
                     trace_id=command.trace_id,
                 )
             )
-        if selection is PendingCaptureType.IDEA:
+        if command.selection is PendingCaptureType.IDEA:
             return await self._knowledge_capture.create_idea(
                 CreateIdeaCommand(
                     access_context=command.access_context,
@@ -98,7 +115,7 @@ class TaskCapture:
                     trace_id=command.trace_id,
                 )
             )
-        if selection is PendingCaptureType.DECISION:
+        if command.selection is PendingCaptureType.DECISION:
             return await self._knowledge_capture.create_decision(
                 CreateDecisionCommand(
                     access_context=command.access_context,

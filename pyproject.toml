@@ -21,6 +21,7 @@ dependencies = [
 [project.scripts]
 second-brain-identity = "second_brain.bootstrap.identity_cli:main"
 second-brain-local-polling = "second_brain.bootstrap.local_polling:main"
+second-brain-local-voice-worker = "second_brain.bootstrap.local_voice_worker:main"
 
 [dependency-groups]
 dev = [

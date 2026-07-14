@@ -10,7 +10,10 @@ from second_brain.slices.processing.adapters.storage.local_voice_storage import 
     LocalVoiceStorage,
     VoiceStorageFailure,
 )
-from second_brain.slices.processing.application.contracts import StoreVoiceCommand
+from second_brain.slices.processing.application.contracts import (
+    LocateVoiceCommand,
+    StoreVoiceCommand,
+)
 
 ACCESS_A = AccessContext(
     UUID("00000000-0000-0000-0000-000000000001"),
@@ -130,3 +133,21 @@ async def test_storage_preflight_detects_an_unwritable_root(tmp_path: Path) -> N
 
     assert failure.value.safe_error_code == "storage_unavailable"
     assert str(invalid_root) not in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_locate_returns_only_the_scoped_stored_audio(tmp_path: Path) -> None:
+    storage = LocalVoiceStorage(tmp_path / "voice")
+    stored = await storage.store(command(b"A voice"))
+
+    located = await storage.locate(
+        LocateVoiceCommand(access_context=ACCESS_A, capture_event_id=CAPTURE_ID)
+    )
+
+    assert located.local_path == stored.local_path
+    assert stored.local_path not in repr(located)
+    with pytest.raises(VoiceStorageFailure) as failure:
+        await storage.locate(
+            LocateVoiceCommand(access_context=ACCESS_B, capture_event_id=CAPTURE_ID)
+        )
+    assert failure.value.safe_error_code == "audio_missing"

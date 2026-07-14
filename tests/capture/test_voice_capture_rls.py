@@ -13,6 +13,10 @@ from second_brain.slices.capture.adapters.persistence.models import (
     CaptureEventModel,
     TelegramAttachmentModel,
 )
+from second_brain.slices.capture.adapters.persistence.repository import (
+    PostgresVoiceSourceRepository,
+)
+from second_brain.slices.capture.application.contracts import MarkVoiceStoredCommand
 from second_brain.slices.capture.domain.entities import CaptureSourceKind
 from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
@@ -283,3 +287,70 @@ def test_attachment_representation_hides_telegram_identifiers() -> None:
     assert "repr-private-file-id" not in repr(model)
     assert "unique-repr-private-file-id" not in repr(model)
     assert CaptureSourceKind.VOICE.value == "voice"
+
+
+@pytest.mark.asyncio
+async def test_scoped_voice_source_can_mark_only_its_attachment_stored(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    capture_a = _capture_values(
+        ACCESS_A, source_kind="voice", raw_text=None, update_id=104
+    )
+    capture_b = _capture_values(
+        ACCESS_B, source_kind="voice", raw_text=None, update_id=105
+    )
+    async with schema_engine.begin() as connection:
+        await connection.execute(insert(CaptureEventModel), [capture_a, capture_b])
+        await connection.execute(
+            insert(TelegramAttachmentModel),
+            [
+                _attachment_values(
+                    ACCESS_A, cast(UUID, capture_a["id"]), file_id="A-file-id"
+                ),
+                _attachment_values(
+                    ACCESS_B, cast(UUID, capture_b["id"]), file_id="B-file-id"
+                ),
+            ],
+        )
+
+    repository = PostgresVoiceSourceRepository(create_session_factory(engine))
+    source = await repository.get_voice_source(ACCESS_A, cast(UUID, capture_a["id"]))
+
+    assert source.mime_type == "audio/ogg"
+    assert "A-file-id" not in repr(source)
+    with pytest.raises(LookupError):
+        await repository.get_voice_source(ACCESS_A, cast(UUID, capture_b["id"]))
+
+    await repository.mark_stored(
+        MarkVoiceStoredCommand(
+            access_context=ACCESS_A,
+            capture_event_id=cast(UUID, capture_a["id"]),
+            storage_key="space/capture/original.ogg",
+            sha256="f" * 64,
+            stored_size=123,
+            stored_mime_type="audio/ogg",
+            stored_at=NOW,
+        )
+    )
+
+    async with schema_engine.connect() as connection:
+        attachment_a = (
+            await connection.execute(
+                select(
+                    TelegramAttachmentModel.storage_key,
+                    TelegramAttachmentModel.sha256,
+                    TelegramAttachmentModel.telegram_file_id,
+                ).where(TelegramAttachmentModel.capture_event_id == capture_a["id"])
+            )
+        ).one()
+        attachment_b = (
+            await connection.execute(
+                select(TelegramAttachmentModel.storage_key).where(
+                    TelegramAttachmentModel.capture_event_id == capture_b["id"]
+                )
+            )
+        ).one()
+    assert attachment_a.storage_key == "space/capture/original.ogg"
+    assert attachment_a.sha256 == "f" * 64
+    assert attachment_a.telegram_file_id == "A-file-id"
+    assert attachment_b.storage_key is None

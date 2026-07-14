@@ -26,6 +26,7 @@ from second_brain.slices.processing.adapters.persistence.repository import (
 from second_brain.slices.processing.application.contracts import (
     CreateVoiceProcessingRunCommand,
     FailProcessingStepCommand,
+    MarkProcessingNoticeSentCommand,
     SucceedProcessingStepCommand,
 )
 from second_brain.slices.processing.domain.entities import (
@@ -198,6 +199,7 @@ async def test_retry_backoff_and_final_download_failure_skip_transcription(
         )
     )
     assert retry_1.status is ProcessingStepStatus.PENDING
+    assert await repository.claim_due_notice(ACCESS_A, failure_1_at) is None
     assert retry_1.next_attempt_at == failure_1_at + timedelta(minutes=1)
     assert (
         await repository.claim_due_step(
@@ -218,6 +220,7 @@ async def test_retry_backoff_and_final_download_failure_skip_transcription(
         )
     )
     assert retry_2.status is ProcessingStepStatus.PENDING
+    assert await repository.claim_due_notice(ACCESS_A, failure_2_at) is None
     assert retry_2.next_attempt_at == failure_2_at + timedelta(minutes=5)
 
     claim_3 = await repository.claim_due_step(ACCESS_A, retry_2.next_attempt_at, LEASE)
@@ -240,6 +243,23 @@ async def test_retry_backoff_and_final_download_failure_skip_transcription(
         ProcessingStepStatus.SKIPPED,
     ]
     assert loaded.overall_status is ProcessingStepStatus.FAILED
+
+    notice = await repository.claim_due_notice(
+        ACCESS_A, retry_2.next_attempt_at + timedelta(seconds=10)
+    )
+    assert notice is not None
+    assert notice.kind.value == "failure"
+    assert notice.run_id == run.id
+    assert notice.trace_id == run.trace_id
+    assert await repository.claim_due_notice(ACCESS_B, NOW + timedelta(days=1)) is None
+    await repository.mark_notice_sent(
+        MarkProcessingNoticeSentCommand(
+            access_context=ACCESS_A,
+            notice_id=notice.notice_id,
+            sent_at=NOW + timedelta(days=1),
+        )
+    )
+    assert await repository.claim_due_notice(ACCESS_A, NOW + timedelta(days=2)) is None
 
 
 @pytest.mark.asyncio

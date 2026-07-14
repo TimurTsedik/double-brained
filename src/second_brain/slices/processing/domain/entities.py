@@ -77,6 +77,26 @@ class ProcessingStepClaim:
 
 
 @dataclass(frozen=True)
+class ProcessingCompletionTarget:
+    step_id: UUID
+    run_id: UUID
+    capture_event_id: UUID
+    output_type: TranscriptionOutputType
+    version: int
+    trace_id: str
+
+
+@dataclass(frozen=True)
+class ProcessingNoticeClaim:
+    notice_id: UUID
+    run_id: UUID
+    kind: ProcessingNoticeKind
+    output_type: TranscriptionOutputType
+    trace_id: str
+    attempt_count: int
+
+
+@dataclass(frozen=True)
 class TranscriptWord:
     start: float
     end: float

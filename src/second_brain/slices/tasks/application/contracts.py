@@ -7,12 +7,23 @@ from second_brain.slices.identity.application.contracts import (
     AccessContext,
     UpdateTransaction,
 )
+from second_brain.slices.tasks.domain.entities import PendingCaptureType
 
 
 @dataclass(frozen=True)
 class CreateTaskCommand:
     access_context: AccessContext
     title: str = field(repr=False)
+    source_capture_event_id: UUID
+    created_at: datetime
+    trace_id: str
+
+
+@dataclass(frozen=True)
+class CreateTypedCaptureCommand:
+    access_context: AccessContext
+    selection: PendingCaptureType
+    text: str = field(repr=False)
     source_capture_event_id: UUID
     created_at: datetime
     trace_id: str

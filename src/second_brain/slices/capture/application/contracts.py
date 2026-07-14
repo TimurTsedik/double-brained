@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
+from uuid import UUID
 
 from second_brain.slices.capture.domain.entities import CaptureEvent
 from second_brain.slices.identity.application.contracts import (
@@ -40,6 +41,23 @@ class CaptureVoiceCommand:
     trace_id: str
 
 
+@dataclass(frozen=True)
+class TelegramVoiceSource:
+    file_id: str = field(repr=False)
+    mime_type: str | None
+
+
+@dataclass(frozen=True)
+class MarkVoiceStoredCommand:
+    access_context: AccessContext
+    capture_event_id: UUID
+    storage_key: str = field(repr=False)
+    sha256: str
+    stored_size: int
+    stored_mime_type: str
+    stored_at: datetime
+
+
 class CaptureTextPort(Protocol):
     async def capture(
         self, command: CaptureTextCommand, transaction: UpdateTransaction
@@ -50,3 +68,9 @@ class CaptureVoicePort(Protocol):
     async def capture(
         self, command: CaptureVoiceCommand, transaction: UpdateTransaction
     ) -> CaptureEvent: ...
+
+
+class VoiceSourcePort(Protocol):
+    async def get_voice_source(
+        self, access_context: AccessContext, capture_event_id: UUID
+    ) -> TelegramVoiceSource: ...

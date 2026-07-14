@@ -5,7 +5,9 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 
 from second_brain.slices.processing.application.contracts import (
+    LocateVoiceCommand,
     StoredVoice,
+    StoredVoiceLocation,
     StoreVoiceCommand,
 )
 
@@ -38,6 +40,9 @@ class LocalVoiceStorage:
         if len(command.content) > self._max_bytes:
             raise VoiceStorageFailure("audio_too_large")
         return await asyncio.to_thread(self._store_sync, command)
+
+    async def locate(self, command: LocateVoiceCommand) -> StoredVoiceLocation:
+        return await asyncio.to_thread(self._locate_sync, command)
 
     def _prepare_sync(self) -> None:
         try:
@@ -88,3 +93,14 @@ class LocalVoiceStorage:
             size=len(command.content),
             mime_type=command.mime_type or DEFAULT_VOICE_MIME_TYPE,
         )
+
+    def _locate_sync(self, command: LocateVoiceCommand) -> StoredVoiceLocation:
+        destination = (
+            self._root
+            / str(command.access_context.user_space_id)
+            / str(command.capture_event_id)
+            / "original.ogg"
+        )
+        if not destination.is_file():
+            raise VoiceStorageFailure("audio_missing")
+        return StoredVoiceLocation(local_path=str(destination.resolve()))

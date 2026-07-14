@@ -2,20 +2,30 @@ from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, case, exists, func, or_, select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.processing.adapters.persistence.models import (
+    ProcessingNoticeModel,
     ProcessingRunModel,
     ProcessingStepModel,
+    TranscriptModel,
 )
 from second_brain.slices.processing.application.contracts import (
+    CompleteVoiceDownloadCommand,
+    CompleteVoiceTranscriptionCommand,
     CreateVoiceProcessingRunCommand,
     FailProcessingStepCommand,
+    MarkProcessingNoticeSentCommand,
     SucceedProcessingStepCommand,
 )
 from second_brain.slices.processing.domain.entities import (
+    ProcessingCompletionTarget,
+    ProcessingNoticeClaim,
+    ProcessingNoticeKind,
+    ProcessingNoticeStatus,
     ProcessingRun,
     ProcessingStep,
     ProcessingStepClaim,
@@ -78,6 +88,47 @@ class PostgresProcessingRepository:
                 return await PostgresProcessingWriter(session).count_runs(
                     access_context
                 )
+
+    async def complete_voice_download(
+        self, command: CompleteVoiceDownloadCommand
+    ) -> ProcessingStep:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresProcessingWriter(session).complete_voice_download(
+                    command
+                )
+
+    async def lock_transcription_target(
+        self, access_context: AccessContext, step_id: UUID
+    ) -> ProcessingCompletionTarget:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresProcessingWriter(
+                    session
+                ).lock_transcription_target(access_context, step_id)
+
+    async def complete_voice_transcription(
+        self, command: CompleteVoiceTranscriptionCommand
+    ) -> ProcessingStep:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresProcessingWriter(
+                    session
+                ).complete_voice_transcription(command)
+
+    async def claim_due_notice(
+        self, access_context: AccessContext, now: datetime
+    ) -> ProcessingNoticeClaim | None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresProcessingWriter(session).claim_due_notice(
+                    access_context, now
+                )
+
+    async def mark_notice_sent(self, command: MarkProcessingNoticeSentCommand) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await PostgresProcessingWriter(session).mark_notice_sent(command)
 
 
 class PostgresProcessingWriter:
@@ -234,6 +285,74 @@ class PostgresProcessingWriter:
         await self._session.flush()
         return _to_step(step)
 
+    async def complete_voice_download(
+        self, command: CompleteVoiceDownloadCommand
+    ) -> ProcessingStep:
+        step, run = await self._lock_step_and_run(
+            command.access_context, command.step_id
+        )
+        if step.step_type is not ProcessingStepType.AUDIO_DOWNLOAD:
+            raise ValueError("processing step is not an audio download")
+        if run.capture_event_id != command.capture_event_id:
+            raise ValueError("download completion source does not match its run")
+        return await self._succeed_locked_step(step, command.completed_at)
+
+    async def lock_transcription_target(
+        self, access_context: AccessContext, step_id: UUID
+    ) -> ProcessingCompletionTarget:
+        step, run = await self._lock_step_and_run(access_context, step_id)
+        if step.step_type is not ProcessingStepType.TRANSCRIPTION:
+            raise ValueError("processing step is not a transcription")
+        if step.status != ProcessingStepStatus.RUNNING.value:
+            raise ValueError("only a running transcription can complete")
+        return ProcessingCompletionTarget(
+            step_id=step.id,
+            run_id=run.id,
+            capture_event_id=run.capture_event_id,
+            output_type=run.output_type,
+            version=run.version,
+            trace_id=run.trace_id,
+        )
+
+    async def complete_voice_transcription(
+        self, command: CompleteVoiceTranscriptionCommand
+    ) -> ProcessingStep:
+        if not command.draft.text.strip():
+            raise ValueError("empty_transcript")
+        step, run = await self._lock_step_and_run(
+            command.access_context, command.step_id
+        )
+        if step.step_type is not ProcessingStepType.TRANSCRIPTION:
+            raise ValueError("processing step is not a transcription")
+        if step.status != ProcessingStepStatus.RUNNING.value:
+            raise ValueError("only a running transcription can complete")
+        self._session.add(
+            TranscriptModel(
+                id=uuid4(),
+                user_space_id=command.access_context.user_space_id,
+                capture_event_id=run.capture_event_id,
+                processing_run_id=run.id,
+                version=run.version,
+                text=command.draft.text,
+                language=command.draft.language,
+                language_probability=command.draft.language_probability,
+                model_name=command.draft.model_name,
+                segments=_segments_json(command),
+                created_at=command.completed_at,
+                trace_id=run.trace_id,
+            )
+        )
+        await self._create_notice(
+            command.access_context,
+            run.id,
+            ProcessingNoticeKind.SUCCESS,
+            command.completed_at,
+            run.trace_id,
+        )
+        result = await self._succeed_locked_step(step, command.completed_at)
+        await self._session.flush()
+        return result
+
     async def fail_step(self, command: FailProcessingStepCommand) -> ProcessingStep:
         step = await self._lock_step(command.access_context, command.step_id)
         if step.status != ProcessingStepStatus.RUNNING.value:
@@ -252,12 +371,90 @@ class PostgresProcessingWriter:
                     step.processing_run_id,
                     command.failed_at,
                 )
+            await self._create_notice(
+                command.access_context,
+                step.processing_run_id,
+                ProcessingNoticeKind.FAILURE,
+                command.failed_at,
+                step.trace_id,
+            )
         else:
             step.status = ProcessingStepStatus.PENDING.value
             step.next_attempt_at = command.failed_at + _retry_delay(step.attempt_count)
             step.completed_at = None
         await self._session.flush()
         return _to_step(step)
+
+    async def claim_due_notice(
+        self, access_context: AccessContext, now: datetime
+    ) -> ProcessingNoticeClaim | None:
+        await _set_user_space_scope(self._session, access_context)
+        row = (
+            await self._session.execute(
+                select(ProcessingNoticeModel, ProcessingRunModel)
+                .join(
+                    ProcessingRunModel,
+                    and_(
+                        ProcessingRunModel.id
+                        == ProcessingNoticeModel.processing_run_id,
+                        ProcessingRunModel.user_space_id
+                        == ProcessingNoticeModel.user_space_id,
+                    ),
+                )
+                .where(
+                    ProcessingNoticeModel.user_space_id == access_context.user_space_id,
+                    ProcessingRunModel.user_space_id == access_context.user_space_id,
+                    ProcessingNoticeModel.status == ProcessingNoticeStatus.PENDING,
+                    ProcessingNoticeModel.attempt_count < MAX_ATTEMPTS,
+                    ProcessingNoticeModel.next_attempt_at.is_not(None),
+                    ProcessingNoticeModel.next_attempt_at <= now,
+                )
+                .order_by(
+                    ProcessingNoticeModel.created_at,
+                    ProcessingNoticeModel.id,
+                )
+                .with_for_update(of=ProcessingNoticeModel, skip_locked=True)
+                .limit(1)
+            )
+        ).first()
+        if row is None:
+            return None
+        notice, run = row
+        notice.attempt_count += 1
+        notice.next_attempt_at = (
+            now + FIRST_RETRY_DELAY if notice.attempt_count < MAX_ATTEMPTS else None
+        )
+        notice.updated_at = now
+        await self._session.flush()
+        return ProcessingNoticeClaim(
+            notice_id=notice.id,
+            run_id=run.id,
+            kind=notice.kind,
+            output_type=run.output_type,
+            trace_id=notice.trace_id,
+            attempt_count=notice.attempt_count,
+        )
+
+    async def mark_notice_sent(self, command: MarkProcessingNoticeSentCommand) -> None:
+        await _set_user_space_scope(self._session, command.access_context)
+        notice = await self._session.scalar(
+            select(ProcessingNoticeModel)
+            .where(
+                ProcessingNoticeModel.id == command.notice_id,
+                ProcessingNoticeModel.user_space_id
+                == command.access_context.user_space_id,
+            )
+            .with_for_update()
+        )
+        if notice is None:
+            raise LookupError("processing notice was not found")
+        if notice.status is ProcessingNoticeStatus.SENT:
+            return
+        notice.status = ProcessingNoticeStatus.SENT
+        notice.next_attempt_at = None
+        notice.sent_at = command.sent_at
+        notice.updated_at = command.sent_at
+        await self._session.flush()
 
     async def get_run(
         self, access_context: AccessContext, run_id: UUID
@@ -300,6 +497,76 @@ class PostgresProcessingWriter:
             .where(ProcessingRunModel.user_space_id == access_context.user_space_id)
         )
         return int(count or 0)
+
+    async def _succeed_locked_step(
+        self, step: ProcessingStepModel, completed_at: datetime
+    ) -> ProcessingStep:
+        if step.status == ProcessingStepStatus.SUCCEEDED.value:
+            return _to_step(step)
+        if step.status != ProcessingStepStatus.RUNNING.value:
+            raise ValueError("only a running processing step can succeed")
+        step.status = ProcessingStepStatus.SUCCEEDED.value
+        step.next_attempt_at = None
+        step.lease_expires_at = None
+        step.safe_error_code = None
+        step.completed_at = completed_at
+        step.updated_at = completed_at
+        await self._session.flush()
+        return _to_step(step)
+
+    async def _lock_step_and_run(
+        self, access_context: AccessContext, step_id: UUID
+    ) -> tuple[ProcessingStepModel, ProcessingRunModel]:
+        await _set_user_space_scope(self._session, access_context)
+        row = (
+            await self._session.execute(
+                select(ProcessingStepModel, ProcessingRunModel)
+                .join(
+                    ProcessingRunModel,
+                    and_(
+                        ProcessingRunModel.id == ProcessingStepModel.processing_run_id,
+                        ProcessingRunModel.user_space_id
+                        == ProcessingStepModel.user_space_id,
+                    ),
+                )
+                .where(
+                    ProcessingStepModel.id == step_id,
+                    ProcessingStepModel.user_space_id == access_context.user_space_id,
+                    ProcessingRunModel.user_space_id == access_context.user_space_id,
+                )
+                .with_for_update(of=ProcessingStepModel)
+            )
+        ).one_or_none()
+        if row is None:
+            raise LookupError("processing step was not found")
+        return row[0], row[1]
+
+    async def _create_notice(
+        self,
+        access_context: AccessContext,
+        run_id: UUID,
+        kind: ProcessingNoticeKind,
+        created_at: datetime,
+        trace_id: str,
+    ) -> None:
+        await _set_user_space_scope(self._session, access_context)
+        await self._session.execute(
+            insert(ProcessingNoticeModel)
+            .values(
+                id=uuid4(),
+                user_space_id=access_context.user_space_id,
+                processing_run_id=run_id,
+                kind=kind,
+                status=ProcessingNoticeStatus.PENDING,
+                attempt_count=0,
+                next_attempt_at=created_at,
+                sent_at=None,
+                created_at=created_at,
+                updated_at=created_at,
+                trace_id=trace_id,
+            )
+            .on_conflict_do_nothing(constraint="uq_processing_notices_run_kind")
+        )
 
     async def _lock_step(
         self, access_context: AccessContext, step_id: UUID
@@ -369,6 +636,13 @@ class PostgresProcessingWriter:
                 await self._skip_transcription(
                     access_context, step.processing_run_id, now
                 )
+            await self._create_notice(
+                access_context,
+                step.processing_run_id,
+                ProcessingNoticeKind.FAILURE,
+                now,
+                step.trace_id,
+            )
         if exhausted:
             await self._session.flush()
 
@@ -379,6 +653,25 @@ def _retry_delay(attempt_count: int) -> timedelta:
     if attempt_count == 2:
         return SECOND_RETRY_DELAY
     raise ValueError("retry delay exists only after attempt one or two")
+
+
+def _segments_json(command: CompleteVoiceTranscriptionCommand) -> list[object]:
+    return [
+        {
+            "start": segment.start,
+            "end": segment.end,
+            "text": segment.text,
+            "words": [
+                {
+                    "start": word.start,
+                    "end": word.end,
+                    "text": word.text,
+                }
+                for word in segment.words
+            ],
+        }
+        for segment in command.draft.segments
+    ]
 
 
 async def _set_user_space_scope(

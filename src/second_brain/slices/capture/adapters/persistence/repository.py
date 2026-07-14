@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -10,6 +10,8 @@ from second_brain.slices.capture.adapters.persistence.models import (
 from second_brain.slices.capture.application.contracts import (
     CaptureTextCommand,
     CaptureVoiceCommand,
+    MarkVoiceStoredCommand,
+    TelegramVoiceSource,
 )
 from second_brain.slices.capture.domain.entities import CaptureEvent, CaptureSourceKind
 from second_brain.slices.identity.application.contracts import AccessContext
@@ -107,6 +109,91 @@ class PostgresCaptureEventWriter:
         self._session.add(attachment)
         await self._session.flush()
         return _to_entity(model)
+
+
+class PostgresVoiceSourceRepository:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def get_voice_source(
+        self, access_context: AccessContext, capture_event_id: UUID
+    ) -> TelegramVoiceSource:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresVoiceAttachmentWriter(session).get_voice_source(
+                    access_context, capture_event_id
+                )
+
+    async def mark_stored(self, command: MarkVoiceStoredCommand) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await PostgresVoiceAttachmentWriter(session).mark_stored(command)
+
+
+class PostgresVoiceAttachmentWriter:
+    """Reads and updates controlled voice fields in a caller-owned transaction."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_voice_source(
+        self, access_context: AccessContext, capture_event_id: UUID
+    ) -> TelegramVoiceSource:
+        await _set_user_space_scope(self._session, access_context)
+        attachment = await self._session.scalar(
+            select(TelegramAttachmentModel).where(
+                TelegramAttachmentModel.capture_event_id == capture_event_id,
+                TelegramAttachmentModel.user_space_id == access_context.user_space_id,
+                TelegramAttachmentModel.kind == CaptureSourceKind.VOICE,
+            )
+        )
+        if attachment is None:
+            raise LookupError("voice attachment was not found")
+        return TelegramVoiceSource(
+            file_id=attachment.telegram_file_id,
+            mime_type=attachment.telegram_mime_type,
+        )
+
+    async def mark_stored(self, command: MarkVoiceStoredCommand) -> None:
+        await _set_user_space_scope(self._session, command.access_context)
+        attachment = await self._session.scalar(
+            select(TelegramAttachmentModel)
+            .where(
+                TelegramAttachmentModel.capture_event_id == command.capture_event_id,
+                TelegramAttachmentModel.user_space_id
+                == command.access_context.user_space_id,
+                TelegramAttachmentModel.kind == CaptureSourceKind.VOICE,
+            )
+            .with_for_update()
+        )
+        if attachment is None:
+            raise LookupError("voice attachment was not found")
+        current = (
+            attachment.storage_key,
+            attachment.sha256,
+            attachment.stored_size,
+            attachment.stored_mime_type,
+            attachment.stored_at,
+        )
+        expected = (
+            command.storage_key,
+            command.sha256,
+            command.stored_size,
+            command.stored_mime_type,
+            command.stored_at,
+        )
+        if current == expected:
+            return
+        if any(value is not None for value in current):
+            raise ValueError("voice attachment storage metadata is immutable")
+        (
+            attachment.storage_key,
+            attachment.sha256,
+            attachment.stored_size,
+            attachment.stored_mime_type,
+            attachment.stored_at,
+        ) = expected
+        await self._session.flush()
 
 
 async def _set_user_space_scope(

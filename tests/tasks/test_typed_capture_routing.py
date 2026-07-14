@@ -15,6 +15,7 @@ from second_brain.slices.knowledge.ports.repositories import (
 from second_brain.slices.tasks.application.contracts import (
     ConsumePendingTaskTextCommand,
     CreateTaskCommand,
+    CreateTypedCaptureCommand,
 )
 from second_brain.slices.tasks.application.task_capture import TaskCapture
 from second_brain.slices.tasks.domain.entities import (
@@ -171,3 +172,36 @@ async def test_ineligible_text_preserves_selected_type(text: str | None) -> None
     assert pending.selection is PendingCaptureType.DECISION
     assert task_writer.commands == []
     assert knowledge_writer.commands == []
+
+
+@pytest.mark.asyncio
+async def test_frozen_selection_can_create_record_without_consuming_live_mode() -> None:
+    pending = InMemoryPendingSelection(PendingCaptureType.TASK)
+    task_writer = InMemoryTaskWriter()
+    knowledge_writer = InMemoryKnowledgeWriter()
+    capture = TaskCapture(
+        pending,
+        task_writer,
+        KnowledgeCapture(
+            note_writer=knowledge_writer,
+            idea_writer=knowledge_writer,
+            decision_writer=knowledge_writer,
+            question_writer=knowledge_writer,
+        ),
+    )
+
+    result = await capture.create_for_selection(
+        CreateTypedCaptureCommand(
+            access_context=ACCESS,
+            selection=PendingCaptureType.IDEA,
+            text="voice transcript",
+            source_capture_event_id=SOURCE,
+            created_at=NOW,
+            trace_id="2" * 32,
+        )
+    )
+
+    assert isinstance(result, Idea)
+    assert pending.selection is PendingCaptureType.TASK
+    assert len(knowledge_writer.commands) == 1
+    assert task_writer.commands == []
