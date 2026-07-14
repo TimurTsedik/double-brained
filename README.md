@@ -93,14 +93,16 @@ refuses to start when a webhook is configured.
 uv run --env-file .env second-brain-local-polling
 ```
 
-## Local voice transcription
+## Local voice transcription and OpenRouter classification
 
 Voice messages are downloaded through the Telegram Bot API and transcribed on
-the local machine with `mlx-whisper`. Audio and transcript text are not sent to
-an inference API. The current adapter works with supported MLX installations
-on Apple Silicon macOS and Linux; the exact Linux MLX CPU/CUDA package depends
-on the production hardware and is intentionally not guessed by this local
-prototype.
+the local machine with `mlx-whisper`. Audio is not sent to an inference API.
+After transcription, the current source text is sent to OpenRouter for
+structured classification; the request contains no Telegram ID, internal User
+or UserSpace ID, trace ID, history, or other records. The current adapter works
+with supported MLX installations on Apple Silicon macOS and Linux; the exact
+Linux MLX CPU/CUDA package depends on the production hardware and is
+intentionally not guessed by this local prototype.
 
 Install FFmpeg before starting the worker. On macOS with Homebrew:
 
@@ -113,17 +115,19 @@ use `mlx-community/whisper-large-v3-turbo`. The first transcription downloads
 and caches roughly 1.6 GB of model weights. A smaller compatible model can be
 selected with `MLX_WHISPER_MODEL`.
 
-Install and start Ollama, then cache the local structured-extraction model:
+Set `OPEN_ROUTER_AI_KEY` in `.env`. Classification asks OpenRouter to try these
+strict-structured-output models in order:
 
-```bash
-ollama pull qwen3:4b
-```
+1. `nvidia/nemotron-3-super-120b-a12b:free`;
+2. `openai/gpt-oss-20b:free`.
 
-The adapter accepts only loopback HTTP and bypasses environment proxies. Before
-the model call, a deterministic scanner blocks common credentials. Model output
-is treated as untrusted: only exact source quotes with valid type/modality and
-confidence of at least `0.90` may create additional records. The original
-record selected with the Telegram button is never replaced.
+The selected Free providers may log prompts and outputs. This personal
+prototype consciously accepts that policy and must not be used to capture
+secrets. Before the model call, a deterministic scanner blocks common
+credentials. Model output remains untrusted: only exact source quotes with a
+valid type/modality pair and confidence of at least `0.90` may create
+additional records. The original record selected with the Telegram button is
+never replaced.
 
 Run polling and the combined voice/classification worker as two separate
 long-running processes:
@@ -132,7 +136,7 @@ long-running processes:
 # terminal 1: receive and durably queue Telegram updates
 uv run --env-file .env second-brain-local-polling
 
-# terminal 2: transcribe voice and classify queued text/transcripts locally
+# terminal 2: transcribe voice locally and classify text through OpenRouter
 uv run --env-file .env second-brain-local-voice-worker
 ```
 
