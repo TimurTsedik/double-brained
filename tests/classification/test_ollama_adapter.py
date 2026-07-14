@@ -130,8 +130,8 @@ async def test_adapter_sends_fixed_schema_and_parses_valid_siblings() -> None:
     )
 
     assert draft.model_name == "qwen3:4b"
-    assert draft.prompt_version == "local-atomic-extraction-v1"
-    assert draft.schema_version == "atomic-candidates-v1"
+    assert draft.prompt_version == "atomic-extraction-v2"
+    assert draft.schema_version == "atomic-candidates-v2"
     assert draft.discarded_candidate_count == 1
     assert [item.candidate_type for item in draft.candidates] == [
         CandidateType.TASK,
@@ -153,6 +153,20 @@ async def test_adapter_sends_fixed_schema_and_parses_valid_siblings() -> None:
     assert payload["options"] == {"temperature": 0}
     assert payload["format"]["additionalProperties"] is False
     assert payload["format"]["properties"]["items"]["maxItems"] == 8
+    item_schema = payload["format"]["properties"]["items"]["items"]
+    type_modality_pairs = {
+        branch["properties"]["type"]["const"]: tuple(
+            branch["properties"]["modality"]["enum"]
+        )
+        for branch in item_schema["oneOf"]
+    }
+    assert type_modality_pairs == {
+        "note": ("observation", "completed_action"),
+        "task": ("commitment",),
+        "idea": ("suggestion", "hypothesis"),
+        "decision": ("decision",),
+        "question": ("question",),
+    }
     assert [message["role"] for message in payload["messages"]] == [
         "system",
         "user",

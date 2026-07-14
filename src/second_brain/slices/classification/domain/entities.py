@@ -22,6 +22,21 @@ class CandidateModality(StrEnum):
     OBSERVATION = "observation"
 
 
+ALLOWED_MODALITIES_BY_TYPE = {
+    CandidateType.NOTE: (
+        CandidateModality.OBSERVATION,
+        CandidateModality.COMPLETED_ACTION,
+    ),
+    CandidateType.TASK: (CandidateModality.COMMITMENT,),
+    CandidateType.IDEA: (
+        CandidateModality.SUGGESTION,
+        CandidateModality.HYPOTHESIS,
+    ),
+    CandidateType.DECISION: (CandidateModality.DECISION,),
+    CandidateType.QUESTION: (CandidateModality.QUESTION,),
+}
+
+
 class CandidateDisposition(StrEnum):
     MATERIALIZE = "materialize"
     NEEDS_REVIEW = "needs_review"

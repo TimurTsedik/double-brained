@@ -8,8 +8,8 @@ from second_brain.slices.classification.application.contracts import (
     ClassificationSource,
 )
 from second_brain.slices.classification.domain.entities import (
+    ALLOWED_MODALITIES_BY_TYPE,
     CandidateDisposition,
-    CandidateModality,
     CandidateType,
     CandidateValidationCode,
     ClassificationCandidateDraft,
@@ -31,18 +31,6 @@ _CREDENTIAL_PATTERNS = (
         r"[\"']?[^\s\"']+"
     ),
 )
-
-_ALLOWED_MODALITIES = {
-    CandidateType.NOTE: frozenset(
-        (CandidateModality.OBSERVATION, CandidateModality.COMPLETED_ACTION)
-    ),
-    CandidateType.TASK: frozenset((CandidateModality.COMMITMENT,)),
-    CandidateType.IDEA: frozenset(
-        (CandidateModality.SUGGESTION, CandidateModality.HYPOTHESIS)
-    ),
-    CandidateType.DECISION: frozenset((CandidateModality.DECISION,)),
-    CandidateType.QUESTION: frozenset((CandidateModality.QUESTION,)),
-}
 
 
 class ClassifySource:
@@ -114,7 +102,7 @@ def _validate_candidate(
             None,
             CandidateValidationCode.INVALID_CONFIDENCE,
         )
-    if draft.modality not in _ALLOWED_MODALITIES[draft.candidate_type]:
+    if draft.modality not in ALLOWED_MODALITIES_BY_TYPE[draft.candidate_type]:
         return _review(
             draft,
             confidence,
