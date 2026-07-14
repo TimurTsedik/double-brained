@@ -27,6 +27,10 @@ from second_brain.slices.processing.ports.voice import (
 
 DEFAULT_STEP_LEASE = timedelta(minutes=15)
 SAFE_ERROR_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
+VOICE_STEP_TYPES = (
+    ProcessingStepType.AUDIO_DOWNLOAD,
+    ProcessingStepType.TRANSCRIPTION,
+)
 
 
 class VoiceWorker:
@@ -54,7 +58,12 @@ class VoiceWorker:
         self._step_lease = step_lease
 
     async def process_once(self, access_context: AccessContext, now: datetime) -> bool:
-        claim = await self._queue.claim_due_step(access_context, now, self._step_lease)
+        claim = await self._queue.claim_due_step(
+            access_context,
+            now,
+            self._step_lease,
+            VOICE_STEP_TYPES,
+        )
         if claim is None:
             return False
         try:

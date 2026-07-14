@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 
 DEFAULT_VOICE_STORAGE_ROOT = ".data/voice"
 DEFAULT_MLX_WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+DEFAULT_CLASSIFICATION_MODEL = "qwen3:4b"
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,8 @@ class Settings:
         repr=False,
     )
     mlx_whisper_model: str = DEFAULT_MLX_WHISPER_MODEL
+    ollama_base_url: str = field(default=DEFAULT_OLLAMA_BASE_URL, repr=False)
+    classification_model: str = DEFAULT_CLASSIFICATION_MODEL
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -33,6 +37,10 @@ class Settings:
         mlx_whisper_model = (
             os.environ.get("MLX_WHISPER_MODEL") or DEFAULT_MLX_WHISPER_MODEL
         )
+        ollama_base_url = os.environ.get("OLLAMA_BASE_URL") or DEFAULT_OLLAMA_BASE_URL
+        classification_model = (
+            os.environ.get("CLASSIFICATION_MODEL") or DEFAULT_CLASSIFICATION_MODEL
+        )
         return cls(
             database_url=database_url,
             schema_database_url=schema_database_url,
@@ -41,6 +49,8 @@ class Settings:
             invite_token_pepper_key_id=invite_token_pepper_key_id,
             voice_storage_root=voice_storage_root,
             mlx_whisper_model=mlx_whisper_model,
+            ollama_base_url=ollama_base_url,
+            classification_model=classification_model,
         )
 
 

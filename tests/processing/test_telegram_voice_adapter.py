@@ -130,6 +130,6 @@ async def test_failure_notifier_sends_only_safe_trace_id() -> None:
     assert bot.messages == [
         (
             555,
-            "Не удалось обработать голосовое сообщение.\nTrace ID: " + "a" * 32,
+            "Не удалось обработать запись.\nTrace ID: " + "a" * 32,
         )
     ]

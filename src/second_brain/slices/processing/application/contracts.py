@@ -29,6 +29,15 @@ class CreateVoiceProcessingRunCommand:
 
 
 @dataclass(frozen=True)
+class CreateTextProcessingRunCommand:
+    access_context: AccessContext
+    capture_event_id: UUID
+    output_type: TranscriptionOutputType
+    created_at: datetime
+    trace_id: str
+
+
+@dataclass(frozen=True)
 class SucceedProcessingStepCommand:
     access_context: AccessContext
     step_id: UUID
@@ -41,6 +50,14 @@ class FailProcessingStepCommand:
     step_id: UUID
     failed_at: datetime
     safe_error_code: str
+
+
+@dataclass(frozen=True)
+class SkipProcessingStepCommand:
+    access_context: AccessContext
+    step_id: UUID
+    skipped_at: datetime
+    safe_reason_code: str
 
 
 @dataclass(frozen=True)

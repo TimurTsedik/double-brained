@@ -1,8 +1,16 @@
 import asyncio
 from datetime import datetime
+from typing import Protocol
 
 from aiogram import Bot
 
+from second_brain.bootstrap.classification_completion import (
+    ClassificationCompletionInTransaction,
+)
+from second_brain.bootstrap.classification_source import (
+    PostgresClassificationSourceReader,
+)
+from second_brain.bootstrap.classification_worker import ClassificationWorker
 from second_brain.bootstrap.settings import Settings
 from second_brain.bootstrap.voice_processing_completion import (
     VoiceDownloadCompletionInTransaction,
@@ -12,6 +20,10 @@ from second_brain.shared.clock import SystemClock
 from second_brain.slices.capture.adapters.persistence.repository import (
     PostgresVoiceSourceRepository,
 )
+from second_brain.slices.classification.adapters.ollama.model import (
+    OllamaClassificationModel,
+)
+from second_brain.slices.classification.application.extraction import ClassifySource
 from second_brain.slices.identity.adapters.persistence.database import (
     assert_non_privileged_application_role,
     create_database_engine,
@@ -46,16 +58,25 @@ from second_brain.slices.processing.ports.repositories import ProcessingReposito
 from second_brain.slices.processing.ports.voice import ProcessingNotifier
 
 
+class StepWorker(Protocol):
+    async def process_once(
+        self, access_context: AccessContext, now: datetime
+    ) -> bool: ...
+
+
 async def process_access_once(
     *,
     access_context: AccessContext,
     now: datetime,
-    worker: VoiceWorker,
+    worker: StepWorker,
+    classification_worker: StepWorker,
     processing_repository: ProcessingRepository,
     identity_repository: WorkerIdentityPort,
     notifier: ProcessingNotifier,
 ) -> bool:
     worked = await worker.process_once(access_context, now)
+    classified = await classification_worker.process_once(access_context, now)
+    worked = worked or classified
     notice = await processing_repository.claim_due_notice(access_context, now)
     if notice is None:
         return worked
@@ -100,6 +121,17 @@ async def run_local_voice_worker(settings: Settings) -> None:
                 session_factory
             ),
         )
+        classification_worker = ClassificationWorker(
+            queue=processing,
+            source_reader=PostgresClassificationSourceReader(session_factory),
+            classifier=ClassifySource(
+                OllamaClassificationModel(
+                    settings.ollama_base_url,
+                    settings.classification_model,
+                )
+            ),
+            completion=ClassificationCompletionInTransaction(session_factory),
+        )
         notifier = AiogramVoiceNotifier(bot)
         clock = SystemClock()
         while True:
@@ -110,6 +142,7 @@ async def run_local_voice_worker(settings: Settings) -> None:
                         access_context=access_context,
                         now=clock.now(),
                         worker=worker,
+                        classification_worker=classification_worker,
                         processing_repository=processing,
                         identity_repository=identities,
                         notifier=notifier,

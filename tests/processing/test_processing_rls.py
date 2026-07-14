@@ -24,9 +24,11 @@ from second_brain.slices.processing.adapters.persistence.repository import (
     PostgresProcessingRepository,
 )
 from second_brain.slices.processing.application.contracts import (
+    CreateTextProcessingRunCommand,
     CreateVoiceProcessingRunCommand,
     FailProcessingStepCommand,
     MarkProcessingNoticeSentCommand,
+    SkipProcessingStepCommand,
     SucceedProcessingStepCommand,
 )
 from second_brain.slices.processing.domain.entities import (
@@ -38,6 +40,11 @@ from tests.identity.conftest import IsolatedDatabase
 
 NOW = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
 LEASE = timedelta(minutes=15)
+VOICE_STEPS = (
+    ProcessingStepType.AUDIO_DOWNLOAD,
+    ProcessingStepType.TRANSCRIPTION,
+)
+CLASSIFICATION_STEPS = (ProcessingStepType.CLASSIFICATION,)
 ACCESS_A = AccessContext(
     UUID("00000000-0000-0000-0000-000000000001"),
     UUID("00000000-0000-0000-0000-000000000011"),
@@ -127,7 +134,7 @@ async def _create_run(
 
 
 @pytest.mark.asyncio
-async def test_voice_run_starts_with_two_ordered_pending_steps(
+async def test_voice_run_starts_with_three_ordered_pending_steps(
     engine: AsyncEngine, schema_engine: AsyncEngine
 ) -> None:
     _, run, _ = await _create_run(engine, schema_engine, ACCESS_A, update_id=101)
@@ -137,8 +144,10 @@ async def test_voice_run_starts_with_two_ordered_pending_steps(
     assert [step.step_type for step in run.steps] == [
         ProcessingStepType.AUDIO_DOWNLOAD,
         ProcessingStepType.TRANSCRIPTION,
+        ProcessingStepType.CLASSIFICATION,
     ]
     assert [step.status for step in run.steps] == [
+        ProcessingStepStatus.PENDING,
         ProcessingStepStatus.PENDING,
         ProcessingStepStatus.PENDING,
     ]
@@ -153,15 +162,20 @@ async def test_claim_obeys_dependency_and_reclaims_only_an_expired_lease(
         engine, schema_engine, ACCESS_A, update_id=102
     )
 
-    first = await repository.claim_due_step(ACCESS_A, NOW, LEASE)
+    first = await repository.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS)
     assert first is not None
     assert first.step_type is ProcessingStepType.AUDIO_DOWNLOAD
     assert first.attempt_count == 1
     assert first.lease_expires_at == NOW + LEASE
 
-    assert await repository.claim_due_step(ACCESS_A, NOW + LEASE / 2, LEASE) is None
+    assert (
+        await repository.claim_due_step(ACCESS_A, NOW + LEASE / 2, LEASE, VOICE_STEPS)
+        is None
+    )
 
-    reclaimed = await repository.claim_due_step(ACCESS_A, NOW + LEASE, LEASE)
+    reclaimed = await repository.claim_due_step(
+        ACCESS_A, NOW + LEASE, LEASE, VOICE_STEPS
+    )
     assert reclaimed is not None
     assert reclaimed.step_id == first.step_id
     assert reclaimed.attempt_count == 2
@@ -173,7 +187,9 @@ async def test_claim_obeys_dependency_and_reclaims_only_an_expired_lease(
             completed_at=NOW + LEASE,
         )
     )
-    transcription = await repository.claim_due_step(ACCESS_A, NOW + LEASE, LEASE)
+    transcription = await repository.claim_due_step(
+        ACCESS_A, NOW + LEASE, LEASE, VOICE_STEPS
+    )
     assert transcription is not None
     assert transcription.run_id == run.id
     assert transcription.step_type is ProcessingStepType.TRANSCRIPTION
@@ -187,7 +203,7 @@ async def test_retry_backoff_and_final_download_failure_skip_transcription(
         engine, schema_engine, ACCESS_A, update_id=103
     )
 
-    claim_1 = await repository.claim_due_step(ACCESS_A, NOW, LEASE)
+    claim_1 = await repository.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS)
     assert claim_1 is not None
     failure_1_at = NOW + timedelta(seconds=10)
     retry_1 = await repository.fail_step(
@@ -203,12 +219,17 @@ async def test_retry_backoff_and_final_download_failure_skip_transcription(
     assert retry_1.next_attempt_at == failure_1_at + timedelta(minutes=1)
     assert (
         await repository.claim_due_step(
-            ACCESS_A, retry_1.next_attempt_at - timedelta(microseconds=1), LEASE
+            ACCESS_A,
+            retry_1.next_attempt_at - timedelta(microseconds=1),
+            LEASE,
+            VOICE_STEPS,
         )
         is None
     )
 
-    claim_2 = await repository.claim_due_step(ACCESS_A, retry_1.next_attempt_at, LEASE)
+    claim_2 = await repository.claim_due_step(
+        ACCESS_A, retry_1.next_attempt_at, LEASE, VOICE_STEPS
+    )
     assert claim_2 is not None
     failure_2_at = retry_1.next_attempt_at + timedelta(seconds=10)
     retry_2 = await repository.fail_step(
@@ -223,7 +244,9 @@ async def test_retry_backoff_and_final_download_failure_skip_transcription(
     assert await repository.claim_due_notice(ACCESS_A, failure_2_at) is None
     assert retry_2.next_attempt_at == failure_2_at + timedelta(minutes=5)
 
-    claim_3 = await repository.claim_due_step(ACCESS_A, retry_2.next_attempt_at, LEASE)
+    claim_3 = await repository.claim_due_step(
+        ACCESS_A, retry_2.next_attempt_at, LEASE, VOICE_STEPS
+    )
     assert claim_3 is not None
     final = await repository.fail_step(
         FailProcessingStepCommand(
@@ -240,6 +263,7 @@ async def test_retry_backoff_and_final_download_failure_skip_transcription(
     assert loaded is not None
     assert [step.status for step in loaded.steps] == [
         ProcessingStepStatus.FAILED,
+        ProcessingStepStatus.SKIPPED,
         ProcessingStepStatus.SKIPPED,
     ]
     assert loaded.overall_status is ProcessingStepStatus.FAILED
@@ -275,10 +299,77 @@ async def test_rls_hides_and_prevents_claiming_another_space(
     assert await repository_a.get_run(ACCESS_A, run_b.id) is None
     assert await repository_a.count_runs(ACCESS_A) == 1
 
-    claimed_a = await repository_a.claim_due_step(ACCESS_A, NOW, LEASE)
+    claimed_a = await repository_a.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS)
     assert claimed_a is not None
     assert claimed_a.run_id == run_a.id
-    assert await repository_a.claim_due_step(ACCESS_A, NOW, LEASE) is None
+    assert await repository_a.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS) is None
+
+
+@pytest.mark.asyncio
+async def test_text_run_has_only_immediately_claimable_classification(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    capture_event_id = await _add_capture(schema_engine, ACCESS_A, update_id=110)
+    repository = PostgresProcessingRepository(create_session_factory(engine))
+
+    run = await repository.create_text_run(
+        CreateTextProcessingRunCommand(
+            access_context=ACCESS_A,
+            capture_event_id=capture_event_id,
+            output_type=TranscriptionOutputType.NOTE,
+            created_at=NOW,
+            trace_id="f" * 32,
+        )
+    )
+
+    assert [step.step_type for step in run.steps] == [ProcessingStepType.CLASSIFICATION]
+    assert await repository.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS) is None
+    claim = await repository.claim_due_step(ACCESS_A, NOW, LEASE, CLASSIFICATION_STEPS)
+    assert claim is not None
+    assert claim.step_type is ProcessingStepType.CLASSIFICATION
+    assert claim.capture_event_id == capture_event_id
+
+
+@pytest.mark.asyncio
+async def test_classification_waits_for_voice_transcription_and_can_be_skipped(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    repository, run, _ = await _create_run(
+        engine, schema_engine, ACCESS_A, update_id=111
+    )
+
+    assert (
+        await repository.claim_due_step(ACCESS_A, NOW, LEASE, CLASSIFICATION_STEPS)
+        is None
+    )
+    download = await repository.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS)
+    assert download is not None
+    await repository.succeed_step(
+        SucceedProcessingStepCommand(ACCESS_A, download.step_id, NOW)
+    )
+    transcription = await repository.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS)
+    assert transcription is not None
+    await repository.succeed_step(
+        SucceedProcessingStepCommand(ACCESS_A, transcription.step_id, NOW)
+    )
+
+    classification = await repository.claim_due_step(
+        ACCESS_A, NOW, LEASE, CLASSIFICATION_STEPS
+    )
+    assert classification is not None
+    skipped = await repository.skip_step(
+        SkipProcessingStepCommand(
+            access_context=ACCESS_A,
+            step_id=classification.step_id,
+            skipped_at=NOW,
+            safe_reason_code="credential_detected",
+        )
+    )
+    assert skipped.status is ProcessingStepStatus.SKIPPED
+    assert skipped.safe_error_code == "credential_detected"
+    loaded = await repository.get_run(ACCESS_A, run.id)
+    assert loaded is not None
+    assert loaded.overall_status is ProcessingStepStatus.SUCCEEDED
 
 
 @pytest.mark.asyncio

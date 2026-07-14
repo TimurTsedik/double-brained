@@ -9,6 +9,9 @@ from second_brain.slices.capture.adapters.persistence.models import (
     CaptureEventModel,
     TelegramAttachmentModel,
 )
+from second_brain.slices.classification.adapters.persistence.models import (
+    ClassificationResultModel,
+)
 from second_brain.slices.identity.adapters.persistence.schema import (
     APPLICATION_ROLE,
     initialize_identity_schema,
@@ -64,6 +67,7 @@ PROCESSING_TABLES = (
     cast(Table, TranscriptModel.__table__),
     cast(Table, ProcessingNoticeModel.__table__),
 )
+CLASSIFICATION_TABLES = (cast(Table, ClassificationResultModel.__table__),)
 PENDING_SEARCH_MODE_TABLE = cast(Table, PendingSearchModeModel.__table__)
 
 
@@ -71,6 +75,7 @@ async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") ->
     await initialize_identity_schema(engine, schema_name)
     await _initialize_capture_schema(engine, schema_name)
     await _initialize_processing_schema(engine, schema_name)
+    await _initialize_classification_schema(engine, schema_name)
     await _initialize_task_schema(engine, schema_name)
     await _initialize_knowledge_schema(engine, schema_name)
     await _initialize_retrieval_schema(engine, schema_name)
@@ -85,11 +90,13 @@ async def reset_prototype_schema(
     await _drop_retrieval_schema(engine)
     await _drop_task_schema(engine)
     await _drop_knowledge_schema(engine)
+    await _drop_classification_schema(engine)
     await _drop_processing_schema(engine)
     await _drop_capture_schema(engine)
     await reset_identity_prototype_schema(engine, confirm, schema_name)
     await _initialize_capture_schema(engine, schema_name)
     await _initialize_processing_schema(engine, schema_name)
+    await _initialize_classification_schema(engine, schema_name)
     await _initialize_task_schema(engine, schema_name)
     await _initialize_knowledge_schema(engine, schema_name)
     await _initialize_retrieval_schema(engine, schema_name)
@@ -124,6 +131,22 @@ async def _initialize_processing_schema(engine: AsyncEngine, schema_name: str) -
 async def _drop_processing_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_drop_processing_tables)
+
+
+async def _initialize_classification_schema(
+    engine: AsyncEngine, schema_name: str
+) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_create_classification_tables)
+        await _configure_user_space_rls(
+            connection, schema_name, "classification_results"
+        )
+        await _grant_classification_privileges(connection, schema_name)
+
+
+async def _drop_classification_schema(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_drop_classification_tables)
 
 
 async def _initialize_task_schema(engine: AsyncEngine, schema_name: str) -> None:
@@ -195,6 +218,16 @@ def _create_processing_tables(connection: Connection) -> None:
 
 def _drop_processing_tables(connection: Connection) -> None:
     for table in reversed(PROCESSING_TABLES):
+        table.drop(connection, checkfirst=True)
+
+
+def _create_classification_tables(connection: Connection) -> None:
+    for table in CLASSIFICATION_TABLES:
+        table.create(connection, checkfirst=True)
+
+
+def _drop_classification_tables(connection: Connection) -> None:
+    for table in reversed(CLASSIFICATION_TABLES):
         table.drop(connection, checkfirst=True)
 
 
@@ -316,6 +349,18 @@ async def _grant_processing_privileges(
     )
     await connection.execute(
         text(f"GRANT UPDATE ON TABLE {mutable_tables} TO {APPLICATION_ROLE}")
+    )
+
+
+async def _grant_classification_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    table = f'{_quote_identifier(schema_name)}."classification_results"'
+    await connection.execute(
+        text(f"REVOKE ALL PRIVILEGES ON TABLE {table} FROM {APPLICATION_ROLE}")
+    )
+    await connection.execute(
+        text(f"GRANT SELECT, INSERT ON TABLE {table} TO {APPLICATION_ROLE}")
     )
 
 

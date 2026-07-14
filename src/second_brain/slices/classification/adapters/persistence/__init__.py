@@ -1,0 +1,1 @@
+"""PostgreSQL classification persistence adapter."""

@@ -16,6 +16,7 @@ class ProcessingStepStatus(IntEnum):
 class ProcessingStepType(StrEnum):
     AUDIO_DOWNLOAD = "audio_download"
     TRANSCRIPTION = "transcription"
+    CLASSIFICATION = "classification"
 
 
 class TranscriptionOutputType(StrEnum):

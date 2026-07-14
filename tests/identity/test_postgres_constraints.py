@@ -25,6 +25,33 @@ from tests.identity import conftest as identity_conftest
 from tests.identity.conftest import IsolatedDatabase, require_test_database_url
 
 TIMESTAMP = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
+EXPECTED_PROTOTYPE_TABLES = {
+    "capture_events",
+    "classification_results",
+    "enrollment_attempts",
+    "enrollment_invites",
+    "pending_capture_selections",
+    "pending_search_modes",
+    "processing_notices",
+    "processing_runs",
+    "processing_steps",
+    "transcripts",
+    "notes",
+    "note_provenance",
+    "ideas",
+    "idea_provenance",
+    "decisions",
+    "decision_provenance",
+    "questions",
+    "question_provenance",
+    "task_provenance",
+    "tasks",
+    "telegram_identities",
+    "telegram_attachments",
+    "telegram_update_receipts",
+    "user_spaces",
+    "users",
+}
 
 
 def test_requires_test_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,32 +99,7 @@ async def test_initialize_schema_creates_identity_tables(session: AsyncSession) 
         text("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()")
     )
 
-    assert set(result.scalars()) == {
-        "capture_events",
-        "enrollment_attempts",
-        "enrollment_invites",
-        "pending_capture_selections",
-        "pending_search_modes",
-        "processing_notices",
-        "processing_runs",
-        "processing_steps",
-        "transcripts",
-        "notes",
-        "note_provenance",
-        "ideas",
-        "idea_provenance",
-        "decisions",
-        "decision_provenance",
-        "questions",
-        "question_provenance",
-        "task_provenance",
-        "tasks",
-        "telegram_identities",
-        "telegram_attachments",
-        "telegram_update_receipts",
-        "user_spaces",
-        "users",
-    }
+    assert set(result.scalars()) == EXPECTED_PROTOTYPE_TABLES
 
 
 @pytest.mark.asyncio
@@ -111,32 +113,7 @@ async def test_reset_requires_confirmation_without_mutating_schema(
     result = await session.execute(
         text("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()")
     )
-    assert set(result.scalars()) == {
-        "capture_events",
-        "enrollment_attempts",
-        "enrollment_invites",
-        "pending_capture_selections",
-        "pending_search_modes",
-        "processing_notices",
-        "processing_runs",
-        "processing_steps",
-        "transcripts",
-        "notes",
-        "note_provenance",
-        "ideas",
-        "idea_provenance",
-        "decisions",
-        "decision_provenance",
-        "questions",
-        "question_provenance",
-        "task_provenance",
-        "tasks",
-        "telegram_identities",
-        "telegram_attachments",
-        "telegram_update_receipts",
-        "user_spaces",
-        "users",
-    }
+    assert set(result.scalars()) == EXPECTED_PROTOTYPE_TABLES
 
 
 @pytest.mark.asyncio

@@ -63,8 +63,5 @@ class AiogramVoiceNotifier:
                 f"{SUCCESS_LABELS[command.notice.output_type]}."
             )
         else:
-            text = (
-                "Не удалось обработать голосовое сообщение.\n"
-                f"Trace ID: {command.notice.trace_id}"
-            )
+            text = f"Не удалось обработать запись.\nTrace ID: {command.notice.trace_id}"
         await self._bot.send_message(command.recipient_telegram_id, text)

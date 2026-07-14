@@ -51,7 +51,14 @@ def claim(step_type: ProcessingStepType, attempt: int = 1) -> ProcessingStepClai
 class Queue:
     def __init__(self, claimed: ProcessingStepClaim | None) -> None:
         self.claimed = claimed
-        self.claim_calls: list[tuple[AccessContext, datetime, timedelta]] = []
+        self.claim_calls: list[
+            tuple[
+                AccessContext,
+                datetime,
+                timedelta,
+                tuple[ProcessingStepType, ...],
+            ]
+        ] = []
         self.failures: list[object] = []
 
     async def claim_due_step(
@@ -59,8 +66,9 @@ class Queue:
         access_context: AccessContext,
         now: datetime,
         lease_duration: timedelta,
+        step_types: tuple[ProcessingStepType, ...],
     ) -> ProcessingStepClaim | None:
-        self.claim_calls.append((access_context, now, lease_duration))
+        self.claim_calls.append((access_context, now, lease_duration, step_types))
         return self.claimed
 
     async def fail_step(self, command: object) -> object:
@@ -200,7 +208,17 @@ async def test_no_claim_means_no_external_work() -> None:
     worked = await app.process_once(ACCESS, NOW)
 
     assert worked is False
-    assert queue.claim_calls == [(ACCESS, NOW, timedelta(minutes=15))]
+    assert queue.claim_calls == [
+        (
+            ACCESS,
+            NOW,
+            timedelta(minutes=15),
+            (
+                ProcessingStepType.AUDIO_DOWNLOAD,
+                ProcessingStepType.TRANSCRIPTION,
+            ),
+        )
+    ]
     assert source.calls == []
     assert downloader.commands == []
     assert storage.store_commands == []

@@ -54,10 +54,11 @@ INVITE_TOKEN_PEPPER_KEY_ID=
 This slice changes the prototype database-role contract, Telegram voice
 attachments, processing/transcript state, the allowed Telegram receipt
 results, pending-capture and pending-search schemas, the allowed
-`tasks.status` values, and full-text indexes. **A database created by an
-earlier prototype version must be reset before running the current bot and
-voice worker.** `init-db` does not alter existing constraints or rename former
-tables. The reset destroys all local prototype data:
+`tasks.status` values, classification steps/results, and full-text indexes.
+**A database created by an earlier prototype version must be reset before
+running the current bot and worker.** `init-db` does not alter existing
+constraints or rename former tables. The reset destroys all local prototype
+data:
 
 ```bash
 uv run --env-file .env second-brain-identity reset-db --confirm-prototype-reset
@@ -112,13 +113,26 @@ use `mlx-community/whisper-large-v3-turbo`. The first transcription downloads
 and caches roughly 1.6 GB of model weights. A smaller compatible model can be
 selected with `MLX_WHISPER_MODEL`.
 
-Run polling and transcription as two separate long-running processes:
+Install and start Ollama, then cache the local structured-extraction model:
+
+```bash
+ollama pull qwen3:4b
+```
+
+The adapter accepts only loopback HTTP and bypasses environment proxies. Before
+the model call, a deterministic scanner blocks common credentials. Model output
+is treated as untrusted: only exact source quotes with valid type/modality and
+confidence of at least `0.90` may create additional records. The original
+record selected with the Telegram button is never replaced.
+
+Run polling and the combined voice/classification worker as two separate
+long-running processes:
 
 ```bash
 # terminal 1: receive and durably queue Telegram updates
 uv run --env-file .env second-brain-local-polling
 
-# terminal 2: download, store, and transcribe queued voice messages
+# terminal 2: transcribe voice and classify queued text/transcripts locally
 uv run --env-file .env second-brain-local-voice-worker
 ```
 
@@ -133,9 +147,10 @@ of personal transcript content:
 ```
 
 Processing retries twice after the initial attempt. After the third failure,
-the bot sends one failure status with the safe root Trace ID. Originals remain
-namespaced by the internally resolved `UserSpace`; neither a command-line
-argument nor an environment variable can choose another user's space.
+the bot sends one generic failure status with the safe root Trace ID.
+Successful classification is silent. Originals remain namespaced by the
+internally resolved `UserSpace`; neither a command-line argument nor an
+environment variable can choose another user's space.
 
 ### Task panel delivery note
 

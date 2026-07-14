@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, case, exists, func, or_, select, text
+from sqlalchemy import and_, case, exists, func, not_, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
@@ -16,9 +16,11 @@ from second_brain.slices.processing.adapters.persistence.models import (
 from second_brain.slices.processing.application.contracts import (
     CompleteVoiceDownloadCommand,
     CompleteVoiceTranscriptionCommand,
+    CreateTextProcessingRunCommand,
     CreateVoiceProcessingRunCommand,
     FailProcessingStepCommand,
     MarkProcessingNoticeSentCommand,
+    SkipProcessingStepCommand,
     SucceedProcessingStepCommand,
 )
 from second_brain.slices.processing.domain.entities import (
@@ -49,16 +51,24 @@ class PostgresProcessingRepository:
             async with session.begin():
                 return await PostgresProcessingWriter(session).create_voice_run(command)
 
+    async def create_text_run(
+        self, command: CreateTextProcessingRunCommand
+    ) -> ProcessingRun:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresProcessingWriter(session).create_text_run(command)
+
     async def claim_due_step(
         self,
         access_context: AccessContext,
         now: datetime,
         lease_duration: timedelta,
+        step_types: tuple[ProcessingStepType, ...],
     ) -> ProcessingStepClaim | None:
         async with self._session_factory() as session:
             async with session.begin():
                 return await PostgresProcessingWriter(session).claim_due_step(
-                    access_context, now, lease_duration
+                    access_context, now, lease_duration, step_types
                 )
 
     async def succeed_step(
@@ -72,6 +82,11 @@ class PostgresProcessingRepository:
         async with self._session_factory() as session:
             async with session.begin():
                 return await PostgresProcessingWriter(session).fail_step(command)
+
+    async def skip_step(self, command: SkipProcessingStepCommand) -> ProcessingStep:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresProcessingWriter(session).skip_step(command)
 
     async def get_run(
         self, access_context: AccessContext, run_id: UUID
@@ -140,6 +155,18 @@ class PostgresProcessingWriter:
     async def create_voice_run(
         self, command: CreateVoiceProcessingRunCommand
     ) -> ProcessingRun:
+        return await self._create_run(command, tuple(ProcessingStepType))
+
+    async def create_text_run(
+        self, command: CreateTextProcessingRunCommand
+    ) -> ProcessingRun:
+        return await self._create_run(command, (ProcessingStepType.CLASSIFICATION,))
+
+    async def _create_run(
+        self,
+        command: CreateVoiceProcessingRunCommand | CreateTextProcessingRunCommand,
+        step_types: tuple[ProcessingStepType, ...],
+    ) -> ProcessingRun:
         await _set_user_space_scope(self._session, command.access_context)
         run = ProcessingRunModel(
             id=uuid4(),
@@ -168,7 +195,7 @@ class PostgresProcessingWriter:
                 updated_at=command.created_at,
                 trace_id=command.trace_id,
             )
-            for step_type in ProcessingStepType
+            for step_type in step_types
         )
         self._session.add(run)
         self._session.add_all(steps)
@@ -180,9 +207,12 @@ class PostgresProcessingWriter:
         access_context: AccessContext,
         now: datetime,
         lease_duration: timedelta,
+        step_types: tuple[ProcessingStepType, ...],
     ) -> ProcessingStepClaim | None:
         if lease_duration <= timedelta(0):
             raise ValueError("lease duration must be positive")
+        if not step_types:
+            raise ValueError("at least one processing step type must be allowed")
         await _set_user_space_scope(self._session, access_context)
         await self._finalize_exhausted_leases(access_context, now)
 
@@ -193,6 +223,24 @@ class PostgresProcessingWriter:
                 download.user_space_id == access_context.user_space_id,
                 download.step_type == ProcessingStepType.AUDIO_DOWNLOAD,
                 download.status == ProcessingStepStatus.SUCCEEDED.value,
+            )
+        )
+        transcription = aliased(ProcessingStepModel)
+        transcription_exists = exists(
+            select(transcription.id).where(
+                transcription.processing_run_id
+                == ProcessingStepModel.processing_run_id,
+                transcription.user_space_id == access_context.user_space_id,
+                transcription.step_type == ProcessingStepType.TRANSCRIPTION,
+            )
+        )
+        transcription_succeeded = exists(
+            select(transcription.id).where(
+                transcription.processing_run_id
+                == ProcessingStepModel.processing_run_id,
+                transcription.user_space_id == access_context.user_space_id,
+                transcription.step_type == ProcessingStepType.TRANSCRIPTION,
+                transcription.status == ProcessingStepStatus.SUCCEEDED.value,
             )
         )
         due = or_(
@@ -220,11 +268,21 @@ class PostgresProcessingWriter:
             .where(
                 ProcessingStepModel.user_space_id == access_context.user_space_id,
                 ProcessingRunModel.user_space_id == access_context.user_space_id,
+                ProcessingStepModel.step_type.in_(step_types),
                 ProcessingStepModel.attempt_count < MAX_ATTEMPTS,
                 due,
                 or_(
                     ProcessingStepModel.step_type == ProcessingStepType.AUDIO_DOWNLOAD,
-                    download_succeeded,
+                    and_(
+                        ProcessingStepModel.step_type
+                        == ProcessingStepType.TRANSCRIPTION,
+                        download_succeeded,
+                    ),
+                    and_(
+                        ProcessingStepModel.step_type
+                        == ProcessingStepType.CLASSIFICATION,
+                        or_(not_(transcription_exists), transcription_succeeded),
+                    ),
                 ),
             )
             .order_by(
@@ -234,7 +292,12 @@ class PostgresProcessingWriter:
                         == ProcessingStepType.AUDIO_DOWNLOAD,
                         0,
                     ),
-                    else_=1,
+                    (
+                        ProcessingStepModel.step_type
+                        == ProcessingStepType.TRANSCRIPTION,
+                        1,
+                    ),
+                    else_=2,
                 ),
                 ProcessingStepModel.created_at,
                 ProcessingStepModel.id,
@@ -314,6 +377,23 @@ class PostgresProcessingWriter:
             trace_id=run.trace_id,
         )
 
+    async def lock_classification_target(
+        self, access_context: AccessContext, step_id: UUID
+    ) -> ProcessingCompletionTarget:
+        step, run = await self._lock_step_and_run(access_context, step_id)
+        if step.step_type is not ProcessingStepType.CLASSIFICATION:
+            raise ValueError("processing step is not a classification")
+        if step.status != ProcessingStepStatus.RUNNING.value:
+            raise ValueError("only a running classification can complete")
+        return ProcessingCompletionTarget(
+            step_id=step.id,
+            run_id=run.id,
+            capture_event_id=run.capture_event_id,
+            output_type=run.output_type,
+            version=run.version,
+            trace_id=run.trace_id,
+        )
+
     async def complete_voice_transcription(
         self, command: CompleteVoiceTranscriptionCommand
     ) -> ProcessingStep:
@@ -365,10 +445,14 @@ class PostgresProcessingWriter:
             step.status = ProcessingStepStatus.FAILED.value
             step.next_attempt_at = None
             step.completed_at = command.failed_at
-            if step.step_type is ProcessingStepType.AUDIO_DOWNLOAD:
-                await self._skip_transcription(
+            if step.step_type in (
+                ProcessingStepType.AUDIO_DOWNLOAD,
+                ProcessingStepType.TRANSCRIPTION,
+            ):
+                await self._skip_dependents(
                     command.access_context,
                     step.processing_run_id,
+                    step.step_type,
                     command.failed_at,
                 )
             await self._create_notice(
@@ -382,6 +466,21 @@ class PostgresProcessingWriter:
             step.status = ProcessingStepStatus.PENDING.value
             step.next_attempt_at = command.failed_at + _retry_delay(step.attempt_count)
             step.completed_at = None
+        await self._session.flush()
+        return _to_step(step)
+
+    async def skip_step(self, command: SkipProcessingStepCommand) -> ProcessingStep:
+        step = await self._lock_step(command.access_context, command.step_id)
+        if step.status == ProcessingStepStatus.SKIPPED.value:
+            return _to_step(step)
+        if step.status != ProcessingStepStatus.RUNNING.value:
+            raise ValueError("only a running processing step can be skipped")
+        step.status = ProcessingStepStatus.SKIPPED.value
+        step.next_attempt_at = None
+        step.lease_expires_at = None
+        step.safe_error_code = command.safe_reason_code
+        step.completed_at = command.skipped_at
+        step.updated_at = command.skipped_at
         await self._session.flush()
         return _to_step(step)
 
@@ -482,7 +581,12 @@ class PostgresProcessingWriter:
                             == ProcessingStepType.AUDIO_DOWNLOAD,
                             0,
                         ),
-                        else_=1,
+                        (
+                            ProcessingStepModel.step_type
+                            == ProcessingStepType.TRANSCRIPTION,
+                            1,
+                        ),
+                        else_=2,
                     )
                 )
             )
@@ -584,30 +688,36 @@ class PostgresProcessingWriter:
             raise LookupError("processing step was not found")
         return step
 
-    async def _skip_transcription(
+    async def _skip_dependents(
         self,
         access_context: AccessContext,
         run_id: UUID,
+        failed_step_type: ProcessingStepType,
         completed_at: datetime,
     ) -> None:
-        transcription = await self._session.scalar(
-            select(ProcessingStepModel)
-            .where(
-                ProcessingStepModel.processing_run_id == run_id,
-                ProcessingStepModel.user_space_id == access_context.user_space_id,
-                ProcessingStepModel.step_type == ProcessingStepType.TRANSCRIPTION,
-            )
-            .with_for_update()
+        dependent_types = (
+            (ProcessingStepType.TRANSCRIPTION, ProcessingStepType.CLASSIFICATION)
+            if failed_step_type is ProcessingStepType.AUDIO_DOWNLOAD
+            else (ProcessingStepType.CLASSIFICATION,)
         )
-        if (
-            transcription is not None
-            and transcription.status == ProcessingStepStatus.PENDING.value
-        ):
-            transcription.status = ProcessingStepStatus.SKIPPED.value
-            transcription.next_attempt_at = None
-            transcription.lease_expires_at = None
-            transcription.completed_at = completed_at
-            transcription.updated_at = completed_at
+        dependents = tuple(
+            await self._session.scalars(
+                select(ProcessingStepModel)
+                .where(
+                    ProcessingStepModel.processing_run_id == run_id,
+                    ProcessingStepModel.user_space_id == access_context.user_space_id,
+                    ProcessingStepModel.step_type.in_(dependent_types),
+                )
+                .with_for_update()
+            )
+        )
+        for dependent in dependents:
+            if dependent.status == ProcessingStepStatus.PENDING.value:
+                dependent.status = ProcessingStepStatus.SKIPPED.value
+                dependent.next_attempt_at = None
+                dependent.lease_expires_at = None
+                dependent.completed_at = completed_at
+                dependent.updated_at = completed_at
 
     async def _finalize_exhausted_leases(
         self, access_context: AccessContext, now: datetime
@@ -632,9 +742,15 @@ class PostgresProcessingWriter:
             step.safe_error_code = "lease_expired"
             step.completed_at = now
             step.updated_at = now
-            if step.step_type is ProcessingStepType.AUDIO_DOWNLOAD:
-                await self._skip_transcription(
-                    access_context, step.processing_run_id, now
+            if step.step_type in (
+                ProcessingStepType.AUDIO_DOWNLOAD,
+                ProcessingStepType.TRANSCRIPTION,
+            ):
+                await self._skip_dependents(
+                    access_context,
+                    step.processing_run_id,
+                    step.step_type,
+                    now,
                 )
             await self._create_notice(
                 access_context,
@@ -703,7 +819,11 @@ def _to_run(
     ordered_steps = sorted(
         steps,
         key=lambda step: (
-            0 if step.step_type is ProcessingStepType.AUDIO_DOWNLOAD else 1
+            0
+            if step.step_type is ProcessingStepType.AUDIO_DOWNLOAD
+            else 1
+            if step.step_type is ProcessingStepType.TRANSCRIPTION
+            else 2
         ),
     )
     return ProcessingRun(

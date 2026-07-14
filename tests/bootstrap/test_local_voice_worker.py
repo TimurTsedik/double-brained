@@ -164,7 +164,13 @@ async def _create_claimed_transcription(
             trace_id=TRACE_ID,
         )
     )
-    download = await repository.claim_due_step(ACCESS, NOW, timedelta(minutes=15))
+    voice_steps = (
+        ProcessingStepType.AUDIO_DOWNLOAD,
+        ProcessingStepType.TRANSCRIPTION,
+    )
+    download = await repository.claim_due_step(
+        ACCESS, NOW, timedelta(minutes=15), voice_steps
+    )
     assert download is not None
     await VoiceDownloadCompletionInTransaction(session_factory).complete(
         CompleteVoiceDownloadCommand(
@@ -182,7 +188,10 @@ async def _create_claimed_transcription(
         )
     )
     transcription = await repository.claim_due_step(
-        ACCESS, NOW + timedelta(seconds=1), timedelta(minutes=15)
+        ACCESS,
+        NOW + timedelta(seconds=1),
+        timedelta(minutes=15),
+        voice_steps,
     )
     assert transcription is not None
     assert transcription.step_type is ProcessingStepType.TRANSCRIPTION
@@ -301,7 +310,10 @@ async def test_failed_completion_rolls_back_then_retry_creates_one_result(
         )
     )
     claim = await repository.claim_due_step(
-        ACCESS, retry.next_attempt_at or failed_at, timedelta(minutes=15)
+        ACCESS,
+        retry.next_attempt_at or failed_at,
+        timedelta(minutes=15),
+        (ProcessingStepType.TRANSCRIPTION,),
     )
     assert claim is not None
     await completion.complete(
@@ -451,6 +463,7 @@ def _notice_claim() -> ProcessingNoticeClaim:
 @pytest.mark.asyncio
 async def test_cycle_processes_one_scope_and_marks_notice_only_after_send() -> None:
     worker = FakeVoiceWorker(worked=False)
+    classification_worker = FakeVoiceWorker(worked=False)
     repository = FakeNoticeRepository(_notice_claim())
     identity = FakeWorkerIdentity()
     notifier = FakeNotifier()
@@ -459,6 +472,7 @@ async def test_cycle_processes_one_scope_and_marks_notice_only_after_send() -> N
         access_context=ACCESS,
         now=NOW,
         worker=worker,
+        classification_worker=classification_worker,
         processing_repository=repository,
         identity_repository=identity,
         notifier=notifier,
@@ -466,6 +480,7 @@ async def test_cycle_processes_one_scope_and_marks_notice_only_after_send() -> N
 
     assert worked is True
     assert worker.calls == [(ACCESS, NOW)]
+    assert classification_worker.calls == [(ACCESS, NOW)]
     assert repository.claim_calls == [(ACCESS, NOW)]
     assert identity.calls == [ACCESS]
     assert len(notifier.commands) == 1
@@ -482,9 +497,30 @@ async def test_cycle_does_not_mark_notice_sent_when_telegram_fails() -> None:
             access_context=ACCESS,
             now=NOW,
             worker=FakeVoiceWorker(worked=False),
+            classification_worker=FakeVoiceWorker(worked=False),
             processing_repository=repository,
             identity_repository=FakeWorkerIdentity(),
             notifier=FakeNotifier(RuntimeError("telegram unavailable")),
         )
 
     assert repository.sent == []
+
+
+@pytest.mark.asyncio
+async def test_cycle_reports_work_when_only_classification_processed() -> None:
+    voice_worker = FakeVoiceWorker(worked=False)
+    classification_worker = FakeVoiceWorker(worked=True)
+
+    worked = await process_access_once(
+        access_context=ACCESS,
+        now=NOW,
+        worker=voice_worker,
+        classification_worker=classification_worker,
+        processing_repository=FakeNoticeRepository(None),
+        identity_repository=FakeWorkerIdentity(),
+        notifier=FakeNotifier(),
+    )
+
+    assert worked is True
+    assert voice_worker.calls == [(ACCESS, NOW)]
+    assert classification_worker.calls == [(ACCESS, NOW)]

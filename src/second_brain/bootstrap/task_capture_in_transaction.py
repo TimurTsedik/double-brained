@@ -19,6 +19,14 @@ from second_brain.slices.identity.application.contracts import (
 from second_brain.slices.knowledge.adapters.persistence.repository import (
     PostgresKnowledgeWriter,
 )
+from second_brain.slices.knowledge.domain.entities import Decision, Idea, Note, Question
+from second_brain.slices.processing.adapters.persistence.repository import (
+    PostgresProcessingWriter,
+)
+from second_brain.slices.processing.application.contracts import (
+    CreateTextProcessingRunCommand,
+)
+from second_brain.slices.processing.domain.entities import TranscriptionOutputType
 from second_brain.slices.tasks.adapters.persistence.repository import (
     PostgresPendingCaptureSelectionWriter,
     PostgresTaskPanelWriter,
@@ -36,6 +44,7 @@ from second_brain.slices.tasks.application.contracts import (
 )
 from second_brain.slices.tasks.application.task_capture import TaskCapture
 from second_brain.slices.tasks.application.task_panel import TaskPanel
+from second_brain.slices.tasks.domain.entities import Task
 
 
 class TaskCaptureInTransaction(CaptureTextPort, TaskModePort, TaskPanelPort):
@@ -47,7 +56,7 @@ class TaskCaptureInTransaction(CaptureTextPort, TaskModePort, TaskPanelPort):
         session = _active_session(transaction)
         source = await CaptureText(PostgresCaptureEventWriter(session)).execute(command)
         task_capture = _typed_task_capture(session)
-        await task_capture.consume_for_text(
+        record = await task_capture.consume_for_text(
             ConsumePendingTaskTextCommand(
                 access_context=command.access_context,
                 text=command.raw_text,
@@ -58,6 +67,16 @@ class TaskCaptureInTransaction(CaptureTextPort, TaskModePort, TaskPanelPort):
                 trace_id=command.trace_id,
             )
         )
+        if record is not None:
+            await PostgresProcessingWriter(session).create_text_run(
+                CreateTextProcessingRunCommand(
+                    access_context=command.access_context,
+                    capture_event_id=source.id,
+                    output_type=_record_output_type(record),
+                    created_at=command.received_at,
+                    trace_id=command.trace_id,
+                )
+            )
         return source
 
     async def set_awaiting_task(
@@ -104,3 +123,17 @@ def _typed_task_capture(session: AsyncSession) -> TaskCapture:
         PostgresTaskWriter(session),
         PostgresKnowledgeWriter(session),
     )
+
+
+def _record_output_type(
+    record: Task | Note | Idea | Decision | Question,
+) -> TranscriptionOutputType:
+    if isinstance(record, Task):
+        return TranscriptionOutputType.TASK
+    if isinstance(record, Note):
+        return TranscriptionOutputType.NOTE
+    if isinstance(record, Idea):
+        return TranscriptionOutputType.IDEA
+    if isinstance(record, Decision):
+        return TranscriptionOutputType.DECISION
+    return TranscriptionOutputType.QUESTION

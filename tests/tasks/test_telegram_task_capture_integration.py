@@ -36,6 +36,15 @@ from second_brain.slices.knowledge.adapters.persistence.models import (
     NoteModel,
     NoteProvenanceModel,
 )
+from second_brain.slices.processing.adapters.persistence.models import (
+    ProcessingRunModel,
+    ProcessingStepModel,
+)
+from second_brain.slices.processing.domain.entities import (
+    ProcessingStepStatus,
+    ProcessingStepType,
+    TranscriptionOutputType,
+)
 from second_brain.slices.tasks.adapters.persistence.models import (
     PendingCaptureSelectionModel,
     TaskModel,
@@ -155,15 +164,21 @@ async def test_button_then_text_atomically_creates_source_task_and_provenance(
     assert await count(schema_engine, CaptureEventModel) == 1
     assert await count(schema_engine, TaskModel) == 1
     assert await count(schema_engine, TaskProvenanceModel) == 1
+    assert await count(schema_engine, ProcessingRunModel) == 1
+    assert await count(schema_engine, ProcessingStepModel) == 1
     async with create_session_factory(schema_engine)() as session:
         task = await session.scalar(select(TaskModel))
         source = await session.scalar(select(CaptureEventModel))
         provenance = await session.scalar(select(TaskProvenanceModel))
         mode = await session.scalar(select(PendingCaptureSelectionModel))
+        run = await session.scalar(select(ProcessingRunModel))
+        step = await session.scalar(select(ProcessingStepModel))
     assert task is not None
     assert source is not None
     assert provenance is not None
     assert mode is not None
+    assert run is not None
+    assert step is not None
     assert task.title == "  Купить молоко  "
     assert task.status is TaskStatus.INBOX
     assert task.user_space_id == source.user_space_id == provenance.user_space_id
@@ -171,6 +186,12 @@ async def test_button_then_text_atomically_creates_source_task_and_provenance(
     assert source.id == provenance.source_capture_event_id
     assert provenance.task_id == task.id
     assert mode.selection is PendingCaptureType.NOTE
+    assert run.capture_event_id == source.id
+    assert run.output_type is TranscriptionOutputType.TASK
+    assert run.trace_id == source.trace_id
+    assert step.processing_run_id == run.id
+    assert step.step_type is ProcessingStepType.CLASSIFICATION
+    assert step.status == ProcessingStepStatus.PENDING.value
 
 
 @pytest.mark.asyncio
@@ -253,6 +274,8 @@ async def test_normal_text_without_mode_creates_source_note_and_provenance(
     assert await count(schema_engine, NoteProvenanceModel) == 1
     assert await count(schema_engine, TaskModel) == 0
     assert await count(schema_engine, TaskProvenanceModel) == 0
+    assert await count(schema_engine, ProcessingRunModel) == 1
+    assert await count(schema_engine, ProcessingStepModel) == 1
     async with create_session_factory(schema_engine)() as session:
         note = await session.scalar(select(NoteModel))
         source = await session.scalar(select(CaptureEventModel))
@@ -406,6 +429,8 @@ async def test_failure_rolls_back_mode_source_task_and_receipt_then_retry_succee
     assert await count(schema_engine, CaptureEventModel) == 0
     assert await count(schema_engine, TaskModel) == 0
     assert await count(schema_engine, TaskProvenanceModel) == 0
+    assert await count(schema_engine, ProcessingRunModel) == 0
+    assert await count(schema_engine, ProcessingStepModel) == 0
     assert await count(schema_engine, TelegramUpdateReceipt) == 1
     async with create_session_factory(schema_engine)() as session:
         mode = await session.scalar(select(PendingCaptureSelectionModel))
