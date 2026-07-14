@@ -51,11 +51,12 @@ INVITE_TOKEN_PEPPER_KEY_ID=
 
 ### Initialize and enroll
 
-This slice changes the prototype database-role contract, the allowed Telegram
-receipt results, the pending-capture and pending-search schemas, the allowed
-`tasks.status` values, and the full-text indexes. **A database created by an
-earlier prototype version must be reset before running the actionable task and
-search bot.** `init-db` does not alter existing constraints or rename former
+This slice changes the prototype database-role contract, Telegram voice
+attachments, processing/transcript state, the allowed Telegram receipt
+results, pending-capture and pending-search schemas, the allowed
+`tasks.status` values, and full-text indexes. **A database created by an
+earlier prototype version must be reset before running the current bot and
+voice worker.** `init-db` does not alter existing constraints or rename former
 tables. The reset destroys all local prototype data:
 
 ```bash
@@ -90,6 +91,51 @@ refuses to start when a webhook is configured.
 ```bash
 uv run --env-file .env second-brain-local-polling
 ```
+
+## Local voice transcription
+
+Voice messages are downloaded through the Telegram Bot API and transcribed on
+the local machine with `mlx-whisper`. Audio and transcript text are not sent to
+an inference API. The current adapter works with supported MLX installations
+on Apple Silicon macOS and Linux; the exact Linux MLX CPU/CUDA package depends
+on the production hardware and is intentionally not guessed by this local
+prototype.
+
+Install FFmpeg before starting the worker. On macOS with Homebrew:
+
+```bash
+brew install ffmpeg
+```
+
+The defaults in `.env.example` store controlled audio below `.data/voice` and
+use `mlx-community/whisper-large-v3-turbo`. The first transcription downloads
+and caches roughly 1.6 GB of model weights. A smaller compatible model can be
+selected with `MLX_WHISPER_MODEL`.
+
+Run polling and transcription as two separate long-running processes:
+
+```bash
+# terminal 1: receive and durably queue Telegram updates
+uv run --env-file .env second-brain-local-polling
+
+# terminal 2: download, store, and transcribe queued voice messages
+uv run --env-file .env second-brain-local-voice-worker
+```
+
+The current capture button determines whether the transcript becomes a Note,
+Task, Idea, Decision, or Question; without a preceding type selection it
+becomes a Note. Telegram receives only fixed processing statuses, never a copy
+of personal transcript content:
+
+```text
+🎙️ Голос сохранён. Расшифровываю…
+🎙️ Расшифровано и сохранено: 📝 Заметка.
+```
+
+Processing retries twice after the initial attempt. After the third failure,
+the bot sends one failure status with the safe root Trace ID. Originals remain
+namespaced by the internally resolved `UserSpace`; neither a command-line
+argument nor an environment variable can choose another user's space.
 
 ### Task panel delivery note
 
