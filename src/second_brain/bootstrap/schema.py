@@ -5,7 +5,10 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.sql.schema import Table
 
-from second_brain.slices.capture.adapters.persistence.models import CaptureEventModel
+from second_brain.slices.capture.adapters.persistence.models import (
+    CaptureEventModel,
+    TelegramAttachmentModel,
+)
 from second_brain.slices.identity.adapters.persistence.schema import (
     APPLICATION_ROLE,
     initialize_identity_schema,
@@ -36,7 +39,10 @@ from second_brain.slices.tasks.adapters.persistence.models import (
     TaskProvenanceModel,
 )
 
-CAPTURE_EVENT_TABLE = cast(Table, CaptureEventModel.__table__)
+CAPTURE_TABLES = (
+    cast(Table, CaptureEventModel.__table__),
+    cast(Table, TelegramAttachmentModel.__table__),
+)
 TASK_TABLES = (
     cast(Table, TaskModel.__table__),
     cast(Table, TaskProvenanceModel.__table__),
@@ -91,13 +97,15 @@ async def reset_prototype_schema(
 
 async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> None:
     async with engine.begin() as connection:
-        await connection.run_sync(_create_capture_event_table)
-        await _configure_capture_event_rls(connection, schema_name)
+        await connection.run_sync(_create_capture_tables)
+        for table_name in ("capture_events", "telegram_attachments"):
+            await _configure_user_space_rls(connection, schema_name, table_name)
+        await _grant_capture_privileges(connection, schema_name)
 
 
 async def _drop_capture_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
-        await connection.run_sync(_drop_capture_event_table)
+        await connection.run_sync(_drop_capture_tables)
 
 
 async def _initialize_processing_schema(engine: AsyncEngine, schema_name: str) -> None:
@@ -170,12 +178,14 @@ async def _drop_retrieval_schema(engine: AsyncEngine) -> None:
         await connection.run_sync(_drop_pending_search_mode_table)
 
 
-def _create_capture_event_table(connection: Connection) -> None:
-    CAPTURE_EVENT_TABLE.create(connection, checkfirst=True)
+def _create_capture_tables(connection: Connection) -> None:
+    for table in CAPTURE_TABLES:
+        table.create(connection, checkfirst=True)
 
 
-def _drop_capture_event_table(connection: Connection) -> None:
-    CAPTURE_EVENT_TABLE.drop(connection, checkfirst=True)
+def _drop_capture_tables(connection: Connection) -> None:
+    for table in reversed(CAPTURE_TABLES):
+        table.drop(connection, checkfirst=True)
 
 
 def _create_processing_tables(connection: Connection) -> None:
@@ -214,12 +224,6 @@ def _create_pending_search_mode_table(connection: Connection) -> None:
 
 def _drop_pending_search_mode_table(connection: Connection) -> None:
     PENDING_SEARCH_MODE_TABLE.drop(connection, checkfirst=True)
-
-
-async def _configure_capture_event_rls(
-    connection: AsyncConnection, schema_name: str
-) -> None:
-    await _configure_user_space_rls(connection, schema_name, "capture_events")
 
 
 async def _configure_user_space_rls(
@@ -262,6 +266,27 @@ async def _grant_task_privileges(connection: AsyncConnection, schema_name: str) 
             "GRANT UPDATE ON TABLE "
             f"{quoted_schema}.tasks, {quoted_schema}.pending_capture_selections "
             f"TO {APPLICATION_ROLE}"
+        )
+    )
+
+
+async def _grant_capture_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    schema = _quote_identifier(schema_name)
+    capture_events = f'{schema}."capture_events"'
+    attachments = f'{schema}."telegram_attachments"'
+    tables = f"{capture_events}, {attachments}"
+    await connection.execute(
+        text(f"REVOKE ALL PRIVILEGES ON TABLE {tables} FROM {APPLICATION_ROLE}")
+    )
+    await connection.execute(
+        text(f"GRANT SELECT, INSERT ON TABLE {tables} TO {APPLICATION_ROLE}")
+    )
+    await connection.execute(
+        text(
+            "GRANT UPDATE (storage_key, sha256, stored_size, stored_mime_type, "
+            f"stored_at) ON TABLE {attachments} TO {APPLICATION_ROLE}"
         )
     )
 

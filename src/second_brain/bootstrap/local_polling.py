@@ -7,6 +7,9 @@ from second_brain.bootstrap.exact_search_in_transaction import (
 )
 from second_brain.bootstrap.settings import Settings
 from second_brain.bootstrap.task_capture_in_transaction import TaskCaptureInTransaction
+from second_brain.bootstrap.voice_capture_in_transaction import (
+    VoiceCaptureInTransaction,
+)
 from second_brain.shared.clock import SystemClock
 from second_brain.slices.identity.adapters.persistence.database import (
     assert_non_privileged_application_role,
@@ -36,14 +39,15 @@ async def run_local_polling(settings: Settings) -> None:
         task_capture = TaskCaptureInTransaction()
         exact_search = ExactSearchInTransaction()
         processor = LocalUpdateProcessor(
-            PostgresUpdateRepository(session_factory),
-            SystemClock(),
-            settings.invite_token_pepper,
-            settings.invite_token_pepper_key_id,
-            task_capture,
-            task_capture,
-            task_capture,
-            exact_search,
+            store=PostgresUpdateRepository(session_factory),
+            clock=SystemClock(),
+            pepper=settings.invite_token_pepper,
+            pepper_key_id=settings.invite_token_pepper_key_id,
+            capture_text_port=task_capture,
+            task_mode_port=task_capture,
+            task_panel_port=task_capture,
+            exact_search_port=exact_search,
+            capture_voice_port=VoiceCaptureInTransaction(),
         )
         poller = LocalPoller(AiogramGateway(bot, bot_user.id), processor, lock)
         while True:

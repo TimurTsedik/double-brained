@@ -4,6 +4,7 @@ from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
     CompleteTaskCommand,
+    ConsumePendingCaptureSelectionCommand,
     ConsumePendingTaskTextCommand,
     CreateTaskCommand,
     SetAwaitingTaskCommand,
@@ -33,7 +34,7 @@ class PendingCaptureSelectionStore(Protocol):
     async def cancel(self, command: CancelPendingTaskCommand) -> None: ...
 
     async def consume_selection(
-        self, command: ConsumePendingTaskTextCommand
+        self, command: ConsumePendingCaptureSelectionCommand
     ) -> PendingCaptureType: ...
 
     async def consume_awaiting_task(

@@ -3,9 +3,15 @@ from uuid import uuid4
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from second_brain.slices.capture.adapters.persistence.models import CaptureEventModel
-from second_brain.slices.capture.application.contracts import CaptureTextCommand
-from second_brain.slices.capture.domain.entities import CaptureEvent
+from second_brain.slices.capture.adapters.persistence.models import (
+    CaptureEventModel,
+    TelegramAttachmentModel,
+)
+from second_brain.slices.capture.application.contracts import (
+    CaptureTextCommand,
+    CaptureVoiceCommand,
+)
+from second_brain.slices.capture.domain.entities import CaptureEvent, CaptureSourceKind
 from second_brain.slices.identity.application.contracts import AccessContext
 
 
@@ -50,6 +56,7 @@ class PostgresCaptureEventWriter:
         model = CaptureEventModel(
             id=uuid4(),
             user_space_id=command.access_context.user_space_id,
+            source_kind=CaptureSourceKind.TEXT,
             channel="telegram",
             bot_id=command.bot_id,
             telegram_update_id=command.telegram_update_id,
@@ -60,6 +67,44 @@ class PostgresCaptureEventWriter:
             trace_id=command.trace_id,
         )
         self._session.add(model)
+        await self._session.flush()
+        return _to_entity(model)
+
+    async def create_voice(self, command: CaptureVoiceCommand) -> CaptureEvent:
+        await _set_user_space_scope(self._session, command.access_context)
+        model = CaptureEventModel(
+            id=uuid4(),
+            user_space_id=command.access_context.user_space_id,
+            source_kind=CaptureSourceKind.VOICE,
+            channel="telegram",
+            bot_id=command.bot_id,
+            telegram_update_id=command.telegram_update_id,
+            telegram_message_id=command.telegram_message_id,
+            raw_text=None,
+            received_at=command.received_at,
+            created_at=command.received_at,
+            trace_id=command.trace_id,
+        )
+        attachment = TelegramAttachmentModel(
+            id=uuid4(),
+            user_space_id=command.access_context.user_space_id,
+            capture_event_id=model.id,
+            kind=CaptureSourceKind.VOICE,
+            telegram_file_id=command.voice.file_id,
+            telegram_file_unique_id=command.voice.file_unique_id,
+            duration_seconds=command.voice.duration_seconds,
+            telegram_file_size=command.voice.file_size,
+            telegram_mime_type=command.voice.mime_type,
+            storage_key=None,
+            sha256=None,
+            stored_size=None,
+            stored_mime_type=None,
+            stored_at=None,
+            created_at=command.received_at,
+            trace_id=command.trace_id,
+        )
+        self._session.add(model)
+        self._session.add(attachment)
         await self._session.flush()
         return _to_entity(model)
 
@@ -85,4 +130,5 @@ def _to_entity(model: CaptureEventModel) -> CaptureEvent:
         received_at=model.received_at,
         created_at=model.created_at,
         trace_id=model.trace_id,
+        source_kind=model.source_kind,
     )

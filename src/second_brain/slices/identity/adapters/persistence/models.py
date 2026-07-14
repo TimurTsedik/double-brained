@@ -132,7 +132,8 @@ class TelegramUpdateReceipt(Base):
             "'known_user_started', 'panel_shown', 'task_mode_set', "
             "'task_mode_cancelled', 'tasks_listed', 'task_completed', "
             "'search_mode_set', 'search_mode_cancelled', "
-            "'search_query_required', 'search_completed', 'ignored')",
+            "'search_query_required', 'search_completed', 'voice_queued', "
+            "'ignored')",
             name="ck_telegram_update_receipts_result_kind",
         ),
         CheckConstraint(

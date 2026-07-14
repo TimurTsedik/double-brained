@@ -1,6 +1,7 @@
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
+from second_brain.slices.capture.application.contracts import TelegramVoiceMetadata
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
 from second_brain.slices.retrieval.application.contracts import (
@@ -95,6 +96,14 @@ class AiogramGateway:
         if text is None:
             return
         await self._bot.send_message(chat_id=update.telegram_user_id, text=text)
+
+    async def send_voice_queued(self, update: TelegramUpdate) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text="🎙️ Голос сохранён. Расшифровываю…",
+        )
 
     async def send_task_panel(
         self,
@@ -246,6 +255,16 @@ class AiogramGateway:
             )
 
         actor = message.from_user.id if message.from_user is not None else None
+        voice = getattr(message, "voice", None)
+        voice_metadata = None
+        if voice is not None:
+            voice_metadata = TelegramVoiceMetadata(
+                file_id=voice.file_id,
+                file_unique_id=voice.file_unique_id,
+                duration_seconds=voice.duration,
+                file_size=voice.file_size,
+                mime_type=voice.mime_type,
+            )
         return TelegramUpdate(
             bot_id=self.bot_id,
             update_id=update.update_id,
@@ -253,6 +272,7 @@ class AiogramGateway:
             telegram_user_id=actor,
             text=message.text if isinstance(message.text, str) else None,
             telegram_message_id=message.message_id,
+            voice=voice_metadata,
         )
 
 

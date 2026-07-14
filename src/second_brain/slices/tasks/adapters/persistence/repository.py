@@ -13,6 +13,7 @@ from second_brain.slices.tasks.adapters.persistence.models import (
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
     CompleteTaskCommand,
+    ConsumePendingCaptureSelectionCommand,
     ConsumePendingTaskTextCommand,
     CreateTaskCommand,
     SetAwaitingTaskCommand,
@@ -151,7 +152,7 @@ class PostgresPendingCaptureSelectionRepository:
                 await PostgresPendingCaptureSelectionWriter(session).cancel(command)
 
     async def consume_selection(
-        self, command: ConsumePendingTaskTextCommand
+        self, command: ConsumePendingCaptureSelectionCommand
     ) -> PendingCaptureType:
         async with self._session_factory() as session:
             async with session.begin():
@@ -204,7 +205,7 @@ class PostgresPendingCaptureSelectionWriter:
         await self._session.flush()
 
     async def consume_selection(
-        self, command: ConsumePendingTaskTextCommand
+        self, command: ConsumePendingCaptureSelectionCommand
     ) -> PendingCaptureType:
         await _set_user_space_scope(self._session, command.access_context)
         selection = await self._session.scalar(
@@ -220,7 +221,7 @@ class PostgresPendingCaptureSelectionWriter:
 
         selected_type = selection.selection
         selection.selection = PendingCaptureType.NOTE
-        selection.updated_at = command.created_at
+        selection.updated_at = command.consumed_at
         selection.trace_id = command.trace_id
         await self._session.flush()
         return selected_type

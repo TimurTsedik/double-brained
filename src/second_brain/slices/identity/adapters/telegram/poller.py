@@ -36,6 +36,8 @@ class TelegramGateway(Protocol):
 
     async def send_selection_feedback(self, update: TelegramUpdate) -> None: ...
 
+    async def send_voice_queued(self, update: TelegramUpdate) -> None: ...
+
     async def send_task_panel(
         self,
         update: TelegramUpdate,
@@ -139,6 +141,16 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
+            if result.kind is AcknowledgementKind.VOICE_QUEUED and getattr(
+                result, "fresh", True
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_voice_queued(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             if result.kind in {
                 AcknowledgementKind.TASKS_LISTED,
                 AcknowledgementKind.TASK_COMPLETED,
@@ -209,6 +221,7 @@ class LocalPoller:
                 AcknowledgementKind.SEARCH_MODE_CANCELLED,
                 AcknowledgementKind.SEARCH_QUERY_REQUIRED,
                 AcknowledgementKind.SEARCH_COMPLETED,
+                AcknowledgementKind.VOICE_QUEUED,
             }:
                 try:
                     await self._gateway.send_acknowledgement(update, result.kind)

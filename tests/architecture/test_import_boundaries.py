@@ -215,10 +215,28 @@ def test_capture_transaction_composition_is_limited_to_bootstrap() -> None:
                 path.relative_to(package_root)
             )
 
-    assert modules_using_both_transaction_and_capture_writer == [
+    assert set(modules_using_both_transaction_and_capture_writer) == {
         Path("bootstrap/capture_in_transaction.py"),
         Path("bootstrap/task_capture_in_transaction.py"),
-    ]
+        Path("bootstrap/voice_capture_in_transaction.py"),
+    }
+
+
+def test_voice_capture_cross_slice_composition_is_limited_to_bootstrap() -> None:
+    package_root = Path(__file__).parents[2] / "src" / "second_brain"
+    composition = package_root / "bootstrap" / "voice_capture_in_transaction.py"
+    source = composition.read_text(encoding="utf-8")
+
+    assert "PostgresCaptureEventWriter" in source
+    assert "PostgresPendingCaptureSelectionWriter" in source
+    assert "PostgresProcessingWriter" in source
+    assert "PostgresUpdateTransaction" in source
+
+    for slice_name in ("capture", "tasks", "processing"):
+        for path in package_root.joinpath("slices", slice_name).rglob("*.py"):
+            assert "voice_capture_in_transaction" not in path.read_text(
+                encoding="utf-8"
+            )
 
 
 def test_task_capture_transaction_composition_is_limited_to_bootstrap() -> None:

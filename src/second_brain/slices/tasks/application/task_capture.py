@@ -8,6 +8,7 @@ from second_brain.slices.knowledge.application.contracts import (
 )
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
+    ConsumePendingCaptureSelectionCommand,
     ConsumePendingTaskTextCommand,
     CreateTaskCommand,
     SetAwaitingTaskCommand,
@@ -42,6 +43,11 @@ class TaskCapture:
     async def cancel(self, command: CancelPendingTaskCommand) -> None:
         await self._pending_capture_selection_store.cancel(command)
 
+    async def consume_selection(
+        self, command: ConsumePendingCaptureSelectionCommand
+    ) -> PendingCaptureType:
+        return await self._pending_capture_selection_store.consume_selection(command)
+
     async def consume_for_text(
         self, command: ConsumePendingTaskTextCommand
     ) -> Task | KnowledgeRecord | None:
@@ -54,7 +60,11 @@ class TaskCapture:
         if self._task_writer is None or self._knowledge_capture is None:
             raise RuntimeError("typed task capture writers are incomplete")
         selection = await self._pending_capture_selection_store.consume_selection(
-            command
+            ConsumePendingCaptureSelectionCommand(
+                access_context=command.access_context,
+                consumed_at=command.created_at,
+                trace_id=command.trace_id,
+            )
         )
         if command.text is None:
             raise ValueError("eligible typed capture text must not be None")

@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 
+from second_brain.slices.capture.application.contracts import TelegramVoiceMetadata
+
 
 @dataclass(frozen=True)
 class TelegramUpdate:
@@ -13,3 +15,4 @@ class TelegramUpdate:
     telegram_message_id: int | None = None
     callback_query_id: str | None = field(default=None, repr=False)
     callback_data: str | None = field(default=None, repr=False)
+    voice: TelegramVoiceMetadata | None = field(default=None, repr=False)

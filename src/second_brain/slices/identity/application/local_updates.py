@@ -9,6 +9,8 @@ from second_brain.shared.trace import TraceContext
 from second_brain.slices.capture.application.contracts import (
     CaptureTextCommand,
     CaptureTextPort,
+    CaptureVoiceCommand,
+    CaptureVoicePort,
 )
 from second_brain.slices.identity.application.access_context import ResolveAccessContext
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
@@ -51,6 +53,7 @@ class AcknowledgementKind(StrEnum):
     SEARCH_MODE_CANCELLED = "search_mode_cancelled"
     SEARCH_MODE_SET = "search_mode_set"
     SEARCH_QUERY_REQUIRED = "search_query_required"
+    VOICE_QUEUED = "voice_queued"
     IGNORED = "ignored"
 
 
@@ -81,6 +84,7 @@ class LocalUpdateProcessor:
         task_mode_port: TaskModePort | None = None,
         task_panel_port: TaskPanelPort | None = None,
         exact_search_port: ExactSearchPort | None = None,
+        capture_voice_port: CaptureVoicePort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -90,6 +94,7 @@ class LocalUpdateProcessor:
         self._task_mode_port = task_mode_port
         self._task_panel_port = task_panel_port
         self._exact_search_port = exact_search_port
+        self._capture_voice_port = capture_voice_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -149,13 +154,35 @@ class LocalUpdateProcessor:
             return await self._process_start(
                 transaction, update, context, now, start_token
             )
-        if _is_command(update.text) or update.text is None or update.text == "":
+        if _is_command(update.text):
             return AcknowledgementKind.IGNORED
 
         access_context = await ResolveAccessContext(transaction).execute(
             update.telegram_user_id
         )
         if access_context is None or update.telegram_message_id is None:
+            return AcknowledgementKind.IGNORED
+
+        if update.voice is not None:
+            if self._exact_search_port is not None:
+                await self._exact_search_port.cancel(access_context, transaction)
+            if self._capture_voice_port is None:
+                raise RuntimeError("capture voice port is required for private voice")
+            await self._capture_voice_port.capture(
+                CaptureVoiceCommand(
+                    access_context=access_context,
+                    bot_id=update.bot_id,
+                    telegram_update_id=update.update_id,
+                    telegram_message_id=update.telegram_message_id,
+                    voice=update.voice,
+                    received_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            return AcknowledgementKind.VOICE_QUEUED
+
+        if update.text is None or update.text == "":
             return AcknowledgementKind.IGNORED
 
         if self._exact_search_port is not None:

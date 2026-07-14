@@ -71,6 +71,13 @@ class ConsumePendingTaskTextCommand:
     trace_id: str
 
 
+@dataclass(frozen=True)
+class ConsumePendingCaptureSelectionCommand:
+    access_context: AccessContext
+    consumed_at: datetime
+    trace_id: str
+
+
 class TaskModePort(Protocol):
     """Public task-mode boundary for work inside an existing update transaction."""
 
