@@ -21,6 +21,12 @@ from second_brain.slices.knowledge.adapters.persistence.models import (
     QuestionModel,
     QuestionProvenanceModel,
 )
+from second_brain.slices.processing.adapters.persistence.models import (
+    ProcessingNoticeModel,
+    ProcessingRunModel,
+    ProcessingStepModel,
+    TranscriptModel,
+)
 from second_brain.slices.retrieval.adapters.persistence.models import (
     PendingSearchModeModel,
 )
@@ -46,12 +52,19 @@ KNOWLEDGE_TABLES = (
     cast(Table, QuestionModel.__table__),
     cast(Table, QuestionProvenanceModel.__table__),
 )
+PROCESSING_TABLES = (
+    cast(Table, ProcessingRunModel.__table__),
+    cast(Table, ProcessingStepModel.__table__),
+    cast(Table, TranscriptModel.__table__),
+    cast(Table, ProcessingNoticeModel.__table__),
+)
 PENDING_SEARCH_MODE_TABLE = cast(Table, PendingSearchModeModel.__table__)
 
 
 async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") -> None:
     await initialize_identity_schema(engine, schema_name)
     await _initialize_capture_schema(engine, schema_name)
+    await _initialize_processing_schema(engine, schema_name)
     await _initialize_task_schema(engine, schema_name)
     await _initialize_knowledge_schema(engine, schema_name)
     await _initialize_retrieval_schema(engine, schema_name)
@@ -66,9 +79,11 @@ async def reset_prototype_schema(
     await _drop_retrieval_schema(engine)
     await _drop_task_schema(engine)
     await _drop_knowledge_schema(engine)
+    await _drop_processing_schema(engine)
     await _drop_capture_schema(engine)
     await reset_identity_prototype_schema(engine, confirm, schema_name)
     await _initialize_capture_schema(engine, schema_name)
+    await _initialize_processing_schema(engine, schema_name)
     await _initialize_task_schema(engine, schema_name)
     await _initialize_knowledge_schema(engine, schema_name)
     await _initialize_retrieval_schema(engine, schema_name)
@@ -83,6 +98,24 @@ async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> N
 async def _drop_capture_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_drop_capture_event_table)
+
+
+async def _initialize_processing_schema(engine: AsyncEngine, schema_name: str) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_create_processing_tables)
+        for table_name in (
+            "processing_runs",
+            "processing_steps",
+            "transcripts",
+            "processing_notices",
+        ):
+            await _configure_user_space_rls(connection, schema_name, table_name)
+        await _grant_processing_privileges(connection, schema_name)
+
+
+async def _drop_processing_schema(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_drop_processing_tables)
 
 
 async def _initialize_task_schema(engine: AsyncEngine, schema_name: str) -> None:
@@ -143,6 +176,16 @@ def _create_capture_event_table(connection: Connection) -> None:
 
 def _drop_capture_event_table(connection: Connection) -> None:
     CAPTURE_EVENT_TABLE.drop(connection, checkfirst=True)
+
+
+def _create_processing_tables(connection: Connection) -> None:
+    for table in PROCESSING_TABLES:
+        table.create(connection, checkfirst=True)
+
+
+def _drop_processing_tables(connection: Connection) -> None:
+    for table in reversed(PROCESSING_TABLES):
+        table.drop(connection, checkfirst=True)
 
 
 def _create_task_tables(connection: Connection) -> None:
@@ -220,6 +263,34 @@ async def _grant_task_privileges(connection: AsyncConnection, schema_name: str) 
             f"{quoted_schema}.tasks, {quoted_schema}.pending_capture_selections "
             f"TO {APPLICATION_ROLE}"
         )
+    )
+
+
+async def _grant_processing_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    schema = _quote_identifier(schema_name)
+    all_tables = ", ".join(
+        f"{schema}.{_quote_identifier(table_name)}"
+        for table_name in (
+            "processing_runs",
+            "processing_steps",
+            "transcripts",
+            "processing_notices",
+        )
+    )
+    mutable_tables = ", ".join(
+        f"{schema}.{_quote_identifier(table_name)}"
+        for table_name in ("processing_steps", "processing_notices")
+    )
+    await connection.execute(
+        text(f"REVOKE ALL PRIVILEGES ON TABLE {all_tables} FROM {APPLICATION_ROLE}")
+    )
+    await connection.execute(
+        text(f"GRANT SELECT, INSERT ON TABLE {all_tables} TO {APPLICATION_ROLE}")
+    )
+    await connection.execute(
+        text(f"GRANT UPDATE ON TABLE {mutable_tables} TO {APPLICATION_ROLE}")
     )
 
 
