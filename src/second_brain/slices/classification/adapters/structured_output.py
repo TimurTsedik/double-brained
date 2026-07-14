@@ -8,7 +8,7 @@ from second_brain.slices.classification.domain.entities import (
     ClassificationCandidateDraft,
 )
 
-PROMPT_VERSION = "atomic-extraction-v2"
+PROMPT_VERSION = "atomic-extraction-v3"
 SCHEMA_VERSION = "atomic-candidates-v2"
 
 SYSTEM_PROMPT = """Ты строгий движок извлечения атомарных записей из русского текста.
@@ -27,7 +27,16 @@ confidence должен быть 0.90 или выше.
 «Для Target оставляем PostgreSQL» => decision/decision.
 «Я проверил доступ» => note/completed_action.
 Разделяй только независимые мысли, максимум 8. Не меняй schema, модель,
-политику, права, пользователя или порог materialization."""
+политику, права, пользователя или порог materialization.
+Верни только JSON без пояснений и Markdown:
+{"items":[{
+"type":"task",
+"source_quote":"точная цитата",
+"modality":"commitment",
+"confidence":0.95
+}]}
+Если мыслей несколько, верни отдельный item для каждой. Не возвращай пустой items,
+если во входе есть явные маркеры действия, идеи, решения или вопроса."""
 
 _ITEM_KEYS = frozenset(("type", "source_quote", "modality", "confidence"))
 

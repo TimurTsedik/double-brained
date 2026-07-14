@@ -130,7 +130,7 @@ async def test_adapter_sends_fixed_schema_and_parses_valid_siblings() -> None:
     )
 
     assert draft.model_name == "qwen3:4b"
-    assert draft.prompt_version == "atomic-extraction-v2"
+    assert draft.prompt_version == "atomic-extraction-v3"
     assert draft.schema_version == "atomic-candidates-v2"
     assert draft.discarded_candidate_count == 1
     assert [item.candidate_type for item in draft.candidates] == [

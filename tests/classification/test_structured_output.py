@@ -6,6 +6,7 @@ from second_brain.slices.classification.adapters.structured_output import (
     PROMPT_VERSION,
     RESPONSE_SCHEMA,
     SCHEMA_VERSION,
+    SYSTEM_PROMPT,
     parse_candidate_content,
 )
 from second_brain.slices.classification.domain.entities import (
@@ -25,8 +26,10 @@ def test_schema_encodes_only_allowed_type_modality_pairs() -> None:
         for branch in branches
     }
 
-    assert PROMPT_VERSION == "atomic-extraction-v2"
+    assert PROMPT_VERSION == "atomic-extraction-v3"
     assert SCHEMA_VERSION == "atomic-candidates-v2"
+    assert "Верни только JSON без пояснений и Markdown" in SYSTEM_PROMPT
+    assert "Не возвращай пустой items" in SYSTEM_PROMPT
     assert items["maxItems"] == 8
     assert pairs == {
         "note": ("observation", "completed_action"),

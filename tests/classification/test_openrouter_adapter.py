@@ -87,7 +87,7 @@ async def test_adapter_sends_strict_two_model_request_and_records_actual_model()
     draft = await adapter.classify(ClassificationRequest(source_text=source))
 
     assert draft.model_name == "openai/gpt-oss-20b:free"
-    assert draft.prompt_version == "atomic-extraction-v2"
+    assert draft.prompt_version == "atomic-extraction-v3"
     assert draft.schema_version == "atomic-candidates-v2"
     assert len(draft.candidates) == 1
     assert draft.candidates[0].candidate_type is CandidateType.TASK
