@@ -32,12 +32,15 @@ tokens, peppers, or database credentials in logs.
 cp .env.example .env
 ```
 
-Set four distinct database URLs and the three Telegram/invite secrets in `.env`.
-`DATABASE_URL` and `TEST_DATABASE_URL` must use the non-superuser
-`second_brain_app` role. `SCHEMA_DATABASE_URL` and
+Set four distinct database URLs, the three Telegram/invite secrets, and the
+OpenRouter API key in `.env`. `DATABASE_URL` and `TEST_DATABASE_URL` must use
+the non-superuser `second_brain_app` role. `SCHEMA_DATABASE_URL` and
 `TEST_SCHEMA_DATABASE_URL` are owner-only URLs used for explicit schema
-initialization and isolated test schemas. These examples intentionally contain
-no secret values:
+initialization and isolated test schemas. `OPEN_ROUTER_AI_KEY` holds your
+OpenRouter API key; it is the only place the key is stored — the code reads it
+from this environment variable (`bootstrap/settings.py`) and never hardcodes or
+logs it, so it is not in Git and must be set anew on any other host. These
+examples intentionally contain no secret values:
 
 ```dotenv
 DATABASE_URL=postgresql+asyncpg://second_brain_app@127.0.0.1:55432/second_brain
@@ -47,6 +50,7 @@ TEST_SCHEMA_DATABASE_URL=postgresql+asyncpg://second_brain@127.0.0.1:55432/secon
 TELEGRAM_BOT_TOKEN=
 INVITE_TOKEN_PEPPER=
 INVITE_TOKEN_PEPPER_KEY_ID=
+OPEN_ROUTER_AI_KEY=
 ```
 
 ### Initialize and enroll
@@ -79,8 +83,8 @@ uv run --env-file .env second-brain-identity create-bootstrap-admin-invite
 ```
 
 Open the new one-time link in the private chat to enroll again. Then send
-`/start` to receive the capture panel. `📋 Мои задачи` opens the actionable
-task list. `🔎 Поиск` makes the next private text a one-shot exact search across
+`/start` to receive the capture panel. `📋 My tasks` opens the actionable
+task list. `🔎 Search` makes the next private text a one-shot exact search across
 your Notes, Tasks, Ideas, Decisions, and Questions instead of saving it as new
 content. Resetting the prototype database removes the previous Telegram
 identity, so re-enrollment is required.
@@ -146,8 +150,8 @@ becomes a Note. Telegram receives only fixed processing statuses, never a copy
 of personal transcript content:
 
 ```text
-🎙️ Голос сохранён. Расшифровываю…
-🎙️ Расшифровано и сохранено: 📝 Заметка.
+🎙️ Voice saved. Transcribing…
+🎙️ Transcribed and saved: 📝 Note.
 ```
 
 Processing retries twice after the initial attempt. After the third failure,
