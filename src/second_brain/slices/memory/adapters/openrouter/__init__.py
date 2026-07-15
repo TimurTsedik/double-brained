@@ -1,0 +1,1 @@
+"""OpenRouter reasoning adapter."""

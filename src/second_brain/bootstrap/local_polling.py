@@ -5,6 +5,7 @@ from aiogram import Bot
 from second_brain.bootstrap.exact_search_in_transaction import (
     ExactSearchInTransaction,
 )
+from second_brain.bootstrap.memory_ask_in_transaction import MemoryAskInTransaction
 from second_brain.bootstrap.project_context_in_transaction import (
     ProjectContextInTransaction,
 )
@@ -53,6 +54,7 @@ async def run_local_polling(settings: Settings) -> None:
             exact_search_port=exact_search,
             capture_voice_port=VoiceCaptureInTransaction(),
             project_panel_port=project_context,
+            memory_ask_port=MemoryAskInTransaction(),
         )
         poller = LocalPoller(AiogramGateway(bot, bot_user.id), processor, lock)
         while True:

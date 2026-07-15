@@ -54,6 +54,14 @@ class TelegramGateway(Protocol):
 
     async def send_search_cancelled(self, update: TelegramUpdate) -> None: ...
 
+    async def send_memory_prompt(
+        self,
+        update: TelegramUpdate,
+        question_required: bool,
+    ) -> None: ...
+
+    async def send_memory_cancelled(self, update: TelegramUpdate) -> None: ...
+
     async def send_search_panel(
         self,
         update: TelegramUpdate,
@@ -207,6 +215,30 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
+            if result.kind in {
+                AcknowledgementKind.MEMORY_MODE_SET,
+                AcknowledgementKind.MEMORY_QUESTION_REQUIRED,
+            } and getattr(result, "fresh", True):
+                while True:
+                    try:
+                        await self._gateway.send_memory_prompt(
+                            update,
+                            result.kind is AcknowledgementKind.MEMORY_QUESTION_REQUIRED,
+                        )
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            if result.kind is AcknowledgementKind.MEMORY_MODE_CANCELLED and getattr(
+                result, "fresh", True
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_memory_cancelled(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             if result.kind is AcknowledgementKind.SEARCH_COMPLETED and getattr(
                 result, "fresh", True
             ):
@@ -275,6 +307,9 @@ class LocalPoller:
                 AcknowledgementKind.PROJECT_CREATED,
                 AcknowledgementKind.PROJECT_SELECTED,
                 AcknowledgementKind.PROJECT_CLEARED,
+                AcknowledgementKind.MEMORY_MODE_SET,
+                AcknowledgementKind.MEMORY_MODE_CANCELLED,
+                AcknowledgementKind.MEMORY_QUESTION_REQUIRED,
                 AcknowledgementKind.VOICE_QUEUED,
             }:
                 try:

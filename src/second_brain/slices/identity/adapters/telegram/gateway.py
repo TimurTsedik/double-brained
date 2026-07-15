@@ -66,6 +66,9 @@ class AiogramGateway:
                             text="🔎 Поиск", callback_data="search:prompt"
                         ),
                         InlineKeyboardButton(
+                            text="🧠 Спросить память", callback_data="memory:ask"
+                        ),
+                        InlineKeyboardButton(
                             text="📁 Проекты", callback_data="projects:list"
                         ),
                     ],
@@ -195,6 +198,43 @@ class AiogramGateway:
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
             text="✖️ Поиск отменён.",
+        )
+
+    async def send_memory_prompt(
+        self,
+        update: TelegramUpdate,
+        question_required: bool,
+    ) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        text = (
+            "Напишите вопрос."
+            if question_required
+            else (
+                "🧠 Что спросить у памяти?\n\n"
+                "Следующее сообщение станет вопросом к памяти, а не новой записью."
+            )
+        )
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="✖️ Отмена", callback_data="memory:cancel"
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    async def send_memory_cancelled(self, update: TelegramUpdate) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text="✖️ Вопрос к памяти отменён.",
         )
 
     async def send_search_panel(
@@ -364,6 +404,7 @@ def _acknowledgement_text(kind: AcknowledgementKind) -> str:
         AcknowledgementKind.ENROLLED: "Enrollment complete.",
         AcknowledgementKind.ENROLLMENT_REJECTED: "Enrollment could not be completed.",
         AcknowledgementKind.KNOWN_USER_STARTED: "Welcome back.",
+        AcknowledgementKind.MEMORY_QUESTION_QUEUED: "⏳ Готовлю ответ…",
     }
     return messages[kind]
 

@@ -27,6 +27,15 @@ from second_brain.slices.knowledge.adapters.persistence.models import (
     QuestionModel,
     QuestionProvenanceModel,
 )
+from second_brain.slices.memory.adapters.persistence.models import (
+    MemoryAnswerModel,
+    MemoryAnswerRunModel,
+    MemoryAnswerSourceModel,
+    MemoryAnswerStepModel,
+    MemoryQuestionModel,
+    MemoryRunEvidenceModel,
+    PendingMemoryQuestionModel,
+)
 from second_brain.slices.processing.adapters.persistence.models import (
     ProcessingNoticeModel,
     ProcessingRunModel,
@@ -95,6 +104,24 @@ PROJECT_TABLES = (
     cast(Table, ProjectDecisionLinkModel.__table__),
     cast(Table, ProjectQuestionLinkModel.__table__),
 )
+MEMORY_TABLES = (
+    cast(Table, PendingMemoryQuestionModel.__table__),
+    cast(Table, MemoryQuestionModel.__table__),
+    cast(Table, MemoryAnswerRunModel.__table__),
+    cast(Table, MemoryAnswerStepModel.__table__),
+    cast(Table, MemoryRunEvidenceModel.__table__),
+    cast(Table, MemoryAnswerModel.__table__),
+    cast(Table, MemoryAnswerSourceModel.__table__),
+)
+MEMORY_TABLE_NAMES = (
+    "pending_memory_questions",
+    "memory_questions",
+    "memory_answer_runs",
+    "memory_answer_steps",
+    "memory_run_evidence",
+    "memory_answers",
+    "memory_answer_sources",
+)
 
 
 async def _ensure_vector_extension(engine: AsyncEngine) -> None:
@@ -112,6 +139,7 @@ async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") ->
     await _initialize_knowledge_schema(engine, schema_name)
     await _initialize_project_schema(engine, schema_name)
     await _initialize_retrieval_schema(engine, schema_name)
+    await _initialize_memory_schema(engine, schema_name)
 
 
 async def reset_prototype_schema(
@@ -121,6 +149,7 @@ async def reset_prototype_schema(
         await reset_identity_prototype_schema(engine, confirm, schema_name)
         return
     await _ensure_vector_extension(engine)
+    await _drop_memory_schema(engine)
     await _drop_retrieval_schema(engine)
     await _drop_project_schema(engine)
     await _drop_task_schema(engine)
@@ -136,6 +165,7 @@ async def reset_prototype_schema(
     await _initialize_knowledge_schema(engine, schema_name)
     await _initialize_project_schema(engine, schema_name)
     await _initialize_retrieval_schema(engine, schema_name)
+    await _initialize_memory_schema(engine, schema_name)
 
 
 async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> None:
@@ -264,6 +294,19 @@ async def _drop_retrieval_schema(engine: AsyncEngine) -> None:
         await connection.run_sync(_drop_retrieval_tables)
 
 
+async def _initialize_memory_schema(engine: AsyncEngine, schema_name: str) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_create_memory_tables)
+        for table_name in MEMORY_TABLE_NAMES:
+            await _configure_user_space_rls(connection, schema_name, table_name)
+        await _grant_memory_privileges(connection, schema_name)
+
+
+async def _drop_memory_schema(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_drop_memory_tables)
+
+
 def _create_capture_tables(connection: Connection) -> None:
     for table in CAPTURE_TABLES:
         table.create(connection, checkfirst=True)
@@ -331,6 +374,16 @@ def _create_retrieval_tables(connection: Connection) -> None:
 
 def _drop_retrieval_tables(connection: Connection) -> None:
     for table in reversed(RETRIEVAL_TABLES):
+        table.drop(connection, checkfirst=True)
+
+
+def _create_memory_tables(connection: Connection) -> None:
+    for table in MEMORY_TABLES:
+        table.create(connection, checkfirst=True)
+
+
+def _drop_memory_tables(connection: Connection) -> None:
+    for table in reversed(MEMORY_TABLES):
         table.drop(connection, checkfirst=True)
 
 
@@ -487,6 +540,44 @@ async def _grant_retrieval_privileges(
     await connection.execute(
         text(
             f"GRANT SELECT, INSERT ON TABLE {append_only_tables} TO {APPLICATION_ROLE}"
+        )
+    )
+
+
+async def _grant_memory_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    schema = _quote_identifier(schema_name)
+    pending_table = f'{schema}."pending_memory_questions"'
+    step_table = f'{schema}."memory_answer_steps"'
+    append_only_tables = ", ".join(
+        f"{schema}.{_quote_identifier(table_name)}"
+        for table_name in (
+            "memory_questions",
+            "memory_answer_runs",
+            "memory_run_evidence",
+            "memory_answers",
+            "memory_answer_sources",
+        )
+    )
+    all_tables = f"{pending_table}, {step_table}, {append_only_tables}"
+    await connection.execute(
+        text(f"REVOKE ALL PRIVILEGES ON TABLE {all_tables} FROM {APPLICATION_ROLE}")
+    )
+    await connection.execute(
+        text(
+            f"GRANT SELECT, INSERT ON TABLE {append_only_tables} TO {APPLICATION_ROLE}"
+        )
+    )
+    await connection.execute(
+        text(
+            f"GRANT SELECT, INSERT, UPDATE ON TABLE {step_table} TO {APPLICATION_ROLE}"
+        )
+    )
+    await connection.execute(
+        text(
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {pending_table} "
+            f"TO {APPLICATION_ROLE}"
         )
     )
 

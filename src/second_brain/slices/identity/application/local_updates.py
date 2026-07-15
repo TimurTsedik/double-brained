@@ -19,6 +19,11 @@ from second_brain.slices.identity.ports.repositories import (
     UpdateStore,
     UpdateTransaction,
 )
+from second_brain.slices.memory.application.contracts import (
+    ConsumeMemoryQuestionCommand,
+    MemoryQuestionPort,
+    SetAwaitingMemoryCommand,
+)
 from second_brain.slices.projects.application.contracts import (
     BeginProjectCreationCommand,
     CancelProjectCreationCommand,
@@ -68,6 +73,10 @@ class AcknowledgementKind(StrEnum):
     PROJECT_CREATED = "project_created"
     PROJECT_SELECTED = "project_selected"
     PROJECT_CLEARED = "project_cleared"
+    MEMORY_MODE_SET = "memory_mode_set"
+    MEMORY_MODE_CANCELLED = "memory_mode_cancelled"
+    MEMORY_QUESTION_QUEUED = "memory_question_queued"
+    MEMORY_QUESTION_REQUIRED = "memory_question_required"
     VOICE_QUEUED = "voice_queued"
     IGNORED = "ignored"
 
@@ -103,6 +112,7 @@ class LocalUpdateProcessor:
         exact_search_port: ExactSearchPort | None = None,
         capture_voice_port: CaptureVoicePort | None = None,
         project_panel_port: ProjectPanelPort | None = None,
+        memory_ask_port: MemoryQuestionPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -114,6 +124,7 @@ class LocalUpdateProcessor:
         self._exact_search_port = exact_search_port
         self._capture_voice_port = capture_voice_port
         self._project_panel_port = project_panel_port
+        self._memory_ask_port = memory_ask_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -186,6 +197,8 @@ class LocalUpdateProcessor:
         if update.voice is not None:
             if self._exact_search_port is not None:
                 await self._exact_search_port.cancel(access_context, transaction)
+            if self._memory_ask_port is not None:
+                await self._memory_ask_port.cancel(access_context, transaction)
             if self._project_panel_port is not None:
                 await self._project_panel_port.cancel_creation(
                     CancelProjectCreationCommand(
@@ -213,6 +226,23 @@ class LocalUpdateProcessor:
 
         if update.text is None or update.text == "":
             return AcknowledgementKind.IGNORED
+
+        if self._memory_ask_port is not None:
+            memory_result = await self._memory_ask_port.consume_question(
+                ConsumeMemoryQuestionCommand(
+                    access_context=access_context,
+                    bot_id=update.bot_id,
+                    telegram_update_id=update.update_id,
+                    question=update.text,
+                    created_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            if memory_result is not None:
+                if memory_result.question_required:
+                    return AcknowledgementKind.MEMORY_QUESTION_REQUIRED
+                return AcknowledgementKind.MEMORY_QUESTION_QUEUED
 
         if self._project_panel_port is not None:
             project_panel = await self._project_panel_port.consume_name(
@@ -293,6 +323,8 @@ class LocalUpdateProcessor:
                 "tasks:list",
                 "search:prompt",
                 "search:cancel",
+                "memory:ask",
+                "memory:cancel",
                 "projects:list",
                 "projects:create",
                 "projects:clear",
@@ -308,6 +340,46 @@ class LocalUpdateProcessor:
         )
         if access_context is None:
             return AcknowledgementKind.IGNORED
+        # Any panel button other than "Ask memory" clears the one-shot memory
+        # mode, so a queued question never sticks onto an unrelated next text.
+        if self._memory_ask_port is not None and update.callback_data != "memory:ask":
+            await self._memory_ask_port.cancel(access_context, transaction)
+        if update.callback_data == "memory:ask":
+            if self._memory_ask_port is None:
+                return AcknowledgementKind.IGNORED
+            if self._task_mode_port is not None:
+                await self._task_mode_port.cancel(
+                    CancelPendingTaskCommand(
+                        access_context=access_context,
+                        updated_at=now,
+                        trace_id=context.trace_id,
+                    ),
+                    transaction,
+                )
+            if self._exact_search_port is not None:
+                await self._exact_search_port.cancel(access_context, transaction)
+            if self._project_panel_port is not None:
+                await self._project_panel_port.cancel_creation(
+                    CancelProjectCreationCommand(
+                        access_context=access_context,
+                        updated_at=now,
+                        trace_id=context.trace_id,
+                    ),
+                    transaction,
+                )
+            await self._memory_ask_port.set_awaiting(
+                SetAwaitingMemoryCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            return AcknowledgementKind.MEMORY_MODE_SET
+        if update.callback_data == "memory:cancel":
+            if self._memory_ask_port is None:
+                return AcknowledgementKind.IGNORED
+            return AcknowledgementKind.MEMORY_MODE_CANCELLED
         if update.callback_data == "projects:list":
             if self._project_panel_port is None:
                 return AcknowledgementKind.IGNORED

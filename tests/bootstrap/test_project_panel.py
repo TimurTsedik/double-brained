@@ -49,6 +49,7 @@ async def test_gateway_renders_projects_button_prompt_and_current_panel() -> Non
     assert [button.callback_data for button in main_markup.inline_keyboard[0]] == [
         "tasks:list",
         "search:prompt",
+        "memory:ask",
         "projects:list",
     ]
     assert "название" in bot.messages[1]["text"].lower()

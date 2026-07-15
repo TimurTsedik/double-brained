@@ -85,6 +85,65 @@ async def test_application_role_can_only_read_and_append_semantic_index_tables(
 
 
 @pytest.mark.asyncio
+async def test_application_role_privileges_on_memory_tables(
+    session: AsyncSession,
+) -> None:
+    expected = {
+        "pending_memory_questions": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": True,
+            "DELETE": True,
+        },
+        "memory_answer_steps": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": True,
+            "DELETE": False,
+        },
+        "memory_questions": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": False,
+            "DELETE": False,
+        },
+        "memory_answer_runs": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": False,
+            "DELETE": False,
+        },
+        "memory_run_evidence": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": False,
+            "DELETE": False,
+        },
+        "memory_answers": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": False,
+            "DELETE": False,
+        },
+        "memory_answer_sources": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": False,
+            "DELETE": False,
+        },
+    }
+    for table_name, privileges in expected.items():
+        for privilege, allowed in privileges.items():
+            actual = await session.scalar(
+                text(
+                    "SELECT has_table_privilege(current_user, :table_name, :privilege)"
+                ),
+                {"table_name": table_name, "privilege": privilege},
+            )
+            assert actual is allowed, (table_name, privilege)
+
+
+@pytest.mark.asyncio
 async def test_application_role_lacks_update_on_immutable_identity_tables(
     session: AsyncSession,
 ) -> None:

@@ -14,6 +14,17 @@ from second_brain.bootstrap.classification_worker import ClassificationWorker
 from second_brain.bootstrap.indexing_completion import IndexingCompletionInTransaction
 from second_brain.bootstrap.indexing_source import PostgresIndexingSourceReader
 from second_brain.bootstrap.indexing_worker import IndexingWorker
+from second_brain.bootstrap.memory_delivery import (
+    AiogramAnswerDelivery,
+    MemoryDeliveryCompletionInTransaction,
+)
+from second_brain.bootstrap.memory_reasoning_completion import (
+    MemoryReasoningCompletionInTransaction,
+)
+from second_brain.bootstrap.memory_retrieval_completion import (
+    MemoryRetrievalCompletionInTransaction,
+)
+from second_brain.bootstrap.memory_worker import MemoryWorker
 from second_brain.bootstrap.settings import Settings
 from second_brain.bootstrap.voice_processing_completion import (
     VoiceDownloadCompletionInTransaction,
@@ -39,6 +50,13 @@ from second_brain.slices.identity.application.contracts import (
     AccessContext,
     WorkerIdentityPort,
 )
+from second_brain.slices.memory.adapters.openrouter.model import (
+    OpenRouterReasoningModel,
+)
+from second_brain.slices.memory.adapters.persistence.repository import (
+    PostgresMemoryQueue,
+)
+from second_brain.slices.memory.application.answer_question import AnswerMemoryQuestion
 from second_brain.slices.processing.adapters.persistence.repository import (
     PostgresProcessingRepository,
 )
@@ -76,6 +94,13 @@ def build_classification_model(settings: Settings) -> OpenRouterClassificationMo
     return OpenRouterClassificationModel(api_key=api_key)
 
 
+def build_reasoning_model(settings: Settings) -> OpenRouterReasoningModel:
+    api_key = settings.open_router_ai_key
+    if api_key is None:
+        raise RuntimeError("OPEN_ROUTER_AI_KEY must be configured")
+    return OpenRouterReasoningModel(api_key=api_key)
+
+
 async def process_access_once(
     *,
     access_context: AccessContext,
@@ -86,11 +111,17 @@ async def process_access_once(
     processing_repository: ProcessingRepository,
     identity_repository: WorkerIdentityPort,
     notifier: ProcessingNotifier,
+    memory_worker: StepWorker | None = None,
 ) -> bool:
     worked = await worker.process_once(access_context, now)
     classified = await classification_worker.process_once(access_context, now)
     indexed = await indexing_worker.process_once(access_context, now)
-    worked = worked or classified or indexed
+    answered = (
+        await memory_worker.process_once(access_context, now)
+        if memory_worker is not None
+        else False
+    )
+    worked = worked or classified or indexed or answered
     notice = await processing_repository.claim_due_notice(access_context, now)
     if notice is None:
         return worked
@@ -142,13 +173,31 @@ async def run_local_voice_worker(settings: Settings) -> None:
             classifier=ClassifySource(classification_model),
             completion=ClassificationCompletionInTransaction(session_factory),
         )
-        # The E5 weights load lazily on the first indexing step, so the
-        # embedding model is not a startup dependency of the process.
+        # The E5 weights load lazily on the first step that needs them, so the
+        # embedding model is not a startup dependency of the process. One
+        # instance is shared by indexing and memory retrieval (one model per
+        # process); the combined worker runs steps sequentially, never in
+        # parallel, so the lazily-cached model needs no lock.
+        embedding_model = E5EmbeddingModel()
         indexing_worker = IndexingWorker(
             queue=processing,
             source_reader=PostgresIndexingSourceReader(session_factory),
-            indexer=IndexSource(E5EmbeddingModel()),
+            indexer=IndexSource(embedding_model),
             completion=IndexingCompletionInTransaction(session_factory),
+        )
+        memory_queue = PostgresMemoryQueue(session_factory)
+        memory_worker = MemoryWorker(
+            queue=memory_queue,
+            retrieval=MemoryRetrievalCompletionInTransaction(
+                session_factory, embedding_model
+            ),
+            reasoning=MemoryReasoningCompletionInTransaction(
+                session_factory,
+                AnswerMemoryQuestion(build_reasoning_model(settings)),
+            ),
+            delivery=MemoryDeliveryCompletionInTransaction(
+                session_factory, AiogramAnswerDelivery(bot), identities
+            ),
         )
         notifier = AiogramVoiceNotifier(bot)
         clock = SystemClock()
@@ -165,6 +214,7 @@ async def run_local_voice_worker(settings: Settings) -> None:
                         processing_repository=processing,
                         identity_repository=identities,
                         notifier=notifier,
+                        memory_worker=memory_worker,
                     )
                     worked = processed or worked
                 except Exception:

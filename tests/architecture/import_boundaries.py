@@ -319,5 +319,6 @@ def imports_forbidden_framework(imported_module: str) -> bool:
         "mmap",
         "stat",
         "fnmatch",
+        "urllib",
     )
     return imported_module.partition(".")[0] in forbidden_roots

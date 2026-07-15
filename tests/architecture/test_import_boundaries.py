@@ -155,6 +155,26 @@ def write_module(root: Path, relative_path: str, source: str) -> None:
             "from pgvector.sqlalchemy import Vector\n",
             "pgvector.sqlalchemy",
         ),
+        (
+            "slices/memory/application/answer_question.py",
+            "from urllib.request import urlopen\n",
+            "urllib.request",
+        ),
+        (
+            "slices/memory/application/prompt_builder.py",
+            "import sqlalchemy\n",
+            "sqlalchemy",
+        ),
+        (
+            "slices/memory/application/render.py",
+            "import aiogram\n",
+            "aiogram",
+        ),
+        (
+            "shared/secret_scan.py",
+            "from second_brain.slices.classification.domain.entities import X\n",
+            "second_brain.slices.classification.domain.entities",
+        ),
     ],
 )
 def test_checker_reports_prohibited_import(

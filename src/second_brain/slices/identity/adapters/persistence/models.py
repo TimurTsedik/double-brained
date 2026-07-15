@@ -123,6 +123,9 @@ class EnrollmentInvite(Base):
     consumed_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
 
 
+RESULT_KIND_CHECK_NAME = "ck_telegram_update_receipts_result_kind"
+
+
 class TelegramUpdateReceipt(Base):
     __tablename__ = "telegram_update_receipts"
     __table_args__ = (
@@ -136,8 +139,10 @@ class TelegramUpdateReceipt(Base):
             "'projects_listed', 'project_name_mode_set', "
             "'project_name_required', 'project_created', "
             "'project_selected', 'project_cleared', "
+            "'memory_mode_set', 'memory_mode_cancelled', "
+            "'memory_question_queued', 'memory_question_required', "
             "'ignored')",
-            name="ck_telegram_update_receipts_result_kind",
+            name=RESULT_KIND_CHECK_NAME,
         ),
         CheckConstraint(
             "trace_id ~ '^[0-9a-f]{32}$' AND trace_id <> repeat('0', 32)",

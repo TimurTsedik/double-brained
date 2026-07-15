@@ -1,7 +1,7 @@
 import hashlib
 import math
-import re
 
+from second_brain.shared.secret_scan import contains_credential
 from second_brain.slices.classification.application.contracts import (
     ClassificationOutcome,
     ClassificationRequest,
@@ -21,17 +21,6 @@ MAX_CANDIDATES = 8
 MATERIALIZATION_CONFIDENCE = 0.90
 CREDENTIAL_DETECTED = "credential_detected"
 
-_CREDENTIAL_PATTERNS = (
-    re.compile(r"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
-    re.compile(
-        r"(?i)\b(?:password|passwd|api[_-]?key|secret|token)\s*[:=]\s*"
-        r"[\"']?[^\s\"']+"
-    ),
-)
-
 
 class ClassifySource:
     def __init__(self, model: ClassificationModel) -> None:
@@ -39,7 +28,7 @@ class ClassifySource:
 
     async def execute(self, source: ClassificationSource) -> ClassificationOutcome:
         source_sha256 = hashlib.sha256(source.text.encode("utf-8")).hexdigest()
-        if _contains_credential(source.text):
+        if contains_credential(source.text):
             return ClassificationOutcome(
                 source_sha256=source_sha256,
                 model_name=None,
@@ -63,10 +52,6 @@ class ClassifySource:
             discarded_candidate_count=(draft.discarded_candidate_count + discarded),
             skipped_reason=None,
         )
-
-
-def _contains_credential(text: str) -> bool:
-    return any(pattern.search(text) is not None for pattern in _CREDENTIAL_PATTERNS)
 
 
 def _validate_candidates(
