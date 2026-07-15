@@ -1,0 +1,34 @@
+# Version control
+.git
+.gitignore
+
+# Python virtualenv / caches
+.venv
+venv
+__pycache__
+*.py[cod]
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.uv-cache
+
+# Local secrets and personal data (never enter the build context)
+.env
+.env.*
+!.env.example
+.data
+
+# Local tooling / worktrees
+.worktrees
+
+# Tests are run on the CI runner before the image build, not inside the image
+tests
+
+# Editor / OS junk
+.DS_Store
+.idea
+.vscode
+
+# Docs (not needed at runtime); README is required by pyproject `readme`
+*.md
+!README.md

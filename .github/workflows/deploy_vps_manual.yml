@@ -1,0 +1,166 @@
+name: Deploy to VPS (manual)
+
+# Manual, owner-triggered deploy: run the full test suite against a real
+# pgvector Postgres, then build and push the image to GHCR, then redeploy on the
+# VPS over SSH. Kept on workflow_dispatch (not push) so a deploy never races the
+# local bot for the single Telegram getUpdates consumer.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build and deploy
+        default: main
+        required: true
+
+env:
+  IMAGE_NAME: ghcr.io/timurtsedik/double-brained
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg17
+        env:
+          POSTGRES_DB: second_brain
+          POSTGRES_USER: second_brain
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U second_brain -d second_brain"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # DATABASE_URL/SCHEMA_DATABASE_URL point at second_brain; the TEST_* URLs
+      # point at second_brain_test. conftest requires all four and that the
+      # TEST_* differ from the non-test ones. The second_brain_app role is
+      # created by init-db/initialize_schema (owner role second_brain).
+      DATABASE_URL: postgresql+asyncpg://second_brain_app@localhost:5432/second_brain
+      SCHEMA_DATABASE_URL: postgresql+asyncpg://second_brain@localhost:5432/second_brain
+      TEST_DATABASE_URL: postgresql+asyncpg://second_brain_app@localhost:5432/second_brain_test
+      TEST_SCHEMA_DATABASE_URL: postgresql+asyncpg://second_brain@localhost:5432/second_brain_test
+      # Dummy, non-secret values so imports/fixtures that read settings succeed.
+      # Tests never reach the network.
+      TELEGRAM_BOT_TOKEN: "000000:dummy-ci-token"
+      INVITE_TOKEN_PEPPER: "ci-dummy-pepper"
+      INVITE_TOKEN_PEPPER_KEY_ID: "ci-v1"
+      OPEN_ROUTER_AI_KEY: "ci-dummy-openrouter-key"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.19"
+
+      - name: Create test database
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          psql "postgresql://second_brain@localhost:5432/second_brain" \
+            -c "CREATE DATABASE second_brain_test OWNER second_brain;"
+
+      - name: Sync dependencies
+        run: uv sync --frozen --dev
+
+      - name: Pytest
+        run: uv run pytest -W error
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy src
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Compute image reference
+        id: meta
+        run: |
+          short_sha="$(git rev-parse --short=7 HEAD)"
+          echo "image=${IMAGE_NAME}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout (for compose + deploy script)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${{ secrets.VPS_PORT || '22' }}" -H "${{ secrets.VPS_HOST }}" \
+            >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Copy compose and deploy script to VPS
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+        run: |
+          scp -P "$VPS_PORT" -i ~/.ssh/deploy_key \
+            docker-compose.prod.yml scripts/deploy_prod.sh \
+            "$VPS_USER@$VPS_HOST:$VPS_APP_DIR/"
+
+      - name: Redeploy (guarded; NOT first-time init)
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          APP_IMAGE: ${{ needs.build-and-push.outputs.image }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          ssh -p "$VPS_PORT" -i ~/.ssh/deploy_key "$VPS_USER@$VPS_HOST" \
+            "cd '$VPS_APP_DIR' && APP_IMAGE='$APP_IMAGE' \
+             GHCR_USERNAME='$GHCR_USERNAME' GHCR_TOKEN='$GHCR_TOKEN' \
+             bash deploy_prod.sh"

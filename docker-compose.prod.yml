@@ -1,0 +1,57 @@
+# Production compose for the VPS deploy (long-polling).
+# postgres, polling and worker share the default project bridge network so the
+# app services keep outbound access to Telegram / OpenRouter / HuggingFace.
+# postgres is isolated by having NO published `ports:` (reachable only in-network
+# by the hostname `postgres`), not by network isolation.
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.5-pg17
+    environment:
+      POSTGRES_DB: second_brain
+      POSTGRES_USER: second_brain
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U second_brain -d second_brain"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  polling:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    command: ["second-brain-local-polling"]
+    env_file: ./.env
+    user: "1001:1001"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "second-brain-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  worker:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    command: ["second-brain-local-voice-worker"]
+    env_file: ./.env
+    user: "1001:1001"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "second-brain-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s

@@ -13,10 +13,14 @@ dependencies = [
   "asyncpg>=0.30,<1",
   "fastapi>=0.115,<1",
   "greenlet>=3,<4",
-  "mlx-whisper>=0.4.3,<0.5",
+  "mlx-whisper>=0.4.3,<0.5 ; sys_platform == 'darwin'",
   "pgvector>=0.4,<1",
   "sentence-transformers>=5,<6",
   "sqlalchemy>=2,<3",
+  # torch is declared directly (though pulled by sentence-transformers) so the
+  # [tool.uv.sources] CPU-index pin below applies — uv sources only affect
+  # direct dependencies. macOS resolves the ordinary PyPI wheel.
+  "torch>=2,<3",
   "uvicorn>=0.30,<1",
 ]
 
@@ -24,6 +28,7 @@ dependencies = [
 second-brain-identity = "second_brain.bootstrap.identity_cli:main"
 second-brain-local-polling = "second_brain.bootstrap.local_polling:main"
 second-brain-local-voice-worker = "second_brain.bootstrap.local_voice_worker:main"
+second-brain-healthcheck = "second_brain.bootstrap.healthcheck:main"
 
 [dependency-groups]
 dev = [
@@ -36,6 +41,18 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/second_brain"]
+
+# CPU-only torch on Linux (no GPU on the VPS). sentence-transformers pulls torch;
+# the default PyPI Linux wheel drags the CUDA/nvidia/triton stack (~5+ GB). Pin
+# the CPU wheel from the PyTorch index for Linux only. macOS keeps the ordinary
+# PyPI arm64 wheel (no marker match), so local voice/tests are untouched.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.pytest.ini_options]
 addopts = "-ra"
