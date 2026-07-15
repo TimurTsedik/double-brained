@@ -126,10 +126,12 @@ async def process_access_once(
     if notice is None:
         return worked
     recipient = await identity_repository.resolve_telegram_recipient(access_context)
+    locale = await identity_repository.resolve_locale(access_context)
     await notifier.send(
         SendProcessingNoticeCommand(
             recipient_telegram_id=recipient.telegram_user_id,
             notice=notice,
+            locale=locale,
         )
     )
     await processing_repository.mark_notice_sent(

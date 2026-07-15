@@ -78,6 +78,11 @@ class KnownActorStore:
     async def resolve_access_context(self, _telegram_user_id: int) -> AccessContext:
         return ACCESS
 
+    async def read_user_space_language(
+        self, _access_context: AccessContext
+    ) -> str | None:
+        return "ru"
+
 
 class UnknownActorStore(KnownActorStore):
     async def resolve_access_context(self, _telegram_user_id: int) -> None:
@@ -190,6 +195,7 @@ async def seed_known_actor(schema_engine: AsyncEngine) -> None:
                 id=ACCESS.user_space_id,
                 owner_user_id=ACCESS.user_id,
                 timezone="Asia/Jerusalem",
+                language="ru",
                 is_active=True,
                 created_at=NOW,
                 updated_at=NOW,

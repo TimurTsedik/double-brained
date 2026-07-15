@@ -73,6 +73,7 @@ async def reset_telegram_search_schema(
                 id=USER_SPACE_ID,
                 owner_user_id=USER_ID,
                 timezone="Asia/Jerusalem",
+                language="ru",
                 is_active=True,
                 created_at=NOW,
                 updated_at=NOW,

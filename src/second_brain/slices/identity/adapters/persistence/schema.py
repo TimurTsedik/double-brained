@@ -8,6 +8,7 @@ from sqlalchemy.sql.schema import Table
 from second_brain.persistence.base import Base
 from second_brain.slices.identity.adapters.persistence.models import (
     RESULT_KIND_CHECK_NAME,
+    USER_SPACE_LANGUAGE_CHECK_NAME,
     EnrollmentAttempt,
     EnrollmentInvite,
     TelegramIdentity,
@@ -34,6 +35,7 @@ async def initialize_identity_schema(
         await _ensure_application_role(connection)
         await connection.run_sync(_create_identity_tables)
         await _reconcile_result_kind_check(connection, schema_name)
+        await _reconcile_user_space_language(connection, schema_name)
         await _grant_application_privileges(connection, schema_name)
 
 
@@ -47,6 +49,7 @@ async def reset_identity_prototype_schema(
         await _ensure_application_role(connection)
         await connection.run_sync(_drop_identity_tables)
         await connection.run_sync(_create_identity_tables)
+        await _reconcile_user_space_language(connection, schema_name)
         await _grant_application_privileges(connection, schema_name)
 
 
@@ -102,6 +105,40 @@ def _result_kind_check_expression() -> str:
     raise RuntimeError("result_kind CHECK constraint is missing from the ORM model")
 
 
+async def _reconcile_user_space_language(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    # create_all(checkfirst=True) skips an existing user_spaces table, so a live
+    # prototype DB (slices 1-3) never gains the new language column. Add it
+    # idempotently (ADD COLUMN IF NOT EXISTS) and re-apply its CHECK: on a fresh
+    # DB the column already exists (no-op) and the drop+add repeats the same
+    # predicate; on a live DB both statements materialize it. Existing rows get
+    # NULL (language not chosen yet → effective RU), so the ADD is forward-only.
+    table = f"{_quote_identifier(schema_name)}.user_spaces"
+    await connection.execute(
+        text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS language VARCHAR(2)")
+    )
+    expression = _user_space_language_check_expression()
+    quoted_name = _quote_identifier(USER_SPACE_LANGUAGE_CHECK_NAME)
+    await connection.execute(
+        text(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {quoted_name}")
+    )
+    await connection.execute(
+        text(f"ALTER TABLE {table} ADD CONSTRAINT {quoted_name} CHECK ({expression})")
+    )
+
+
+def _user_space_language_check_expression() -> str:
+    table = cast(Table, UserSpace.__table__)
+    for constraint in table.constraints:
+        if (
+            isinstance(constraint, CheckConstraint)
+            and constraint.name == USER_SPACE_LANGUAGE_CHECK_NAME
+        ):
+            return str(constraint.sqltext)
+    raise RuntimeError("language CHECK constraint is missing from the ORM model")
+
+
 def _drop_identity_tables(connection: Connection) -> None:
     Base.metadata.drop_all(connection, tables=IDENTITY_TABLES)
 
@@ -117,6 +154,7 @@ async def _grant_application_privileges(
     quoted_schema = _quote_identifier(schema_name)
     enrollment_attempts = f"{quoted_schema}.enrollment_attempts"
     enrollment_invites = f"{quoted_schema}.enrollment_invites"
+    user_spaces = f"{quoted_schema}.user_spaces"
     await connection.execute(
         text(f"GRANT CONNECT ON DATABASE {quoted_database} TO {APPLICATION_ROLE}")
     )
@@ -140,6 +178,14 @@ async def _grant_application_privileges(
             "GRANT UPDATE ON TABLE "
             f"{enrollment_attempts}, {enrollment_invites} "
             f"TO {APPLICATION_ROLE}"
+        )
+    )
+    # КОЛОНОЧНЫЙ грант (решение 3): app-роль меняет только язык (и updated_at,
+    # который бампается при смене) — но НЕ owner_user_id/timezone/is_active.
+    await connection.execute(
+        text(
+            "GRANT UPDATE (language, updated_at) ON TABLE "
+            f"{user_spaces} TO {APPLICATION_ROLE}"
         )
     )
     await connection.execute(

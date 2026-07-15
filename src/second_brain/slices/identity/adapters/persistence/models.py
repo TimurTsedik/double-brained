@@ -33,12 +33,19 @@ class User(Base):
     )
 
 
+USER_SPACE_LANGUAGE_CHECK_NAME = "ck_user_spaces_language"
+
+
 class UserSpace(Base):
     __tablename__ = "user_spaces"
     __table_args__ = (
         CheckConstraint(
             "timezone = 'Asia/Jerusalem'",
             name="ck_user_spaces_timezone_asia_jerusalem",
+        ),
+        CheckConstraint(
+            "language IS NULL OR language IN ('ru', 'en')",
+            name=USER_SPACE_LANGUAGE_CHECK_NAME,
         ),
     )
 
@@ -47,6 +54,8 @@ class UserSpace(Base):
         ForeignKey("users.id"), unique=True, nullable=False
     )
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    # NULL = язык ещё не выбран → эффективный RU (forward-only, решение 1 плана).
+    language: Mapped[str | None] = mapped_column(String(2))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -141,6 +150,7 @@ class TelegramUpdateReceipt(Base):
             "'project_selected', 'project_cleared', "
             "'memory_mode_set', 'memory_mode_cancelled', "
             "'memory_question_queued', 'memory_question_required', "
+            "'language_prompt_shown', 'language_selected', "
             "'ignored')",
             name=RESULT_KIND_CHECK_NAME,
         ),

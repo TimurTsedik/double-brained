@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID
 
+from second_brain.shared.i18n import Locale
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.processing.domain.entities import (
     ProcessingNoticeClaim,
@@ -133,3 +134,4 @@ class MarkProcessingNoticeSentCommand:
 class SendProcessingNoticeCommand:
     recipient_telegram_id: int = field(repr=False)
     notice: ProcessingNoticeClaim
+    locale: Locale

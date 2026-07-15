@@ -91,6 +91,7 @@ async def reset_task_capture_schema(
                 id=ACCESS.user_space_id,
                 owner_user_id=ACCESS.user_id,
                 timezone="Asia/Jerusalem",
+                language="ru",
                 is_active=True,
                 created_at=NOW,
                 updated_at=NOW,

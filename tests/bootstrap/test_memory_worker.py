@@ -23,6 +23,7 @@ from second_brain.bootstrap.memory_retrieval_completion import (
 )
 from second_brain.bootstrap.memory_worker import MemoryWorker
 from second_brain.bootstrap.schema import reset_prototype_schema
+from second_brain.shared.i18n import Locale
 from second_brain.slices.capture.adapters.persistence.models import CaptureEventModel
 from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
@@ -299,9 +300,13 @@ class FakeAnswerDeliveryPort:
 
 
 class FakeWorkerIdentity:
-    def __init__(self, telegram_user_id: int = 777_001) -> None:
+    def __init__(
+        self, telegram_user_id: int = 777_001, locale: Locale = Locale.RU
+    ) -> None:
         self._telegram_user_id = telegram_user_id
+        self._locale = locale
         self.calls: list[AccessContext] = []
+        self.locale_calls: list[AccessContext] = []
 
     async def list_active_access_contexts(self) -> tuple[AccessContext, ...]:
         raise AssertionError("worker identity listing is not used in these tests")
@@ -311,6 +316,10 @@ class FakeWorkerIdentity:
     ) -> TelegramRecipient:
         self.calls.append(access_context)
         return TelegramRecipient(telegram_user_id=self._telegram_user_id)
+
+    async def resolve_locale(self, access_context: AccessContext) -> Locale:
+        self.locale_calls.append(access_context)
+        return self._locale
 
 
 class RecordingBot:
@@ -445,7 +454,8 @@ async def test_insufficient_snapshot_skips_provider(
             model_name=None,
             prompt_version=None,
             schema_version=None,
-        )
+        ),
+        Locale.RU,
     )
     statuses = await _step_statuses(schema_engine, run_id)
     assert statuses[MemoryStepType.DELIVERY] is MemoryRunStatus.SUCCEEDED
@@ -551,7 +561,7 @@ async def test_delivery_delivers_safe_failure_when_reasoning_failed(
 
     assert len(delivery_port.deliveries) == 1
     payload, _ = delivery_port.deliveries[0]
-    assert payload.text is None
+    assert payload.text == render_safe_failure(_trace(106), Locale.RU)
     assert payload.safe_error_code == DELIVERY_FAILURE_CODE
     assert payload.trace_id == _trace(106)
     assert await _answer_rows(schema_engine, run_id) == 0
@@ -599,7 +609,7 @@ async def test_delivery_becomes_due_and_safe_when_retrieval_failed(
 
     assert len(delivery_port.deliveries) == 1
     payload, _ = delivery_port.deliveries[0]
-    assert payload.text is None
+    assert payload.text == render_safe_failure(_trace(107), Locale.RU)
     assert payload.safe_error_code == DELIVERY_FAILURE_CODE
     assert payload.trace_id == _trace(107)
 
@@ -632,13 +642,41 @@ async def test_success_delivers_render_answer_and_reasoner_called_once(
     assert stored is not None
     assert len(delivery_port.deliveries) == 1
     payload, recipient = delivery_port.deliveries[0]
-    assert payload.text == render_answer(stored)
+    assert payload.text == render_answer(stored, Locale.RU)
     assert payload.safe_error_code is None
     assert recipient.telegram_user_id == 555_222
     assert identity.calls == [ACCESS_A]
+    assert identity.locale_calls == [ACCESS_A]
 
     # No further step is due once the whole run has SUCCEEDED.
     assert await worker.process_once(ACCESS_A, NOW + timedelta(minutes=30)) is False
+
+
+@pytest.mark.asyncio
+async def test_delivery_renders_in_user_locale(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    await _add_note(schema_engine, ACCESS_A, CLEAN_TEXT)
+    run_id = await _create_run(engine, schema_engine, ACCESS_A, update_id=110)
+    delivery_port = FakeAnswerDeliveryPort()
+    identity = FakeWorkerIdentity(locale=Locale.EN)
+    queue, worker = _build_worker(
+        engine,
+        reasoner=FakeReasoningModel(),
+        delivery_port=delivery_port,
+        identity=identity,
+    )
+
+    assert await worker.process_once(ACCESS_A, NOW) is True  # retrieval
+    assert await worker.process_once(ACCESS_A, NOW) is True  # reasoning
+    assert await worker.process_once(ACCESS_A, NOW) is True  # delivery
+
+    stored = await queue.read_answer(ACCESS_A, run_id)
+    assert stored is not None
+    payload, _ = delivery_port.deliveries[0]
+    assert payload.text == render_answer(stored, Locale.EN)
+    assert "Sources:" in (payload.text or "")
+    assert identity.locale_calls == [ACCESS_A]
 
 
 @pytest.mark.asyncio
@@ -662,20 +700,27 @@ async def test_process_once_advances_one_step_per_cycle(
 
 
 @pytest.mark.asyncio
-async def test_aiogram_delivery_sends_plain_text() -> None:
+async def test_aiogram_delivery_sends_ready_text_without_rendering() -> None:
+    # The completion renders (in the user's locale) before the adapter runs, so
+    # the adapter never renders and simply forwards payload.text as plain text.
     bot = RecordingBot()
     delivery = AiogramAnswerDelivery(bot)  # type: ignore[arg-type]
     recipient = TelegramRecipient(telegram_user_id=42)
 
     await delivery.deliver(DeliveryPayload.success("готовый ответ"), recipient)
-    await delivery.deliver(DeliveryPayload.failure("code_x", "abc123"), recipient)
+    failure = DeliveryPayload(
+        text=render_safe_failure("abc123", Locale.EN),
+        safe_error_code="code_x",
+        trace_id="abc123",
+    )
+    await delivery.deliver(failure, recipient)
 
     assert len(bot.messages) == 2
     first_args, first_kwargs = bot.messages[0]
     assert first_args == (42, "готовый ответ")
     assert "parse_mode" not in first_kwargs
     second_args, second_kwargs = bot.messages[1]
-    assert second_args == (42, render_safe_failure("abc123"))
+    assert second_args == (42, render_safe_failure("abc123", Locale.EN))
     assert "parse_mode" not in second_kwargs
 
 

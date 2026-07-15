@@ -1,14 +1,14 @@
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
+from second_brain.shared.i18n import DEFAULT_LOCALE, Locale
 from second_brain.slices.capture.application.contracts import TelegramVoiceMetadata
+from second_brain.slices.identity.adapters.telegram import messages
+from second_brain.slices.identity.application.contracts import LocaleResolver
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
 from second_brain.slices.projects.application.contracts import ProjectPanelResult
-from second_brain.slices.retrieval.application.contracts import (
-    SearchPanelResult,
-    SearchRecord,
-)
+from second_brain.slices.retrieval.application.contracts import SearchPanelResult
 from second_brain.slices.tasks.application.contracts import TaskPanelResult
 
 MAX_TASK_TITLE_LENGTH = 160
@@ -20,9 +20,19 @@ MAX_PROJECT_DISPLAY_LENGTH = 160
 class AiogramGateway:
     """Direct, deliberately narrow aiogram wrapper for local polling."""
 
-    def __init__(self, bot: Bot, bot_id: int) -> None:
+    def __init__(self, bot: Bot, bot_id: int, locale_resolver: LocaleResolver) -> None:
         self._bot = bot
         self.bot_id = bot_id
+        self._locale_resolver = locale_resolver
+
+    async def _resolve_locale(self, update: TelegramUpdate) -> Locale:
+        # Единый DB-read в момент построения сообщения: свежий и дублирующий
+        # пути дают один и тот же корректный язык (решение 5).
+        if update.telegram_user_id is None:
+            return DEFAULT_LOCALE
+        return await self._locale_resolver.resolve_for_telegram_user(
+            update.telegram_user_id
+        )
 
     async def configured_webhook_url(self) -> str | None:
         webhook = await self._bot.get_webhook_info()
@@ -46,62 +56,34 @@ class AiogramGateway:
             or update.telegram_user_id is None
         ):
             return
+        locale = await self._resolve_locale(update)
         await self._bot.send_message(
-            chat_id=update.telegram_user_id, text=_acknowledgement_text(kind)
+            chat_id=update.telegram_user_id,
+            text=messages.acknowledgement_text(kind, locale),
         )
 
     async def send_panel(self, update: TelegramUpdate) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
+        locale = await self._resolve_locale(update)
+        inline_keyboard = [
+            [
+                InlineKeyboardButton(text=label, callback_data=callback_data)
+                for label, callback_data in row
+            ]
+            for row in messages.panel_button_rows(locale)
+        ]
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
-            text="Выберите действие.",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="📋 Мои задачи", callback_data="tasks:list"
-                        ),
-                        InlineKeyboardButton(
-                            text="🔎 Поиск", callback_data="search:prompt"
-                        ),
-                        InlineKeyboardButton(
-                            text="🧠 Спросить память", callback_data="memory:ask"
-                        ),
-                        InlineKeyboardButton(
-                            text="📁 Проекты", callback_data="projects:list"
-                        ),
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="📝 Заметка", callback_data="capture:note"
-                        ),
-                        InlineKeyboardButton(
-                            text="✅ Задача", callback_data="capture:task"
-                        ),
-                        InlineKeyboardButton(
-                            text="💡 Идея", callback_data="capture:idea"
-                        ),
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="⚖️ Решение", callback_data="capture:decision"
-                        ),
-                        InlineKeyboardButton(
-                            text="❓ Вопрос", callback_data="capture:question"
-                        ),
-                        InlineKeyboardButton(
-                            text="Отмена", callback_data="capture:cancel"
-                        ),
-                    ],
-                ]
-            ),
+            text=messages.panel_text(locale),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=inline_keyboard),
         )
 
     async def send_selection_feedback(self, update: TelegramUpdate) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
-        text = _selection_feedback_text(update.callback_data)
+        locale = await self._resolve_locale(update)
+        text = messages.selection_feedback_text(update.callback_data, locale)
         if text is None:
             return
         await self._bot.send_message(chat_id=update.telegram_user_id, text=text)
@@ -109,9 +91,10 @@ class AiogramGateway:
     async def send_voice_queued(self, update: TelegramUpdate) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
+        locale = await self._resolve_locale(update)
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
-            text="🎙️ Голос сохранён. Расшифровываю…",
+            text=messages.voice_queued_text(locale),
         )
 
     async def send_task_panel(
@@ -122,21 +105,22 @@ class AiogramGateway:
     ) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
+        locale = await self._resolve_locale(update)
 
         if result.items:
-            task_text = "📋 Открытые задачи\n\n" + "\n".join(
-                f"{number}. {_truncate_title(item.title)}"
-                for number, item in enumerate(result.items, start=1)
+            task_text = (
+                messages.task_panel_header(locale)
+                + "\n\n"
+                + "\n".join(
+                    f"{number}. {_truncate_title(item.title)}"
+                    for number, item in enumerate(result.items, start=1)
+                )
             )
         else:
-            task_text = "📋 Открытых задач нет."
+            task_text = messages.task_panel_empty(locale)
 
         if is_completion:
-            outcome = (
-                "✅ Выполнено."
-                if result.completion_changed is True
-                else "Задача уже закрыта или недоступна."
-            )
+            outcome = messages.task_completion_text(result.completion_changed, locale)
             task_text = f"{outcome}\n\n{task_text}"
 
         if result.items:
@@ -169,23 +153,16 @@ class AiogramGateway:
     ) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
-        text = (
-            "Напишите слово или фразу."
-            if query_required
-            else (
-                "🔎 Что найти?\n\n"
-                "Отправьте слово или фразу. Следующее сообщение станет запросом, "
-                "а не новой записью."
-            )
-        )
+        locale = await self._resolve_locale(update)
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
-            text=text,
+            text=messages.search_prompt_text(query_required, locale),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="✖️ Отмена", callback_data="search:cancel"
+                            text=messages.search_cancel_button(locale),
+                            callback_data="search:cancel",
                         )
                     ]
                 ]
@@ -195,9 +172,10 @@ class AiogramGateway:
     async def send_search_cancelled(self, update: TelegramUpdate) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
+        locale = await self._resolve_locale(update)
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
-            text="✖️ Поиск отменён.",
+            text=messages.search_cancelled_text(locale),
         )
 
     async def send_memory_prompt(
@@ -207,22 +185,16 @@ class AiogramGateway:
     ) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
-        text = (
-            "Напишите вопрос."
-            if question_required
-            else (
-                "🧠 Что спросить у памяти?\n\n"
-                "Следующее сообщение станет вопросом к памяти, а не новой записью."
-            )
-        )
+        locale = await self._resolve_locale(update)
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
-            text=text,
+            text=messages.memory_prompt_text(question_required, locale),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="✖️ Отмена", callback_data="memory:cancel"
+                            text=messages.memory_cancel_button(locale),
+                            callback_data="memory:cancel",
                         )
                     ]
                 ]
@@ -232,9 +204,10 @@ class AiogramGateway:
     async def send_memory_cancelled(self, update: TelegramUpdate) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
+        locale = await self._resolve_locale(update)
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
-            text="✖️ Вопрос к памяти отменён.",
+            text=messages.memory_cancelled_text(locale),
         )
 
     async def send_search_panel(
@@ -244,17 +217,20 @@ class AiogramGateway:
     ) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
+        locale = await self._resolve_locale(update)
         if result.items:
             blocks = [
-                f"{number}. {_search_label(item)}\n{_search_excerpt(item.text)}"
+                f"{number}. {messages.search_label(item, locale)}\n"
+                f"{_search_excerpt(item.text)}"
                 for number, item in enumerate(result.items, start=1)
             ]
-            text = f"🔎 Найдено: {len(result.items)}\n\n" + "\n\n".join(blocks)
-        else:
             text = (
-                "🔎 Ничего не найдено.\n\n"
-                "Попробуйте другое слово или более короткую фразу."
+                messages.search_panel_found_header(len(result.items), locale)
+                + "\n\n"
+                + "\n\n".join(blocks)
             )
+        else:
+            text = messages.search_panel_empty(locale)
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
             text=text,
@@ -262,7 +238,8 @@ class AiogramGateway:
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="🔎 Искать ещё", callback_data="search:prompt"
+                            text=messages.search_again_button(locale),
+                            callback_data="search:prompt",
                         )
                     ]
                 ]
@@ -276,22 +253,16 @@ class AiogramGateway:
     ) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
-        text = (
-            "Название не может быть пустым. Напишите название проекта."
-            if name_required
-            else (
-                "📁 Напишите название проекта.\n\n"
-                "Следующее сообщение станет названием, а не новой записью."
-            )
-        )
+        locale = await self._resolve_locale(update)
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
-            text=text,
+            text=messages.project_name_prompt_text(name_required, locale),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="✖️ Отмена", callback_data="projects:list"
+                            text=messages.project_name_cancel_button(locale),
+                            callback_data="projects:list",
                         )
                     ]
                 ]
@@ -306,17 +277,20 @@ class AiogramGateway:
     ) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
+        locale = await self._resolve_locale(update)
         current = next(
             (item for item in result.items if item.id == result.current_project_id),
             None,
         )
         current_name = (
-            "не выбран"
+            messages.project_not_selected(locale)
             if current is None
             else _truncate_project_name(current.name, MAX_PROJECT_DISPLAY_LENGTH)
         )
-        announcement = _project_announcement(kind, result.action_succeeded)
-        panel_text = f"📁 Проекты\n\nТекущий: {current_name}"
+        announcement = messages.project_announcement(
+            kind, result.action_succeeded, locale
+        )
+        panel_text = messages.project_panel_body(current_name, locale)
         if announcement is not None:
             panel_text = f"{announcement}\n\n{panel_text}"
         project_rows = [
@@ -333,10 +307,12 @@ class AiogramGateway:
         project_rows.append(
             [
                 InlineKeyboardButton(
-                    text="➕ Новый проект", callback_data="projects:create"
+                    text=messages.project_new_button(locale),
+                    callback_data="projects:create",
                 ),
                 InlineKeyboardButton(
-                    text="✖️ Без проекта", callback_data="projects:clear"
+                    text=messages.project_clear_button(locale),
+                    callback_data="projects:clear",
                 ),
             ]
         )
@@ -344,6 +320,39 @@ class AiogramGateway:
             chat_id=update.telegram_user_id,
             text=panel_text,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=project_rows),
+        )
+
+    async def send_language_prompt(self, update: TelegramUpdate) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        # Chooser двуязычен (язык ещё не выбран) — locale не резолвим.
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=messages.language_chooser_text(),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=messages.language_button_ru(),
+                            callback_data="lang:ru",
+                        ),
+                        InlineKeyboardButton(
+                            text=messages.language_button_en(),
+                            callback_data="lang:en",
+                        ),
+                    ]
+                ]
+            ),
+        )
+
+    async def send_language_selected(self, update: TelegramUpdate) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        # Язык уже записан и закоммичен в ingress-транзакции → резолвим НОВЫЙ.
+        locale = await self._resolve_locale(update)
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=messages.language_selected_text(locale),
         )
 
     async def answer_callback(self, update: TelegramUpdate) -> None:
@@ -399,50 +408,10 @@ class AiogramGateway:
         )
 
 
-def _acknowledgement_text(kind: AcknowledgementKind) -> str:
-    messages = {
-        AcknowledgementKind.ENROLLED: "Enrollment complete.",
-        AcknowledgementKind.ENROLLMENT_REJECTED: "Enrollment could not be completed.",
-        AcknowledgementKind.KNOWN_USER_STARTED: "Welcome back.",
-        AcknowledgementKind.MEMORY_QUESTION_QUEUED: "⏳ Готовлю ответ…",
-    }
-    return messages[kind]
-
-
-def _selection_feedback_text(callback_data: str | None) -> str | None:
-    if callback_data is None:
-        return None
-    messages = {
-        "capture:note": "📝 Заметка",
-        "capture:task": "✅ Задача",
-        "capture:idea": "💡 Идея",
-        "capture:decision": "⚖️ Решение",
-        "capture:question": "❓ Вопрос",
-        "capture:cancel": "✖️ Отменено",
-        "task:await_text": "✅ Задача",
-        "task:cancel": "✖️ Отменено",
-    }
-    return messages.get(callback_data)
-
-
 def _truncate_title(title: str) -> str:
     if len(title) <= MAX_TASK_TITLE_LENGTH:
         return title
     return f"{title[: MAX_TASK_TITLE_LENGTH - 1]}…"
-
-
-def _search_label(record: SearchRecord) -> str:
-    record_type = record.record_type.value
-    if record_type == "task":
-        if record.task_completed:
-            return "☑️ Завершённая задача"
-        return "✅ Задача"
-    return {
-        "note": "📝 Заметка",
-        "idea": "💡 Идея",
-        "decision": "⚖️ Решение",
-        "question": "❓ Вопрос",
-    }[record_type]
 
 
 def _search_excerpt(text: str) -> str:
@@ -450,26 +419,6 @@ def _search_excerpt(text: str) -> str:
     if len(compact) <= MAX_SEARCH_EXCERPT_LENGTH:
         return compact
     return f"{compact[: MAX_SEARCH_EXCERPT_LENGTH - 1]}…"
-
-
-def _project_announcement(
-    kind: AcknowledgementKind, action_succeeded: bool | None
-) -> str | None:
-    if kind is AcknowledgementKind.PROJECT_CREATED:
-        return "✅ Проект выбран."
-    if kind is AcknowledgementKind.PROJECT_SELECTED:
-        return (
-            "✅ Текущий проект изменён."
-            if action_succeeded
-            else "Проект недоступен. Контекст не изменён."
-        )
-    if kind is AcknowledgementKind.PROJECT_CLEARED:
-        return (
-            "✅ Контекст проекта очищен."
-            if action_succeeded
-            else "Проект уже не выбран."
-        )
-    return None
 
 
 def _project_button_text(name: str, current: bool) -> str:

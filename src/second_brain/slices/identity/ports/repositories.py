@@ -94,6 +94,14 @@ class UpdateTransaction(
         now: datetime,
     ) -> EnrollmentOutcome: ...
 
+    async def read_user_space_language(
+        self, access_context: AccessContext
+    ) -> str | None: ...
+
+    async def set_user_space_language(
+        self, access_context: AccessContext, language: str, now: datetime
+    ) -> bool: ...
+
 
 UpdateHandler = Callable[[UpdateTransaction], Awaitable[NewUpdateResult]]
 

@@ -21,6 +21,7 @@ from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
 )
 from second_brain.slices.identity.adapters.persistence.repositories import (
+    PostgresLocaleResolver,
     PostgresPollerLock,
     PostgresUpdateRepository,
 )
@@ -56,7 +57,11 @@ async def run_local_polling(settings: Settings) -> None:
             project_panel_port=project_context,
             memory_ask_port=MemoryAskInTransaction(),
         )
-        poller = LocalPoller(AiogramGateway(bot, bot_user.id), processor, lock)
+        poller = LocalPoller(
+            AiogramGateway(bot, bot_user.id, PostgresLocaleResolver(session_factory)),
+            processor,
+            lock,
+        )
         while True:
             await poller.run_once()
             await asyncio.sleep(1)

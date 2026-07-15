@@ -81,6 +81,10 @@ class TelegramGateway(Protocol):
         kind: AcknowledgementKind,
     ) -> None: ...
 
+    async def send_language_prompt(self, update: TelegramUpdate) -> None: ...
+
+    async def send_language_selected(self, update: TelegramUpdate) -> None: ...
+
     async def answer_callback(self, update: TelegramUpdate) -> None: ...
 
 
@@ -288,6 +292,35 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
+            if result.kind is AcknowledgementKind.LANGUAGE_PROMPT_SHOWN and getattr(
+                result, "fresh", True
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_language_prompt(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            if result.kind is AcknowledgementKind.LANGUAGE_SELECTED and getattr(
+                result, "fresh", True
+            ):
+                # Two independent retry loops: a transient failure on the panel
+                # send must not re-send the "language set" confirmation.
+                while True:
+                    try:
+                        await self._gateway.send_language_selected(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+                while True:
+                    try:
+                        await self._gateway.send_panel(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             self.offset = update.update_id + 1
             if result.kind not in {
                 AcknowledgementKind.IGNORED,
@@ -310,6 +343,8 @@ class LocalPoller:
                 AcknowledgementKind.MEMORY_MODE_SET,
                 AcknowledgementKind.MEMORY_MODE_CANCELLED,
                 AcknowledgementKind.MEMORY_QUESTION_REQUIRED,
+                AcknowledgementKind.LANGUAGE_PROMPT_SHOWN,
+                AcknowledgementKind.LANGUAGE_SELECTED,
                 AcknowledgementKind.VOICE_QUEUED,
             }:
                 try:

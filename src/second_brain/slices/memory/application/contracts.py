@@ -43,7 +43,10 @@ class DeliveryPayload:
     # Success carries the ready answer text; failure carries a safe code plus a
     # trace reference. The delivery port never receives a bare MemoryAnswer, so
     # the FAILED-reasoning path stays deliverable.
-    text: str | None = field(default=None, repr=False)
+    # text is always pre-rendered by the delivery completion (success answer or
+    # safe-failure chrome) — never None, so the adapter can forward it verbatim
+    # with no silent-drop branch.
+    text: str = field(repr=False)
     safe_error_code: str | None = None
     trace_id: str | None = field(default=None, repr=False)
 
@@ -52,8 +55,10 @@ class DeliveryPayload:
         return cls(text=text)
 
     @classmethod
-    def failure(cls, safe_error_code: str, trace_id: str) -> "DeliveryPayload":
-        return cls(safe_error_code=safe_error_code, trace_id=trace_id)
+    def failure(
+        cls, text: str, safe_error_code: str, trace_id: str
+    ) -> "DeliveryPayload":
+        return cls(text=text, safe_error_code=safe_error_code, trace_id=trace_id)
 
 
 class AnswerDeliveryPort(Protocol):

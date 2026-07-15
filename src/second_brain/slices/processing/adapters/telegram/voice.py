@@ -2,24 +2,14 @@ from io import BytesIO
 
 from aiogram import Bot
 
+from second_brain.slices.processing.adapters.telegram.messages import notice_text
 from second_brain.slices.processing.application.contracts import (
     DownloadedVoice,
     DownloadVoiceCommand,
     SendProcessingNoticeCommand,
 )
-from second_brain.slices.processing.domain.entities import (
-    ProcessingNoticeKind,
-    TranscriptionOutputType,
-)
 
 DEFAULT_VOICE_MIME_TYPE = "audio/ogg"
-SUCCESS_LABELS = {
-    TranscriptionOutputType.NOTE: "📝 Заметка",
-    TranscriptionOutputType.TASK: "✅ Задача",
-    TranscriptionOutputType.IDEA: "💡 Идея",
-    TranscriptionOutputType.DECISION: "⚖️ Решение",
-    TranscriptionOutputType.QUESTION: "❓ Вопрос",
-}
 
 
 class TelegramVoiceDownloadError(RuntimeError):
@@ -57,11 +47,5 @@ class AiogramVoiceNotifier:
         self._bot = bot
 
     async def send(self, command: SendProcessingNoticeCommand) -> None:
-        if command.notice.kind is ProcessingNoticeKind.SUCCESS:
-            text = (
-                "🎙️ Расшифровано и сохранено: "
-                f"{SUCCESS_LABELS[command.notice.output_type]}."
-            )
-        else:
-            text = f"Не удалось обработать запись.\nTrace ID: {command.notice.trace_id}"
+        text = notice_text(command.notice, command.locale)
         await self._bot.send_message(command.recipient_telegram_id, text)

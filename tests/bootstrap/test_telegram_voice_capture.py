@@ -67,6 +67,7 @@ from second_brain.slices.tasks.adapters.persistence.models import (
 )
 from second_brain.slices.tasks.domain.entities import PendingCaptureType
 from tests.identity.conftest import IsolatedDatabase
+from tests.identity.locale_fakes import FakeLocaleResolver
 
 NOW = datetime(2026, 7, 14, 10, 0, tzinfo=UTC)
 ACCESS = AccessContext(
@@ -97,6 +98,7 @@ async def voice_database(
                 id=ACCESS.user_space_id,
                 owner_user_id=ACCESS.user_id,
                 timezone="Asia/Jerusalem",
+                language="ru",
                 is_active=True,
                 created_at=NOW,
                 updated_at=NOW,
@@ -138,6 +140,11 @@ class KnownActorStore:
 
     async def resolve_access_context(self, _telegram_user_id: int) -> AccessContext:
         return ACCESS
+
+    async def read_user_space_language(
+        self, _access_context: AccessContext
+    ) -> str | None:
+        return "ru"
 
 
 class UnknownActorStore(KnownActorStore):
@@ -207,7 +214,9 @@ def test_aiogram_voice_is_normalized_without_exposing_file_ids() -> None:
         voice=voice,
     )
     update = SimpleNamespace(update_id=100, callback_query=None, message=message)
-    gateway = AiogramGateway(cast(Bot, object()), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, object()), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     normalized = gateway._normalize(cast(Update, update))
 
@@ -540,7 +549,9 @@ class RecordingBot:
 @pytest.mark.asyncio
 async def test_aiogram_gateway_sends_compact_voice_queued_status() -> None:
     bot = RecordingBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     await gateway.send_voice_queued(private_voice(241))
 

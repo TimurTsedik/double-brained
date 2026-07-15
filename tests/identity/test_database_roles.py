@@ -149,7 +149,6 @@ async def test_application_role_lacks_update_on_immutable_identity_tables(
 ) -> None:
     immutable_tables = (
         "users",
-        "user_spaces",
         "telegram_identities",
         "telegram_update_receipts",
     )
@@ -161,6 +160,41 @@ async def test_application_role_lacks_update_on_immutable_identity_tables(
         )
 
         assert has_update_privilege is False
+
+
+@pytest.mark.asyncio
+async def test_application_role_can_update_only_language_columns_on_user_spaces(
+    session: AsyncSession,
+) -> None:
+    # КОЛОНОЧНЫЙ грант: смена языка бампает updated_at, но право менять
+    # owner_user_id/timezone/is_active app-роли не даётся.
+    updatable = ("language", "updated_at")
+    immutable = ("owner_user_id", "timezone", "is_active", "id", "created_at")
+
+    for column in updatable:
+        allowed = await session.scalar(
+            text(
+                "SELECT has_column_privilege(current_user, 'user_spaces', "
+                ":column, 'UPDATE')"
+            ),
+            {"column": column},
+        )
+        assert allowed is True, column
+
+    for column in immutable:
+        allowed = await session.scalar(
+            text(
+                "SELECT has_column_privilege(current_user, 'user_spaces', "
+                ":column, 'UPDATE')"
+            ),
+            {"column": column},
+        )
+        assert allowed is False, column
+
+    has_delete = await session.scalar(
+        text("SELECT has_table_privilege(current_user, 'user_spaces', 'DELETE')")
+    )
+    assert has_delete is False
 
 
 @pytest.mark.asyncio

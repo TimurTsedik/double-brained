@@ -1,3 +1,6 @@
+from datetime import datetime
+
+from second_brain.shared.i18n import Locale
 from second_brain.slices.memory.domain.entities import (
     EvidenceLevel,
     MemoryAnswer,
@@ -5,36 +8,89 @@ from second_brain.slices.memory.domain.entities import (
 )
 
 # Owner decision (2026-07-15): trust level shown with an icon AND plain words.
-_LEVEL_BADGES = {
-    EvidenceLevel.DIRECT: "✅ Прямо из заметок",
-    EvidenceLevel.RECONSTRUCTED: "🧩 Собрано по кусочкам",
-    EvidenceLevel.HYPOTHESIS: "💭 Предположение",
-    EvidenceLevel.INSUFFICIENT: "∅ В памяти нет ответа",
+# Chrome is localized per user; the model answer text itself is NOT translated.
+# RU values are byte-for-byte the pre-localization strings (regression).
+_LEVEL_BADGES: dict[Locale, dict[EvidenceLevel, str]] = {
+    Locale.RU: {
+        EvidenceLevel.DIRECT: "✅ Прямо из заметок",
+        EvidenceLevel.RECONSTRUCTED: "🧩 Собрано по кусочкам",
+        EvidenceLevel.HYPOTHESIS: "💭 Предположение",
+        EvidenceLevel.INSUFFICIENT: "∅ В памяти нет ответа",
+    },
+    Locale.EN: {
+        EvidenceLevel.DIRECT: "✅ Straight from your notes",
+        EvidenceLevel.RECONSTRUCTED: "🧩 Pieced together",
+        EvidenceLevel.HYPOTHESIS: "💭 Best guess",
+        EvidenceLevel.INSUFFICIENT: "∅ Nothing in memory",
+    },
 }
 
-_KIND_LABELS = {
-    MemoryRecordKind.NOTE: "Заметка",
-    MemoryRecordKind.TASK: "Задача",
-    MemoryRecordKind.IDEA: "Идея",
-    MemoryRecordKind.DECISION: "Решение",
-    MemoryRecordKind.QUESTION: "Вопрос",
+_KIND_LABELS: dict[Locale, dict[MemoryRecordKind, str]] = {
+    Locale.RU: {
+        MemoryRecordKind.NOTE: "Заметка",
+        MemoryRecordKind.TASK: "Задача",
+        MemoryRecordKind.IDEA: "Идея",
+        MemoryRecordKind.DECISION: "Решение",
+        MemoryRecordKind.QUESTION: "Вопрос",
+    },
+    Locale.EN: {
+        MemoryRecordKind.NOTE: "Note",
+        MemoryRecordKind.TASK: "Task",
+        MemoryRecordKind.IDEA: "Idea",
+        MemoryRecordKind.DECISION: "Decision",
+        MemoryRecordKind.QUESTION: "Question",
+    },
 }
 
+_SOURCES_HEADER: dict[Locale, str] = {
+    Locale.RU: "Источники:",
+    Locale.EN: "Sources:",
+}
 
-def render_answer(answer: MemoryAnswer) -> str:
-    badge = _LEVEL_BADGES[answer.evidence_level]
+_SAFE_FAILURE: dict[Locale, str] = {
+    Locale.RU: "Не удалось подготовить ответ.\nКод обращения: {trace_id}",
+    Locale.EN: "Could not prepare an answer.\nReference code: {trace_id}",
+}
+
+# Hardcoded English month abbreviations: the EN date must be deterministic and
+# independent of the process/system locale (strftime("%b") is locale-sensitive).
+_EN_MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+
+def _format_date(value: datetime, locale: Locale) -> str:
+    if locale is Locale.EN:
+        return f"{_EN_MONTHS[value.month - 1]} {value.day}, {value.year}"
+    return value.strftime("%d.%m.%Y")
+
+
+def render_answer(answer: MemoryAnswer, locale: Locale) -> str:
+    badge = _LEVEL_BADGES[locale][answer.evidence_level]
     if answer.evidence_level is EvidenceLevel.INSUFFICIENT:
         return badge
 
     lines = [answer.answer_text.strip(), "", badge]
     if answer.sources:
         lines.append("")
-        lines.append("Источники:")
+        lines.append(_SOURCES_HEADER[locale])
+        kind_labels = _KIND_LABELS[locale]
         for source in answer.sources:
-            kind = _KIND_LABELS[source.record_kind]
-            lines.append(f"{kind} · {source.created_at.strftime('%d.%m.%Y')}")
+            kind = kind_labels[source.record_kind]
+            lines.append(f"{kind} · {_format_date(source.created_at, locale)}")
     return "\n".join(lines)
 
 
-def render_safe_failure(trace_id: str) -> str:
-    return f"Не удалось подготовить ответ.\nКод обращения: {trace_id}"
+def render_safe_failure(trace_id: str, locale: Locale) -> str:
+    return _SAFE_FAILURE[locale].format(trace_id=trace_id)

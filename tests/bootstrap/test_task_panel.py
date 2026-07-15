@@ -24,6 +24,7 @@ from second_brain.slices.tasks.application.contracts import (
     TaskListItem,
     TaskPanelResult,
 )
+from tests.identity.locale_fakes import FakeLocaleResolver
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
 ACCESS = AccessContext(
@@ -56,6 +57,11 @@ class KnownActorStore:
 
     async def resolve_access_context(self, _telegram_user_id: int) -> AccessContext:
         return ACCESS
+
+    async def read_user_space_language(
+        self, _access_context: AccessContext
+    ) -> str | None:
+        return "ru"
 
 
 @pytest.mark.asyncio
@@ -388,7 +394,9 @@ async def test_aiogram_gateway_sends_fixed_inline_task_panel_and_answers_callbac
     None
 ):
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
     panel_update = TelegramUpdate(1, 102, True, 42, "/start")
     callback_update = TelegramUpdate(
         1,
@@ -430,7 +438,9 @@ async def test_aiogram_gateway_sends_numbered_open_tasks_with_completion_buttons
     None
 ):
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
     long_title = "x" * 161
     first_id = UUID("00000000-0000-0000-0000-000000000301")
     second_id = UUID("00000000-0000-0000-0000-000000000302")
@@ -472,7 +482,9 @@ async def test_aiogram_gateway_sends_safe_completion_outcome(
     changed: bool, prefix: str
 ) -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     await gateway.send_task_panel(
         private_callback(108, "tasks:complete:any"),
@@ -500,7 +512,9 @@ async def test_aiogram_gateway_sends_selection_feedback(
     callback_data: str, expected_text: str
 ) -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     await gateway.send_selection_feedback(private_callback(103, callback_data))
 

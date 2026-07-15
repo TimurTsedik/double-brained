@@ -55,6 +55,7 @@ async def reset_project_schema(
                     "id": access.user_space_id,
                     "owner_user_id": access.user_id,
                     "timezone": "Asia/Jerusalem",
+                    "language": "ru",
                     "is_active": True,
                     "created_at": NOW,
                     "updated_at": NOW,

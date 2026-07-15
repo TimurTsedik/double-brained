@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import UUID
 
+from second_brain.shared.i18n import Locale
+
 
 @dataclass(frozen=True)
 class AccessContext:
@@ -20,6 +22,12 @@ class WorkerIdentityPort(Protocol):
     async def resolve_telegram_recipient(
         self, access_context: AccessContext
     ) -> TelegramRecipient: ...
+
+    async def resolve_locale(self, access_context: AccessContext) -> Locale: ...
+
+
+class LocaleResolver(Protocol):
+    async def resolve_for_telegram_user(self, telegram_user_id: int) -> Locale: ...
 
 
 class UpdateTransaction(Protocol):

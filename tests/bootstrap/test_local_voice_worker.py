@@ -17,6 +17,7 @@ from second_brain.bootstrap.voice_processing_completion import (
     VoiceDownloadCompletionInTransaction,
     VoiceTranscriptionCompletionInTransaction,
 )
+from second_brain.shared.i18n import Locale
 from second_brain.slices.capture.adapters.persistence.models import (
     CaptureEventModel,
     TelegramAttachmentModel,
@@ -458,14 +459,20 @@ class FakeNoticeRepository:
 
 
 class FakeWorkerIdentity:
-    def __init__(self) -> None:
+    def __init__(self, locale: Locale = Locale.RU) -> None:
         self.calls: list[AccessContext] = []
+        self.locale_calls: list[AccessContext] = []
+        self._locale = locale
 
     async def resolve_telegram_recipient(
         self, access_context: AccessContext
     ) -> TelegramRecipient:
         self.calls.append(access_context)
         return TelegramRecipient(telegram_user_id=555)
+
+    async def resolve_locale(self, access_context: AccessContext) -> Locale:
+        self.locale_calls.append(access_context)
+        return self._locale
 
 
 class FakeNotifier:
@@ -517,6 +524,28 @@ async def test_cycle_processes_one_scope_and_marks_notice_only_after_send() -> N
     assert len(notifier.commands) == 1
     assert notifier.commands[0].notice.output_type is TranscriptionOutputType.IDEA
     assert len(repository.sent) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locale", [Locale.RU, Locale.EN])
+async def test_cycle_resolves_notice_locale_from_identity(locale: Locale) -> None:
+    repository = FakeNoticeRepository(_notice_claim())
+    identity = FakeWorkerIdentity(locale=locale)
+    notifier = FakeNotifier()
+
+    await process_access_once(
+        access_context=ACCESS,
+        now=NOW,
+        worker=FakeVoiceWorker(worked=False),
+        classification_worker=FakeVoiceWorker(worked=False),
+        indexing_worker=FakeVoiceWorker(worked=False),
+        processing_repository=repository,
+        identity_repository=identity,
+        notifier=notifier,
+    )
+
+    assert identity.locale_calls == [ACCESS]
+    assert notifier.commands[0].locale is locale
 
 
 @pytest.mark.asyncio

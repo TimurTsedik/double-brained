@@ -18,6 +18,7 @@ from second_brain.slices.projects.application.contracts import (
     ProjectListItem,
     ProjectPanelResult,
 )
+from tests.identity.locale_fakes import FakeLocaleResolver
 
 PROJECT_ID = UUID("00000000-0000-0000-0000-000000000123")
 PANEL = ProjectPanelResult(
@@ -38,7 +39,9 @@ class RecordingBot:
 @pytest.mark.asyncio
 async def test_gateway_renders_projects_button_prompt_and_current_panel() -> None:
     bot = RecordingBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
     update = TelegramUpdate(1, 1, True, 42, "/start")
 
     await gateway.send_panel(update)

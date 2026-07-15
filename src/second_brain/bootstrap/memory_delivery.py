@@ -41,8 +41,9 @@ class CompleteMemoryDeliveryCommand:
 class AiogramAnswerDelivery:
     """AnswerDeliveryPort over aiogram. Sends the answer as PLAIN TEXT with no
     parse_mode, mirroring AiogramVoiceNotifier: model output must never be
-    interpreted as Markdown/HTML markup. Rendering lives in the application
-    (render_answer / render_safe_failure); this adapter only sends the string."""
+    interpreted as Markdown/HTML markup. Rendering (in the user's locale) already
+    happened in the completion, which has the language; this adapter has only a
+    TelegramRecipient, so it never renders and just forwards payload.text."""
 
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
@@ -50,11 +51,7 @@ class AiogramAnswerDelivery:
     async def deliver(
         self, payload: DeliveryPayload, recipient_context: TelegramRecipient
     ) -> None:
-        if payload.text is not None:
-            text = payload.text
-        else:
-            text = render_safe_failure(payload.trace_id or "")
-        await self._bot.send_message(recipient_context.telegram_user_id, text)
+        await self._bot.send_message(recipient_context.telegram_user_id, payload.text)
 
 
 class MemoryDeliveryCompletionInTransaction:
@@ -95,11 +92,19 @@ class MemoryDeliveryCompletionInTransaction:
         writer: PostgresMemoryWriter,
         command: CompleteMemoryDeliveryCommand,
     ) -> DeliveryPayload:
+        # Resolve the user's locale here (decision 5: one narrow read at message
+        # build time) and render both the success and failure chrome in it, so
+        # the adapter — which only holds a TelegramRecipient — never renders.
+        locale = await self._identity.resolve_locale(command.access_context)
         state = await writer.read_reasoning_state(
             command.access_context, command.run_id
         )
         if state is not None and state.status is MemoryRunStatus.SUCCEEDED:
             answer = await writer.read_answer(command.access_context, command.run_id)
             if answer is not None:
-                return DeliveryPayload.success(render_answer(answer))
-        return DeliveryPayload.failure(DELIVERY_FAILURE_CODE, command.trace_id)
+                return DeliveryPayload.success(render_answer(answer, locale))
+        return DeliveryPayload(
+            text=render_safe_failure(command.trace_id, locale),
+            safe_error_code=DELIVERY_FAILURE_CODE,
+            trace_id=command.trace_id,
+        )

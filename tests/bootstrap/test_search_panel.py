@@ -35,6 +35,7 @@ from second_brain.slices.tasks.application.contracts import (
     SetAwaitingTaskCommand,
     SetPendingCaptureSelectionCommand,
 )
+from tests.identity.locale_fakes import FakeLocaleResolver
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
 ACCESS = AccessContext(
@@ -76,6 +77,11 @@ class KnownActorStore:
 
     async def resolve_access_context(self, _telegram_user_id: int) -> AccessContext:
         return ACCESS
+
+    async def read_user_space_language(
+        self, _access_context: AccessContext
+    ) -> str | None:
+        return "ru"
 
 
 class DuplicateSearchStore(KnownActorStore):
@@ -412,7 +418,9 @@ def search_record(
 @pytest.mark.asyncio
 async def test_aiogram_gateway_sends_search_prompt_with_cancel_button() -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     await gateway.send_search_prompt(
         callback(300, "search:prompt"), query_required=False
@@ -435,7 +443,9 @@ async def test_aiogram_gateway_sends_search_prompt_with_cancel_button() -> None:
 @pytest.mark.asyncio
 async def test_aiogram_gateway_reprompts_for_blank_search_query() -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     await gateway.send_search_prompt(text_update(301, "  "), query_required=True)
 
@@ -449,7 +459,9 @@ async def test_aiogram_gateway_reprompts_for_blank_search_query() -> None:
 @pytest.mark.asyncio
 async def test_aiogram_gateway_sends_search_cancelled() -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     await gateway.send_search_cancelled(callback(302, "search:cancel"))
 
@@ -459,7 +471,9 @@ async def test_aiogram_gateway_sends_search_cancelled() -> None:
 @pytest.mark.asyncio
 async def test_aiogram_gateway_sends_compact_typed_search_results() -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
     long_note = "  PostgreSQL\n" + "x" * 300
     result = SearchPanelResult(
         (
@@ -504,7 +518,9 @@ async def test_aiogram_gateway_sends_compact_typed_search_results() -> None:
 @pytest.mark.asyncio
 async def test_aiogram_gateway_sends_exact_empty_search_result() -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     await gateway.send_search_panel(
         text_update(304, "missing"),
@@ -523,7 +539,9 @@ async def test_aiogram_gateway_sends_exact_empty_search_result() -> None:
 @pytest.mark.asyncio
 async def test_ten_maximum_search_excerpts_fit_telegram_message() -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
     result = SearchPanelResult(
         tuple(
             search_record(number, SearchRecordType.NOTE, "x" * 500)

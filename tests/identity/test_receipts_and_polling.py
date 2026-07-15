@@ -70,6 +70,9 @@ class FakeStore:
             return None
         return object()
 
+    async def read_user_space_language(self, access_context: object) -> str | None:
+        return "ru"
+
     async def reserve_enrollment_attempt(
         self,
         bot_id: int,

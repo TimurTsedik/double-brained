@@ -5,6 +5,7 @@ from hmac import digest
 from uuid import UUID
 
 from second_brain.shared.clock import Clock
+from second_brain.shared.i18n import is_language_chosen
 from second_brain.shared.trace import TraceContext
 from second_brain.slices.capture.application.contracts import (
     CaptureTextCommand,
@@ -13,6 +14,7 @@ from second_brain.slices.capture.application.contracts import (
     CaptureVoicePort,
 )
 from second_brain.slices.identity.application.access_context import ResolveAccessContext
+from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
 from second_brain.slices.identity.ports.repositories import (
     NewUpdateResult,
@@ -77,6 +79,8 @@ class AcknowledgementKind(StrEnum):
     MEMORY_MODE_CANCELLED = "memory_mode_cancelled"
     MEMORY_QUESTION_QUEUED = "memory_question_queued"
     MEMORY_QUESTION_REQUIRED = "memory_question_required"
+    LANGUAGE_PROMPT_SHOWN = "language_prompt_shown"
+    LANGUAGE_SELECTED = "language_selected"
     VOICE_QUEUED = "voice_queued"
     IGNORED = "ignored"
 
@@ -193,6 +197,13 @@ class LocalUpdateProcessor:
         )
         if access_context is None or update.telegram_message_id is None:
             return AcknowledgementKind.IGNORED
+
+        # Forward-only мост: пока язык не выбран (language IS NULL), любое свежее
+        # взаимодействие показывает chooser ПЕРЕД действием — действие не
+        # выполняется, потому что оно бы ушло дефолтным RU (решение 6 плана).
+        language = await transaction.read_user_space_language(access_context)
+        if not is_language_chosen(language):
+            return AcknowledgementKind.LANGUAGE_PROMPT_SHOWN
 
         if update.voice is not None:
             if self._exact_search_port is not None:
@@ -328,6 +339,9 @@ class LocalUpdateProcessor:
                 "projects:list",
                 "projects:create",
                 "projects:clear",
+                "lang:menu",
+                "lang:ru",
+                "lang:en",
             }
             and not is_task_completion
             and not is_project_selection
@@ -340,6 +354,20 @@ class LocalUpdateProcessor:
         )
         if access_context is None:
             return AcknowledgementKind.IGNORED
+        # lang:* — единственное исключение из forward-only гейта: выбор языка
+        # обязан пройти даже при language IS NULL, иначе его нельзя применить.
+        is_language_callback = (
+            update.callback_data is not None
+            and update.callback_data.startswith("lang:")
+        )
+        if not is_language_callback:
+            language = await transaction.read_user_space_language(access_context)
+            if not is_language_chosen(language):
+                return AcknowledgementKind.LANGUAGE_PROMPT_SHOWN
+        if is_language_callback:
+            return await self._process_language_callback(
+                transaction, update, access_context, context, now
+            )
         # Any panel button other than "Ask memory" clears the one-shot memory
         # mode, so a queued question never sticks onto an unrelated next text.
         if self._memory_ask_port is not None and update.callback_data != "memory:ask":
@@ -575,6 +603,56 @@ class LocalUpdateProcessor:
         )
         return AcknowledgementKind.TASK_MODE_CANCELLED
 
+    async def _process_language_callback(
+        self,
+        transaction: UpdateTransaction,
+        update: TelegramUpdate,
+        access_context: AccessContext,
+        context: TraceContext,
+        now: datetime,
+    ) -> str:
+        # Смена языка не должна «залипать» на прежних awaiting-режимах.
+        await self._cancel_awaiting_modes(transaction, access_context, context, now)
+        if update.callback_data == "lang:menu":
+            return AcknowledgementKind.LANGUAGE_PROMPT_SHOWN
+        if update.callback_data == "lang:ru":
+            await transaction.set_user_space_language(access_context, "ru", now)
+            return AcknowledgementKind.LANGUAGE_SELECTED
+        if update.callback_data == "lang:en":
+            await transaction.set_user_space_language(access_context, "en", now)
+            return AcknowledgementKind.LANGUAGE_SELECTED
+        return AcknowledgementKind.IGNORED
+
+    async def _cancel_awaiting_modes(
+        self,
+        transaction: UpdateTransaction,
+        access_context: AccessContext,
+        context: TraceContext,
+        now: datetime,
+    ) -> None:
+        if self._task_mode_port is not None:
+            await self._task_mode_port.cancel(
+                CancelPendingTaskCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+        if self._exact_search_port is not None:
+            await self._exact_search_port.cancel(access_context, transaction)
+        if self._project_panel_port is not None:
+            await self._project_panel_port.cancel_creation(
+                CancelProjectCreationCommand(
+                    access_context=access_context,
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+        if self._memory_ask_port is not None:
+            await self._memory_ask_port.cancel(access_context, transaction)
+
     async def _process_start(
         self,
         transaction: UpdateTransaction,
@@ -590,9 +668,12 @@ class LocalUpdateProcessor:
             update.telegram_user_id
         )
         if access_context is not None:
-            if start_token is None:
-                return AcknowledgementKind.PANEL_SHOWN
-            return AcknowledgementKind.IGNORED
+            if start_token is not None:
+                return AcknowledgementKind.IGNORED
+            language = await transaction.read_user_space_language(access_context)
+            if not is_language_chosen(language):
+                return AcknowledgementKind.LANGUAGE_PROMPT_SHOWN
+            return AcknowledgementKind.PANEL_SHOWN
 
         actor_digest = self._actor_digest(update.bot_id, update.telegram_user_id)
         attempt = await transaction.reserve_enrollment_attempt(
@@ -620,6 +701,10 @@ class LocalUpdateProcessor:
             else AcknowledgementKind.ENROLLMENT_REJECTED
         )
         await transaction.finish_enrollment_attempt(attempt.id, kind.value)
+        # Сразу после ENROLLED показываем выбор языка, а не «Enrollment complete.»
+        # (решение 6): новый юзер выбирает язык до первой панели.
+        if kind is AcknowledgementKind.ENROLLED:
+            return AcknowledgementKind.LANGUAGE_PROMPT_SHOWN
         return kind
 
     def _actor_digest(self, bot_id: int, telegram_user_id: int) -> bytes:

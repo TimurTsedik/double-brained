@@ -10,6 +10,7 @@ from second_brain.slices.identity.application.local_updates import (
     AcknowledgementKind,
     UpdateResult,
 )
+from tests.identity.locale_fakes import FakeLocaleResolver
 
 
 def callback(update_id: int, data: str) -> TelegramUpdate:
@@ -35,7 +36,9 @@ class RecordingAiogramBot:
 @pytest.mark.asyncio
 async def test_gateway_memory_prompt_carries_cancel_button() -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     await gateway.send_memory_prompt(callback(1, "memory:ask"), question_required=False)
 
@@ -51,7 +54,9 @@ async def test_gateway_memory_prompt_carries_cancel_button() -> None:
 @pytest.mark.asyncio
 async def test_gateway_memory_prompt_reprompts_for_blank_question() -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     await gateway.send_memory_prompt(callback(2, "memory:ask"), question_required=True)
 
@@ -65,7 +70,9 @@ async def test_gateway_memory_prompt_reprompts_for_blank_question() -> None:
 @pytest.mark.asyncio
 async def test_gateway_memory_cancelled_is_plain_text() -> None:
     bot = RecordingAiogramBot()
-    gateway = AiogramGateway(cast(Bot, bot), bot_id=1)
+    gateway = AiogramGateway(
+        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+    )
 
     await gateway.send_memory_cancelled(callback(3, "memory:cancel"))
 

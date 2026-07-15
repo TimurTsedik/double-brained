@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta
 from hashlib import blake2b
 from hmac import compare_digest
-from typing import cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, text
+from sqlalchemy import CursorResult, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
 )
 
+from second_brain.shared.i18n import Locale, resolve_locale
 from second_brain.slices.identity.adapters.persistence.models import (
     EnrollmentAttempt,
     EnrollmentInvite,
@@ -259,6 +260,78 @@ class PostgresWorkerIdentityRepository:
             raise LookupError("active Telegram recipient was not found")
         return TelegramRecipient(telegram_user_id=telegram_user_id)
 
+    async def resolve_locale(self, access_context: AccessContext) -> Locale:
+        async with self._session_factory() as session:
+            language = await read_user_space_language(
+                session, access_context.user_space_id, access_context.user_id
+            )
+        return resolve_locale(language)
+
+
+async def read_user_space_language(
+    session: AsyncSession, user_space_id: UUID, owner_user_id: UUID
+) -> str | None:
+    # Owner-предикат симметрично set_user_space_language: язык читается только из
+    # СВОЕГО space, ошибочно сшитый AccessContext не достанет чужой.
+    return await session.scalar(
+        select(UserSpace.language).where(
+            UserSpace.id == user_space_id,
+            UserSpace.owner_user_id == owner_user_id,
+        )
+    )
+
+
+async def set_user_space_language(
+    session: AsyncSession,
+    user_space_id: UUID,
+    owner_user_id: UUID,
+    language: str,
+    updated_at: datetime,
+) -> bool:
+    # Owner-предикат: право менять язык только в СВОЁМ space (на user_spaces RLS
+    # нет — изоляция через owner_user_id в WHERE). updated_at бампается, поэтому
+    # колоночный грант покрывает оба столбца.
+    result = cast(
+        CursorResult[Any],
+        await session.execute(
+            update(UserSpace)
+            .where(
+                UserSpace.id == user_space_id,
+                UserSpace.owner_user_id == owner_user_id,
+            )
+            .values(language=language, updated_at=updated_at)
+        ),
+    )
+    return result.rowcount == 1
+
+
+async def read_language_by_telegram_user(
+    session: AsyncSession, telegram_user_id: int
+) -> str | None:
+    return await session.scalar(
+        select(UserSpace.language)
+        .select_from(TelegramIdentity)
+        .join(User, User.id == TelegramIdentity.user_id)
+        .join(UserSpace, UserSpace.owner_user_id == User.id)
+        .where(
+            TelegramIdentity.telegram_user_id == telegram_user_id,
+            TelegramIdentity.is_active.is_(True),
+            User.is_active.is_(True),
+            UserSpace.is_active.is_(True),
+        )
+        .limit(1)
+    )
+
+
+class PostgresLocaleResolver:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def resolve_for_telegram_user(self, telegram_user_id: int) -> Locale:
+        async with self._session_factory() as session:
+            language = await read_language_by_telegram_user(session, telegram_user_id)
+        return resolve_locale(language)
+
 
 async def resolve_access_context_in_session(
     session: AsyncSession, telegram_user_id: int
@@ -349,6 +422,24 @@ class PostgresUpdateTransaction:
     ) -> EnrollmentOutcome:
         return await enroll_telegram_user_in_session(
             self._session, token_hash, pepper_key_id, telegram_user_id, now
+        )
+
+    async def read_user_space_language(
+        self, access_context: AccessContext
+    ) -> str | None:
+        return await read_user_space_language(
+            self._session, access_context.user_space_id, access_context.user_id
+        )
+
+    async def set_user_space_language(
+        self, access_context: AccessContext, language: str, now: datetime
+    ) -> bool:
+        return await set_user_space_language(
+            self._session,
+            access_context.user_space_id,
+            access_context.user_id,
+            language,
+            now,
         )
 
 

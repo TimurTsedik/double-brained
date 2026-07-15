@@ -37,7 +37,9 @@ def test_reasoning_draft_repr_hides_answer() -> None:
 
 def test_delivery_payload_repr_hides_text_and_trace() -> None:
     success = DeliveryPayload.success("secret answer text")
-    failure = DeliveryPayload.failure("reasoning_unavailable", "trace-secret-123")
+    failure = DeliveryPayload.failure(
+        "safe failure text", "reasoning_unavailable", "trace-secret-123"
+    )
 
     assert "secret answer text" not in repr(success)
     assert "trace-secret-123" not in repr(failure)
