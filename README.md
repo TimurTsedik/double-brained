@@ -149,13 +149,12 @@ uv run --env-file .env second-brain-local-polling
 ## Local voice transcription and OpenRouter classification
 
 Voice messages are downloaded through the Telegram Bot API and transcribed on
-the local machine with `mlx-whisper`. Audio is not sent to an inference API.
+the local machine with `faster-whisper`. Audio is not sent to an inference API.
 After transcription, the current source text is sent to OpenRouter for
 structured classification; the request contains no Telegram ID, internal User
-or UserSpace ID, trace ID, history, or other records. The current adapter works
-with supported MLX installations on Apple Silicon macOS and Linux; the exact
-Linux MLX CPU/CUDA package depends on the production hardware and is
-intentionally not guessed by this local prototype.
+or UserSpace ID, trace ID, history, or other records. `faster-whisper` (with
+`ctranslate2`) is cross-platform, so voice transcription works on both Apple
+Silicon macOS and the Linux server.
 
 Install FFmpeg before starting the worker. On macOS with Homebrew:
 
@@ -164,9 +163,8 @@ brew install ffmpeg
 ```
 
 The defaults in `.env.example` store controlled audio below `.data/voice` and
-use `mlx-community/whisper-large-v3-turbo`. The first transcription downloads
-and caches roughly 1.6 GB of model weights. A smaller compatible model can be
-selected with `MLX_WHISPER_MODEL`.
+use the `small` Whisper model. The first transcription downloads and caches the
+model weights once. A different model can be selected with `WHISPER_MODEL`.
 
 Set `OPEN_ROUTER_AI_KEY` in `.env`. Classification asks OpenRouter to try these
 strict-structured-output models in order:

@@ -234,7 +234,7 @@ def _draft(*, language: str = "ru") -> TranscriptionDraft:
         text="голосовая идея",
         language=language,
         language_probability=0.98,
-        model_name="mlx-community/test-model",
+        model_name="whisper-test-model",
         segments=(
             TranscriptSegment(
                 start=0.0,

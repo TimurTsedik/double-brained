@@ -19,8 +19,8 @@ WORKDIR /app
 # 1) Dependency layer (cacheable): only lockfiles, NOT the project source.
 #    --no-install-project is required: hatchling would otherwise try to build
 #    src/second_brain, which is not present yet on this layer.
-#    On Linux the lock resolves torch to the CPU wheel (no CUDA/nvidia/triton),
-#    and mlx-whisper is skipped via its `sys_platform == 'darwin'` marker.
+#    On Linux the lock resolves torch to the CPU wheel (no CUDA/nvidia/triton);
+#    faster-whisper (with ctranslate2) is cross-platform and installs everywhere.
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
@@ -38,10 +38,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.13-slim AS runtime
 
 # ffmpeg is mandatory: the voice worker calls ensure_runtime() on startup and
-# refuses to start without it (even when voice degrades on Linux). ca-certs are
-# needed for HTTPS to OpenRouter and HuggingFace.
+# refuses to start without it. libgomp1 is the OpenMP runtime CTranslate2 (under
+# faster-whisper) links against; without it the first transcription crashes.
+# ca-certs are needed for HTTPS to OpenRouter and HuggingFace.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ffmpeg ca-certificates \
+    && apt-get install --no-install-recommends -y \
+        ffmpeg ca-certificates libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root runtime user (compose also pins user: "1001:1001").
@@ -58,6 +60,10 @@ WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
+
+# Import-smoke in the runtime stage (venv present, libgomp1 installed): a broken
+# ctranslate2 wheel or a missing OpenMP runtime fails the BUILD, not production.
+RUN python -c "import faster_whisper, ctranslate2"
 
 # HF model weights are NOT baked; they live in the mounted ./data volume.
 RUN mkdir -p /app/data && chown -R 1001:1001 /app/data

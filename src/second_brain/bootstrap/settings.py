@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass, field
 
 DEFAULT_VOICE_STORAGE_ROOT = ".data/voice"
-DEFAULT_MLX_WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
+DEFAULT_WHISPER_MODEL = "small"
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class Settings:
         default=DEFAULT_VOICE_STORAGE_ROOT,
         repr=False,
     )
-    mlx_whisper_model: str = DEFAULT_MLX_WHISPER_MODEL
+    whisper_model: str = DEFAULT_WHISPER_MODEL
     open_router_ai_key: str | None = field(default=None, repr=False)
 
     @classmethod
@@ -31,9 +31,7 @@ class Settings:
         voice_storage_root = (
             os.environ.get("VOICE_STORAGE_ROOT") or DEFAULT_VOICE_STORAGE_ROOT
         )
-        mlx_whisper_model = (
-            os.environ.get("MLX_WHISPER_MODEL") or DEFAULT_MLX_WHISPER_MODEL
-        )
+        whisper_model = os.environ.get("WHISPER_MODEL") or DEFAULT_WHISPER_MODEL
         open_router_ai_key = os.environ.get("OPEN_ROUTER_AI_KEY") or None
         return cls(
             database_url=database_url,
@@ -42,7 +40,7 @@ class Settings:
             invite_token_pepper=invite_token_pepper,
             invite_token_pepper_key_id=invite_token_pepper_key_id,
             voice_storage_root=voice_storage_root,
-            mlx_whisper_model=mlx_whisper_model,
+            whisper_model=whisper_model,
             open_router_ai_key=open_router_ai_key,
         )
 

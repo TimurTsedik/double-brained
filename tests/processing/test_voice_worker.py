@@ -261,7 +261,7 @@ async def test_download_step_reads_downloads_stores_and_completes_in_scope() -> 
 
 
 @pytest.mark.asyncio
-async def test_transcription_step_locates_audio_runs_mlx_and_completes() -> None:
+async def test_transcription_step_locates_audio_runs_whisper_and_completes() -> None:
     queue = Queue(claim(ProcessingStepType.TRANSCRIPTION))
     app, source, downloader, storage, download_done, model, transcript_done = worker(
         queue

@@ -67,8 +67,8 @@ from second_brain.slices.processing.adapters.telegram.voice import (
     AiogramVoiceDownloader,
     AiogramVoiceNotifier,
 )
-from second_brain.slices.processing.adapters.transcription.mlx_whisper import (
-    MlxWhisperTranscriptionModel,
+from second_brain.slices.processing.adapters.transcription.faster_whisper import (
+    FasterWhisperTranscriptionModel,
 )
 from second_brain.slices.processing.application.contracts import (
     MarkProcessingNoticeSentCommand,
@@ -152,7 +152,7 @@ async def run_local_voice_worker(settings: Settings) -> None:
         await assert_non_privileged_application_role(engine)
         storage = LocalVoiceStorage(settings.voice_storage_root)
         await storage.prepare()
-        transcription_model = MlxWhisperTranscriptionModel(settings.mlx_whisper_model)
+        transcription_model = FasterWhisperTranscriptionModel(settings.whisper_model)
         transcription_model.ensure_runtime()
         bot = Bot(settings.telegram_bot_token)
         session_factory = create_session_factory(engine)

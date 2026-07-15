@@ -52,7 +52,7 @@ def test_settings_keeps_secrets_out_of_repr(monkeypatch: pytest.MonkeyPatch) -> 
         "SCHEMA_DATABASE_URL", "postgresql+asyncpg://schema-secret@example"
     )
     monkeypatch.setenv("VOICE_STORAGE_ROOT", "/private/voice-storage")
-    monkeypatch.setenv("MLX_WHISPER_MODEL", "local-test-model")
+    monkeypatch.setenv("WHISPER_MODEL", "local-test-model")
     monkeypatch.setenv("OPEN_ROUTER_AI_KEY", "openrouter-secret")
 
     settings = Settings.from_environment()
@@ -65,7 +65,7 @@ def test_settings_keeps_secrets_out_of_repr(monkeypatch: pytest.MonkeyPatch) -> 
     assert "/private/voice-storage" not in repr(settings)
     assert "openrouter-secret" not in repr(settings)
     assert settings.voice_storage_root == "/private/voice-storage"
-    assert settings.mlx_whisper_model == "local-test-model"
+    assert settings.whisper_model == "local-test-model"
     assert settings.open_router_ai_key == "openrouter-secret"
 
 
@@ -78,13 +78,13 @@ def test_voice_settings_have_local_defaults_and_optional_openrouter_key(
     monkeypatch.setenv("INVITE_TOKEN_PEPPER", "pepper")
     monkeypatch.setenv("INVITE_TOKEN_PEPPER_KEY_ID", "key-1")
     monkeypatch.delenv("VOICE_STORAGE_ROOT", raising=False)
-    monkeypatch.delenv("MLX_WHISPER_MODEL", raising=False)
+    monkeypatch.delenv("WHISPER_MODEL", raising=False)
     monkeypatch.delenv("OPEN_ROUTER_AI_KEY", raising=False)
 
     settings = Settings.from_environment()
 
     assert settings.voice_storage_root == ".data/voice"
-    assert settings.mlx_whisper_model == "mlx-community/whisper-large-v3-turbo"
+    assert settings.whisper_model == "small"
     assert settings.open_router_ai_key is None
 
 
