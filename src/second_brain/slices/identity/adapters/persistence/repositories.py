@@ -24,6 +24,7 @@ from second_brain.slices.identity.adapters.persistence.models import (
 )
 from second_brain.slices.identity.application.contracts import (
     AccessContext,
+    PanelContext,
     TelegramRecipient,
 )
 from second_brain.slices.identity.ports.repositories import (
@@ -64,7 +65,7 @@ class PostgresEnrollmentRepository:
                         id=invite.id,
                         token_hash=invite.token_hash,
                         pepper_key_id=invite.pepper_key_id,
-                        role="admin",
+                        role=invite.role,
                         status="pending",
                         created_by_actor="bootstrap_cli",
                         created_at=invite.created_at,
@@ -94,9 +95,26 @@ async def enroll_telegram_user_in_session(
     now: datetime,
 ) -> EnrollmentOutcome:
     await acquire_bootstrap_lock(session)
+    # 1. Дедуп телеграма ДО потребления invite и вставки User (M3): у аккаунта уже
+    #    есть активный вход → «уже подключён», ничего не жжём и не вставляем.
+    active_identity = await session.scalar(
+        select(TelegramIdentity.id)
+        .where(
+            TelegramIdentity.telegram_user_id == telegram_user_id,
+            TelegramIdentity.is_active.is_(True),
+        )
+        .limit(1)
+    )
+    if active_identity is not None:
+        return EnrollmentOutcome.ALREADY_ENROLLED
+
+    # 2. Выбор invite по (token_hash И текущий pepper_key_id) под row-lock (M2):
+    #    token_hash UNIQUE, поэтому это ровно нужная строка; compare_digest —
+    #    постоянное время. Устаревший pepper_key_id при совпавшем хэше не пройдёт.
     invite = await session.scalar(
         select(EnrollmentInvite)
         .where(
+            EnrollmentInvite.token_hash == token_hash,
             EnrollmentInvite.pepper_key_id == pepper_key_id,
             EnrollmentInvite.status == "pending",
         )
@@ -108,13 +126,18 @@ async def enroll_telegram_user_in_session(
         invite.status = "expired"
         return EnrollmentOutcome.REJECTED
 
-    active_user = await session.scalar(
-        select(User.id).where(User.is_active.is_(True)).limit(1)
-    )
-    if active_user is not None:
-        return EnrollmentOutcome.REJECTED
+    # 3. admin-invite потребляется ровно один раз: если активный admin уже есть —
+    #    REJECTED, invite НЕ трогаем. Для member-invite гейта нет.
+    if invite.role == "admin":
+        active_admin = await session.scalar(
+            select(User.id)
+            .where(User.role == "admin", User.is_active.is_(True))
+            .limit(1)
+        )
+        if active_admin is not None:
+            return EnrollmentOutcome.REJECTED
 
-    user = User(id=uuid4(), role="admin", created_at=now, updated_at=now)
+    user = User(id=uuid4(), role=invite.role, created_at=now, updated_at=now)
     session.add(user)
     await session.flush()
     session.add_all(
@@ -333,6 +356,49 @@ class PostgresLocaleResolver:
         return resolve_locale(language)
 
 
+async def read_panel_context_by_telegram_user(
+    session: AsyncSession, telegram_user_id: int
+) -> tuple[str | None, str] | None:
+    # Один round-trip для панели: язык (для locale) и роль (для is_admin) лежат на
+    # ОДНОМ join-пути TelegramIdentity→User→UserSpace. Те же active/owner-предикаты,
+    # что и у раздельных резолверов locale/admin, — поведение идентично.
+    row = (
+        await session.execute(
+            select(UserSpace.language, User.role)
+            .select_from(TelegramIdentity)
+            .join(User, User.id == TelegramIdentity.user_id)
+            .join(UserSpace, UserSpace.owner_user_id == User.id)
+            .where(
+                TelegramIdentity.telegram_user_id == telegram_user_id,
+                TelegramIdentity.is_active.is_(True),
+                User.is_active.is_(True),
+                UserSpace.is_active.is_(True),
+            )
+            .limit(1)
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    return (row[0], row[1])
+
+
+class PostgresPanelContextResolver:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def resolve_panel_context(self, telegram_user_id: int) -> PanelContext:
+        async with self._session_factory() as session:
+            result = await read_panel_context_by_telegram_user(
+                session, telegram_user_id
+            )
+        if result is None:
+            # Неизвестный/неактивный: тот же fallback, что и раньше (locale по
+            # None, is_admin=False).
+            return PanelContext(locale=resolve_locale(None), is_admin=False)
+        language, role = result
+        return PanelContext(locale=resolve_locale(language), is_admin=role == "admin")
+
+
 async def resolve_access_context_in_session(
     session: AsyncSession, telegram_user_id: int
 ) -> AccessContext | None:
@@ -423,6 +489,45 @@ class PostgresUpdateTransaction:
         return await enroll_telegram_user_in_session(
             self._session, token_hash, pepper_key_id, telegram_user_id, now
         )
+
+    async def create_member_invite(
+        self,
+        telegram_user_id: int,
+        token_hash: bytes,
+        pepper_key_id: str,
+        now: datetime,
+    ) -> bool:
+        # Скрытие кнопки ≠ авторизация (M7): заново резолвим инициатора как
+        # АКТИВНОГО admin по telegram_user_id ЭТОГО callback'а. Member/inactive/
+        # unknown → invite не создаётся (False, ссылку не шлём).
+        admin_user_id = await self._session.scalar(
+            select(User.id)
+            .select_from(TelegramIdentity)
+            .join(User, User.id == TelegramIdentity.user_id)
+            .where(
+                TelegramIdentity.telegram_user_id == telegram_user_id,
+                TelegramIdentity.is_active.is_(True),
+                User.is_active.is_(True),
+                User.role == "admin",
+            )
+            .limit(1)
+        )
+        if admin_user_id is None:
+            return False
+        self._session.add(
+            EnrollmentInvite(
+                id=uuid4(),
+                token_hash=token_hash,
+                pepper_key_id=pepper_key_id,
+                role="member",
+                status="pending",
+                created_by_actor="admin_bot",
+                created_at=now,
+                expires_at=now + timedelta(hours=24),
+            )
+        )
+        await self._session.flush()
+        return True
 
     async def read_user_space_language(
         self, access_context: AccessContext

@@ -33,6 +33,23 @@ CATALOG: dict[str, dict[Locale, str]] = {
         Locale.RU: "🌐 Язык / Language",
         Locale.EN: "🌐 Язык / Language",
     },
+    # Кнопка приглашения — видна только админу (см. panel_button_rows).
+    "panel.btn.invite": {Locale.RU: "➕ Пригласить", Locale.EN: "➕ Invite"},
+    # --- приглашение ---
+    # M6: bearer-токен, срабатывает у первого открывшего; никаких обещаний
+    # привязки к конкретному Telegram-аккаунту.
+    "invite.message": {
+        Locale.RU: (
+            "🔗 Ссылка-приглашение (одноразовая, 24 часа):\n\n{link}\n\n"
+            "Сработает у того, кто откроет её первым — передавайте только "
+            "нужному человеку."
+        ),
+        Locale.EN: (
+            "🔗 Invitation link (one-time, 24 hours):\n\n{link}\n\n"
+            "It works for whoever opens it first — share it only with the "
+            "intended person."
+        ),
+    },
     # --- голос ---
     "voice_queued": {
         Locale.RU: "🎙️ Голос сохранён. Расшифровываю…",
@@ -248,9 +265,15 @@ def panel_text(locale: Locale) -> str:
     return _text("panel.prompt", locale)
 
 
-def panel_button_rows(locale: Locale) -> list[list[tuple[str, str]]]:
-    """Строки панели как ряды пар (подпись, callback_data)."""
-    return [
+def panel_button_rows(
+    locale: Locale, is_admin: bool = False
+) -> list[list[tuple[str, str]]]:
+    """Строки панели как ряды пар (подпись, callback_data).
+
+    Ряд «➕ Пригласить» добавляется ТОЛЬКО админу (member его не видит). Скрытие
+    кнопки — не авторизация: сервер заново проверяет роль на invite:create.
+    """
+    rows = [
         [
             (_text("panel.btn.tasks_list", locale), "tasks:list"),
             (_text("panel.btn.search", locale), "search:prompt"),
@@ -271,6 +294,13 @@ def panel_button_rows(locale: Locale) -> list[list[tuple[str, str]]]:
             (_text("panel.btn.lang_menu", locale), "lang:menu"),
         ],
     ]
+    if is_admin:
+        rows.append([(_text("panel.btn.invite", locale), "invite:create")])
+    return rows
+
+
+def invite_message_text(link: str, locale: Locale) -> str:
+    return _text("invite.message", locale).format(link=link)
 
 
 # --- голос ---

@@ -17,10 +17,22 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from second_brain.persistence.base import Base
 
+USER_ROLE_CHECK_NAME = "ck_users_role_admin"
+ACTIVE_ADMIN_INDEX_NAME = "uq_users_active_admin"
+
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (CheckConstraint("role = 'admin'", name="ck_users_role_admin"),)
+    __table_args__ = (
+        CheckConstraint("role IN ('admin', 'member')", name=USER_ROLE_CHECK_NAME),
+        # Один активный admin на установку (M9): даже при гонке БД не даст второго.
+        Index(
+            ACTIVE_ADMIN_INDEX_NAME,
+            "role",
+            unique=True,
+            postgresql_where=text("role = 'admin' AND is_active"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -94,23 +106,25 @@ class TelegramIdentity(Base):
     )
 
 
+ENROLLMENT_INVITE_ROLE_CHECK_NAME = "ck_enrollment_invites_role_admin"
+ENROLLMENT_INVITE_ACTOR_CHECK_NAME = "ck_enrollment_invites_bootstrap_actor"
+# Легаси частичный уникальный индекс «один pending» — снимается реконсиляцией.
+ENROLLMENT_INVITE_PENDING_INDEX_NAME = "uq_enrollment_invites_pending_bootstrap"
+
+
 class EnrollmentInvite(Base):
     __tablename__ = "enrollment_invites"
     __table_args__ = (
-        CheckConstraint("role = 'admin'", name="ck_enrollment_invites_role_admin"),
+        CheckConstraint(
+            "role IN ('admin', 'member')", name=ENROLLMENT_INVITE_ROLE_CHECK_NAME
+        ),
         CheckConstraint(
             "status IN ('pending', 'consumed', 'expired', 'revoked')",
             name="ck_enrollment_invites_status",
         ),
         CheckConstraint(
-            "created_by_actor = 'bootstrap_cli'",
-            name="ck_enrollment_invites_bootstrap_actor",
-        ),
-        Index(
-            "uq_enrollment_invites_pending_bootstrap",
-            "status",
-            unique=True,
-            postgresql_where=text("status = 'pending'"),
+            "created_by_actor IN ('bootstrap_cli', 'admin_bot')",
+            name=ENROLLMENT_INVITE_ACTOR_CHECK_NAME,
         ),
     )
 
@@ -151,6 +165,7 @@ class TelegramUpdateReceipt(Base):
             "'memory_mode_set', 'memory_mode_cancelled', "
             "'memory_question_queued', 'memory_question_required', "
             "'language_prompt_shown', 'language_selected', "
+            "'invite_created', 'invite_forbidden', 'already_enrolled', "
             "'ignored')",
             name=RESULT_KIND_CHECK_NAME,
         ),

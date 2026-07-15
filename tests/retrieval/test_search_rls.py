@@ -72,9 +72,11 @@ async def reset_search_schema(
 
 
 def _user(access: AccessContext) -> dict[str, object]:
+    # Пространство A = admin, B = member: admin НЕ суперпользователь (RLS по
+    # user_space_id) — search-state изолирован в обе стороны.
     return {
         "id": access.user_id,
-        "role": "admin",
+        "role": "admin" if access == ACCESS_A else "member",
         "is_active": True,
         "created_at": NOW,
         "updated_at": NOW,
@@ -313,6 +315,31 @@ async def test_search_cannot_reveal_another_space_record(
     )
 
     results = await _search(engine, ACCESS_A, "onlyb")
+
+    assert results == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [NoteModel, TaskModel, IdeaModel, DecisionModel, QuestionModel],
+)
+async def test_member_search_cannot_reveal_admin_record(
+    model: type[NoteModel | IdeaModel | DecisionModel | QuestionModel | TaskModel],
+    engine: AsyncEngine,
+    schema_engine: AsyncEngine,
+) -> None:
+    # Реципрокно: member (B) поиском не находит записи admin'а (A) — приватность
+    # в обе стороны, admin НЕ суперпользователь.
+    await _add_record(
+        schema_engine,
+        ACCESS_A,
+        model,
+        "onlya private match",
+        created_at=NOW,
+    )
+
+    results = await _search(engine, ACCESS_B, "onlya")
 
     assert results == ()
 

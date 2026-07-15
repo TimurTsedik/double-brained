@@ -45,7 +45,7 @@ async def _seed_enrolled_user(
     telegram_user_id: int = 7_000_001,
     language: str | None = None,
 ) -> tuple[UUID, UUID]:
-    user = User(id=uuid4(), role="admin", created_at=TS, updated_at=TS)
+    user = User(id=uuid4(), role="member", created_at=TS, updated_at=TS)
     session.add(user)
     await session.flush()
     user_space = UserSpace(

@@ -24,7 +24,7 @@ from second_brain.slices.tasks.application.contracts import (
     TaskListItem,
     TaskPanelResult,
 )
-from tests.identity.locale_fakes import FakeLocaleResolver
+from tests.identity.locale_fakes import FakeLocaleResolver, FakePanelContextResolver
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
 ACCESS = AccessContext(
@@ -395,7 +395,10 @@ async def test_aiogram_gateway_sends_fixed_inline_task_panel_and_answers_callbac
 ):
     bot = RecordingAiogramBot()
     gateway = AiogramGateway(
-        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver()
+        cast(Bot, bot),
+        bot_id=1,
+        locale_resolver=FakeLocaleResolver(),
+        panel_context_resolver=FakePanelContextResolver(),
     )
     panel_update = TelegramUpdate(1, 102, True, 42, "/start")
     callback_update = TelegramUpdate(

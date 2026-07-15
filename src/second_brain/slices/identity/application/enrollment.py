@@ -26,11 +26,13 @@ class CreateEnrollmentInvite:
         clock: Clock,
         pepper: bytes,
         pepper_key_id: str,
+        role: str = "admin",
     ) -> None:
         self._repository = repository
         self._clock = clock
         self._pepper = pepper
         self._pepper_key_id = pepper_key_id
+        self._role = role
 
     async def execute(self) -> BootstrapInvite:
         token = token_urlsafe(32)
@@ -42,6 +44,7 @@ class CreateEnrollmentInvite:
             pepper_key_id=self._pepper_key_id,
             created_at=created_at,
             expires_at=expires_at,
+            role=self._role,
         )
         await self._repository.store_bootstrap_invite(invite)
         return BootstrapInvite(id=invite.id, token=token, expires_at=expires_at)

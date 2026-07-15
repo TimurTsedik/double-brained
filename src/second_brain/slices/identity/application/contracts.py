@@ -30,5 +30,15 @@ class LocaleResolver(Protocol):
     async def resolve_for_telegram_user(self, telegram_user_id: int) -> Locale: ...
 
 
+@dataclass(frozen=True)
+class PanelContext:
+    locale: Locale
+    is_admin: bool
+
+
+class PanelContextResolver(Protocol):
+    async def resolve_panel_context(self, telegram_user_id: int) -> PanelContext: ...
+
+
 class UpdateTransaction(Protocol):
     """Published marker for work performed in an existing update transaction."""

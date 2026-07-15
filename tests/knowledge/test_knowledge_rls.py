@@ -123,6 +123,8 @@ async def reset_knowledge_schema(
             [
                 {
                     "id": ACCESS_A.user_id,
+                    # Пространство A = admin, B = member: admin НЕ суперпользователь,
+                    # RLS изолирует по user_space_id, не по роли.
                     "role": "admin",
                     "is_active": True,
                     "created_at": NOW,
@@ -130,7 +132,7 @@ async def reset_knowledge_schema(
                 },
                 {
                     "id": ACCESS_B.user_id,
-                    "role": "admin",
+                    "role": "member",
                     "is_active": True,
                     "created_at": NOW,
                     "updated_at": NOW,
@@ -191,6 +193,32 @@ async def test_knowledge_records_and_provenance_are_scoped_to_their_user_space(
     assert (
         await session.scalars(select(kind.provenance_model.source_capture_event_id))
     ).all() == [source_a.id]
+    assert await session.scalar(select(func.count()).select_from(kind.model)) == 1
+    assert (
+        await session.scalar(select(func.count()).select_from(kind.provenance_model))
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", RECORD_KINDS)
+async def test_knowledge_records_are_scoped_from_the_member_side(
+    kind: RecordKind, engine: AsyncEngine, session: AsyncSession
+) -> None:
+    # Реципрокно: под scope member'а (B) видна только его запись — записи admin'а
+    # (A) не читаются. Приватность в обе стороны, admin НЕ суперпользователь.
+    capture_repository = PostgresCaptureEventRepository(create_session_factory(engine))
+    source_a = await capture_repository.create(capture_command(ACCESS_A, 102))
+    source_b = await capture_repository.create(capture_command(ACCESS_B, 103))
+    repository = kind.repository_factory(engine)
+    await repository.create(kind.command_factory(ACCESS_A, source_a.id))
+    record_b = await repository.create(kind.command_factory(ACCESS_B, source_b.id))
+
+    await _set_scope(session, ACCESS_B)
+    assert (await session.scalars(select(kind.model.id))).all() == [record_b.id]
+    assert (
+        await session.scalars(select(kind.provenance_model.source_capture_event_id))
+    ).all() == [source_b.id]
     assert await session.scalar(select(func.count()).select_from(kind.model)) == 1
     assert (
         await session.scalar(select(func.count()).select_from(kind.provenance_model))

@@ -116,7 +116,7 @@ async def voice_worker_database(
         await connection.execute(
             insert(User).values(
                 id=ACCESS.user_id,
-                role="admin",
+                role="member",
                 is_active=True,
                 created_at=NOW,
                 updated_at=NOW,
@@ -379,7 +379,7 @@ async def test_other_space_cannot_complete_or_observe_the_transcription(
         await connection.execute(
             insert(User).values(
                 id=ACCESS_B.user_id,
-                role="admin",
+                role="member",
                 is_active=True,
                 created_at=NOW,
                 updated_at=NOW,

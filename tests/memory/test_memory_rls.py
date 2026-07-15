@@ -65,9 +65,11 @@ async def reset_memory_schema(
 
 
 def _user(access: AccessContext) -> dict[str, object]:
+    # Пространство A = admin, B = member: admin НЕ суперпользователь (RLS по
+    # user_space_id) — изоляция ответов памяти держится в обе стороны.
     return {
         "id": access.user_id,
-        "role": "admin",
+        "role": "admin" if access == ACCESS_A else "member",
         "is_active": True,
         "created_at": NOW,
         "updated_at": NOW,
@@ -85,11 +87,15 @@ def _space(access: AccessContext) -> dict[str, object]:
     }
 
 
-async def _seed_full_run(engine: AsyncEngine, schema_engine: AsyncEngine) -> None:
+async def _seed_full_run(
+    engine: AsyncEngine,
+    schema_engine: AsyncEngine,
+    access: AccessContext = ACCESS_B,
+) -> None:
     queue = PostgresMemoryQueue(create_session_factory(engine))
     question = await queue.create_question(
         CreateMemoryQuestionCommand(
-            access_context=ACCESS_B,
+            access_context=access,
             bot_id=100,
             telegram_update_id=900,
             question_text="секрет B",
@@ -109,7 +115,7 @@ async def _seed_full_run(engine: AsyncEngine, schema_engine: AsyncEngine) -> Non
     capture_id = uuid4()
     await queue.snapshot_evidence(
         SnapshotEvidenceCommand(
-            ACCESS_B,
+            access,
             run_id,
             (
                 EvidenceSnippet(
@@ -125,7 +131,7 @@ async def _seed_full_run(engine: AsyncEngine, schema_engine: AsyncEngine) -> Non
     )
     await queue.save_answer(
         SaveMemoryAnswerCommand(
-            access_context=ACCESS_B,
+            access_context=access,
             run_id=run_id,
             answer=MemoryAnswer(
                 evidence_level=EvidenceLevel.DIRECT,
@@ -150,7 +156,7 @@ async def _seed_full_run(engine: AsyncEngine, schema_engine: AsyncEngine) -> Non
     async with schema_engine.begin() as connection:
         await connection.execute(
             insert(PendingMemoryQuestionModel).values(
-                user_space_id=ACCESS_B.user_space_id,
+                user_space_id=access.user_space_id,
                 updated_at=NOW,
                 trace_id="d" * 32,
             )
@@ -171,6 +177,36 @@ async def test_another_space_sees_none_of_b_rows(
                     ":user_space_id, true)"
                 ),
                 {"user_space_id": str(ACCESS_A.user_space_id)},
+            )
+            for model in (
+                MemoryQuestionModel,
+                MemoryAnswerRunModel,
+                MemoryAnswerStepModel,
+                MemoryRunEvidenceModel,
+                MemoryAnswerModel,
+                MemoryAnswerSourceModel,
+                PendingMemoryQuestionModel,
+            ):
+                count = await session.scalar(select(func.count()).select_from(model))
+                assert count == 0, model.__name__
+
+
+@pytest.mark.asyncio
+async def test_member_space_sees_none_of_admin_rows(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # Реципрокно: member (B) не читает ни одной строки памяти admin'а (A) —
+    # приватность в ОБЕ стороны, admin НЕ суперпользователь.
+    await _seed_full_run(engine, schema_engine, access=ACCESS_A)
+
+    async with create_session_factory(engine)() as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "SELECT set_config('second_brain.user_space_id', "
+                    ":user_space_id, true)"
+                ),
+                {"user_space_id": str(ACCESS_B.user_space_id)},
             )
             for model in (
                 MemoryQuestionModel,

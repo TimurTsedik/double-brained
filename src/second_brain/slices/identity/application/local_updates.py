@@ -1,7 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 from hmac import digest
+from secrets import token_urlsafe
 from uuid import UUID
 
 from second_brain.shared.clock import Clock
@@ -17,6 +18,7 @@ from second_brain.slices.identity.application.access_context import ResolveAcces
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
 from second_brain.slices.identity.ports.repositories import (
+    EnrollmentOutcome,
     NewUpdateResult,
     UpdateStore,
     UpdateTransaction,
@@ -82,6 +84,8 @@ class AcknowledgementKind(StrEnum):
     LANGUAGE_PROMPT_SHOWN = "language_prompt_shown"
     LANGUAGE_SELECTED = "language_selected"
     VOICE_QUEUED = "voice_queued"
+    INVITE_CREATED = "invite_created"
+    INVITE_FORBIDDEN = "invite_forbidden"
     IGNORED = "ignored"
 
 
@@ -94,6 +98,10 @@ class UpdateResult:
     task_panel: TaskPanelResult | None = None
     search_panel: SearchPanelResult | None = None
     project_panel: ProjectPanelResult | None = None
+    # Ссылка-приглашение (чувствительна): живёт только в памяти этого прохода,
+    # в receipt/логи не попадает; поллер шлёт её как side-effect на invite_created.
+    # repr=False — plaintext-токен не должен просочиться в repr/лог.
+    invite_link: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -101,6 +109,7 @@ class _TransientUpdatePayload:
     task_panel: TaskPanelResult | None = None
     search_panel: SearchPanelResult | None = None
     project_panel: ProjectPanelResult | None = None
+    invite_link: str | None = None
 
 
 class LocalUpdateProcessor:
@@ -117,11 +126,13 @@ class LocalUpdateProcessor:
         capture_voice_port: CaptureVoicePort | None = None,
         project_panel_port: ProjectPanelPort | None = None,
         memory_ask_port: MemoryQuestionPort | None = None,
+        bot_username: str | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._pepper = pepper
         self._pepper_key_id = pepper_key_id
+        self._bot_username = bot_username
         self._capture_text_port = capture_text_port
         self._task_mode_port = task_mode_port
         self._task_panel_port = task_panel_port
@@ -153,6 +164,7 @@ class LocalUpdateProcessor:
             task_panel=None if receipt.existing else payload.task_panel,
             search_panel=None if receipt.existing else payload.search_panel,
             project_panel=None if receipt.existing else payload.project_panel,
+            invite_link=None if receipt.existing else payload.invite_link,
         )
 
     async def _process_new(
@@ -342,6 +354,7 @@ class LocalUpdateProcessor:
                 "lang:menu",
                 "lang:ru",
                 "lang:en",
+                "invite:create",
             }
             and not is_task_completion
             and not is_project_selection
@@ -368,6 +381,14 @@ class LocalUpdateProcessor:
             return await self._process_language_callback(
                 transaction, update, access_context, context, now
             )
+        if update.callback_data == "invite:create":
+            # Инвариант «forbidden-актёр не создаёт invite и не получает ссылку»
+            # держится и в путях ВЫШЕ: unknown/inactive (access_context is None) →
+            # IGNORED — как любой callback от чужака, чтобы не выдать существование
+            # кнопки; language IS NULL → LANGUAGE_PROMPT_SHOWN (сначала язык). Ни
+            # один из них не пишет строку invite. Сюда доходит только активный
+            # язык-выбравший, чью роль перепроверяет create_member_invite.
+            return await self._process_invite_create(transaction, update, now, payload)
         # Any panel button other than "Ask memory" clears the one-shot memory
         # mode, so a queued question never sticks onto an unrelated next text.
         if self._memory_ask_port is not None and update.callback_data != "memory:ask":
@@ -603,6 +624,35 @@ class LocalUpdateProcessor:
         )
         return AcknowledgementKind.TASK_MODE_CANCELLED
 
+    async def _process_invite_create(
+        self,
+        transaction: UpdateTransaction,
+        update: TelegramUpdate,
+        now: datetime,
+        payload: _TransientUpdatePayload,
+    ) -> str:
+        if update.telegram_user_id is None:
+            return AcknowledgementKind.INVITE_FORBIDDEN
+        # Валидируем bot username ДО записи токен-строки (v3): без username (None
+        # ИЛИ пустая строка) invite не создаётся вовсе — не остаётся
+        # невосстановимого pending.
+        if not self._bot_username:
+            return AcknowledgementKind.INVITE_FORBIDDEN
+        token = token_urlsafe(32)
+        token_hash = digest(self._pepper, token.encode(), "sha256")
+        # Сервер заново резолвит инициатора как активного admin (M7); спуф
+        # member/inactive/unknown → create=False → тихий invite_forbidden.
+        created = await transaction.create_member_invite(
+            telegram_user_id=update.telegram_user_id,
+            token_hash=token_hash,
+            pepper_key_id=self._pepper_key_id,
+            now=now,
+        )
+        if not created:
+            return AcknowledgementKind.INVITE_FORBIDDEN
+        payload.invite_link = f"https://t.me/{self._bot_username}?start={token}"
+        return AcknowledgementKind.INVITE_CREATED
+
     async def _process_language_callback(
         self,
         transaction: UpdateTransaction,
@@ -669,7 +719,10 @@ class LocalUpdateProcessor:
         )
         if access_context is not None:
             if start_token is not None:
-                return AcknowledgementKind.IGNORED
+                # Уже подключённый повторно открыл invite: приветствуем «С
+                # возвращением», invite НЕ потребляем — он должен остаться pending
+                # для того, кому предназначен (v3/M4).
+                return AcknowledgementKind.KNOWN_USER_STARTED
             language = await transaction.read_user_space_language(access_context)
             if not is_language_chosen(language):
                 return AcknowledgementKind.LANGUAGE_PROMPT_SHOWN
@@ -695,17 +748,22 @@ class LocalUpdateProcessor:
             update.telegram_user_id,
             now,
         )
-        kind = (
-            AcknowledgementKind.ENROLLED
-            if outcome.value == AcknowledgementKind.ENROLLED
-            else AcknowledgementKind.ENROLLMENT_REJECTED
-        )
-        await transaction.finish_enrollment_attempt(attempt.id, kind.value)
-        # Сразу после ENROLLED показываем выбор языка, а не «Enrollment complete.»
-        # (решение 6): новый юзер выбирает язык до первой панели.
-        if kind is AcknowledgementKind.ENROLLED:
+        # Уже подключённый (дедуп в enroll под замком) → known-user ack, без
+        # дубля/orphan (v3: переиспользуем «С возвращением», отдельного текста нет).
+        if outcome is EnrollmentOutcome.ALREADY_ENROLLED:
+            await transaction.finish_enrollment_attempt(attempt.id, outcome.value)
+            return AcknowledgementKind.KNOWN_USER_STARTED
+        if outcome is EnrollmentOutcome.ENROLLED:
+            await transaction.finish_enrollment_attempt(
+                attempt.id, AcknowledgementKind.ENROLLED.value
+            )
+            # Сразу после ENROLLED показываем выбор языка, а не «Enrollment
+            # complete.» (решение 6): новый юзер выбирает язык до первой панели.
             return AcknowledgementKind.LANGUAGE_PROMPT_SHOWN
-        return kind
+        await transaction.finish_enrollment_attempt(
+            attempt.id, AcknowledgementKind.ENROLLMENT_REJECTED.value
+        )
+        return AcknowledgementKind.ENROLLMENT_REJECTED
 
     def _actor_digest(self, bot_id: int, telegram_user_id: int) -> bytes:
         actor = f"{bot_id}:{telegram_user_id}".encode()

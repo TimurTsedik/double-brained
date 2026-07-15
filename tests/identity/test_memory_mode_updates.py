@@ -113,7 +113,7 @@ async def reset_memory_mode_schema(
         await connection.execute(
             insert(User).values(
                 id=USER_ID,
-                role="admin",
+                role="member",
                 is_active=True,
                 created_at=NOW,
                 updated_at=NOW,

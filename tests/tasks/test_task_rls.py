@@ -59,6 +59,8 @@ async def reset_task_schema(
             [
                 {
                     "id": ACCESS_A.user_id,
+                    # Пространство A = admin, B = member: доказывает, что admin
+                    # НЕ суперпользователь — RLS изолирует по user_space_id.
                     "role": "admin",
                     "is_active": True,
                     "created_at": NOW,
@@ -66,7 +68,7 @@ async def reset_task_schema(
                 },
                 {
                     "id": ACCESS_B.user_id,
-                    "role": "admin",
+                    "role": "member",
                     "is_active": True,
                     "created_at": NOW,
                     "updated_at": NOW,
@@ -219,6 +221,38 @@ async def test_task_panel_cannot_list_or_complete_another_space_task(
     assert changed is False
     async with create_session_factory(schema_engine)() as session:
         untouched = await session.get(TaskModel, task_b.id)
+    assert untouched is not None
+    assert untouched.status is TaskStatus.INBOX
+
+
+@pytest.mark.asyncio
+async def test_member_cannot_list_or_complete_admin_task(
+    capture_repository: PostgresCaptureEventRepository,
+    task_repository: PostgresTaskRepository,
+    task_panel_store: PostgresTaskPanelRepository,
+    schema_engine: AsyncEngine,
+) -> None:
+    # Реципрокно: member (B) не видит и не закрывает задачу admin'а (A) —
+    # приватность в обе стороны, admin НЕ суперпользователь.
+    source_a = await capture_repository.create(capture_command(ACCESS_A, update_id=191))
+    task_a = await task_repository.create(
+        task_command(ACCESS_A, source_capture_event_id=source_a.id, title="secret a")
+    )
+
+    listed = await task_panel_store.list_inbox(ACCESS_B, 10)
+    changed = await task_panel_store.complete(
+        CompleteTaskCommand(
+            access_context=ACCESS_B,
+            task_id=task_a.id,
+            completed_at=NOW + timedelta(hours=1),
+            trace_id="3" * 32,
+        )
+    )
+
+    assert listed == ()
+    assert changed is False
+    async with create_session_factory(schema_engine)() as session:
+        untouched = await session.get(TaskModel, task_a.id)
     assert untouched is not None
     assert untouched.status is TaskStatus.INBOX
 

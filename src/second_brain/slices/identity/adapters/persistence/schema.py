@@ -7,7 +7,12 @@ from sqlalchemy.sql.schema import Table
 
 from second_brain.persistence.base import Base
 from second_brain.slices.identity.adapters.persistence.models import (
+    ACTIVE_ADMIN_INDEX_NAME,
+    ENROLLMENT_INVITE_ACTOR_CHECK_NAME,
+    ENROLLMENT_INVITE_PENDING_INDEX_NAME,
+    ENROLLMENT_INVITE_ROLE_CHECK_NAME,
     RESULT_KIND_CHECK_NAME,
+    USER_ROLE_CHECK_NAME,
     USER_SPACE_LANGUAGE_CHECK_NAME,
     EnrollmentAttempt,
     EnrollmentInvite,
@@ -36,6 +41,7 @@ async def initialize_identity_schema(
         await connection.run_sync(_create_identity_tables)
         await _reconcile_result_kind_check(connection, schema_name)
         await _reconcile_user_space_language(connection, schema_name)
+        await _reconcile_multi_user_constraints(connection, schema_name)
         await _grant_application_privileges(connection, schema_name)
 
 
@@ -103,6 +109,64 @@ def _result_kind_check_expression() -> str:
         ):
             return str(constraint.sqltext)
     raise RuntimeError("result_kind CHECK constraint is missing from the ORM model")
+
+
+async def _reconcile_multi_user_constraints(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    # Живая прод-база слайсов 1–3 несёт ОДНОпользовательские замки: role='admin'
+    # CHECK'и, created_by_actor='bootstrap_cli' CHECK и частичный уникальный индекс
+    # «один pending». create_all(checkfirst=True) их не трогает. Снимаем и
+    # переприменяем текущие ORM-определения идемпотентно (drop+add того же имени —
+    # на свежей БД повтор того же предиката, на живой — ремонт). Ослабление
+    # CHECK'ов forward-only: новый набор — строгий супермножество старого, ни одна
+    # существующая строка его не нарушает.
+    quoted_schema = _quote_identifier(schema_name)
+    users = f"{quoted_schema}.users"
+    invites = f"{quoted_schema}.enrollment_invites"
+    await _reapply_check(connection, users, USER_ROLE_CHECK_NAME, User)
+    await _reapply_check(
+        connection, invites, ENROLLMENT_INVITE_ROLE_CHECK_NAME, EnrollmentInvite
+    )
+    await _reapply_check(
+        connection, invites, ENROLLMENT_INVITE_ACTOR_CHECK_NAME, EnrollmentInvite
+    )
+    # Снять легаси «один pending» — разрешить несколько висящих приглашений.
+    await connection.execute(
+        text(
+            "DROP INDEX IF EXISTS "
+            f"{quoted_schema}.{_quote_identifier(ENROLLMENT_INVITE_PENDING_INDEX_NAME)}"
+        )
+    )
+    # Инвариант «один активный admin» на уровень БД (M9), идемпотентно.
+    await connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            f"{_quote_identifier(ACTIVE_ADMIN_INDEX_NAME)} ON {users} (role) "
+            "WHERE role = 'admin' AND is_active"
+        )
+    )
+
+
+async def _reapply_check(
+    connection: AsyncConnection, table: str, check_name: str, model: type[object]
+) -> None:
+    expression = _check_expression(model, check_name)
+    quoted_name = _quote_identifier(check_name)
+    await connection.execute(
+        text(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {quoted_name}")
+    )
+    await connection.execute(
+        text(f"ALTER TABLE {table} ADD CONSTRAINT {quoted_name} CHECK ({expression})")
+    )
+
+
+def _check_expression(model: type[object], check_name: str) -> str:
+    table = cast(Table, model.__table__)  # type: ignore[attr-defined]
+    for constraint in table.constraints:
+        if isinstance(constraint, CheckConstraint) and constraint.name == check_name:
+            return str(constraint.sqltext)
+    raise RuntimeError(f"CHECK constraint {check_name} is missing from the ORM model")
 
 
 async def _reconcile_user_space_language(

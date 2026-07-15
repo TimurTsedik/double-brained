@@ -283,7 +283,7 @@ async def test_isolated_database_drops_schema_when_initialization_fails(
 async def create_user(session: AsyncSession) -> User:
     user = User(
         id=uuid4(),
-        role="admin",
+        role="member",
         created_at=TIMESTAMP,
         updated_at=TIMESTAMP,
     )
@@ -296,7 +296,7 @@ async def create_user(session: AsyncSession) -> User:
 async def test_postgres_requires_caller_supplied_timestamps(
     session: AsyncSession,
 ) -> None:
-    session.add(User(id=uuid4(), role="admin"))
+    session.add(User(id=uuid4(), role="member"))
 
     with pytest.raises(IntegrityError):
         await session.commit()
@@ -309,7 +309,7 @@ async def test_postgres_stores_the_exact_caller_supplied_timestamps(
     timestamp = datetime(2026, 7, 12, 12, 34, 56, tzinfo=UTC)
     user = User(
         id=uuid4(),
-        role="admin",
+        role="member",
         created_at=timestamp,
         updated_at=timestamp,
     )

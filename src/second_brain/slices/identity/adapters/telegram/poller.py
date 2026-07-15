@@ -35,6 +35,8 @@ class TelegramGateway(Protocol):
 
     async def send_panel(self, update: TelegramUpdate) -> None: ...
 
+    async def send_invite_link(self, update: TelegramUpdate, link: str) -> None: ...
+
     async def send_selection_feedback(self, update: TelegramUpdate) -> None: ...
 
     async def send_voice_queued(self, update: TelegramUpdate) -> None: ...
@@ -292,6 +294,19 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
+            if result.kind is AcknowledgementKind.INVITE_CREATED and getattr(
+                result, "fresh", True
+            ):
+                invite_link = getattr(result, "invite_link", None)
+                if invite_link is None:
+                    raise RuntimeError("fresh invite creation did not return a link")
+                while True:
+                    try:
+                        await self._gateway.send_invite_link(update, invite_link)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             if result.kind is AcknowledgementKind.LANGUAGE_PROMPT_SHOWN and getattr(
                 result, "fresh", True
             ):
@@ -346,6 +361,8 @@ class LocalPoller:
                 AcknowledgementKind.LANGUAGE_PROMPT_SHOWN,
                 AcknowledgementKind.LANGUAGE_SELECTED,
                 AcknowledgementKind.VOICE_QUEUED,
+                AcknowledgementKind.INVITE_CREATED,
+                AcknowledgementKind.INVITE_FORBIDDEN,
             }:
                 try:
                     await self._gateway.send_acknowledgement(update, result.kind)

@@ -93,6 +93,53 @@ async def test_forced_rls_hides_other_space_projects_context_and_links(
 
 
 @pytest.mark.asyncio
+async def test_forced_rls_hides_admin_projects_from_the_member_side(
+    engine: AsyncEngine, session: AsyncSession
+) -> None:
+    # Реципрокно: под scope member'а (B) виден только его проект — проект admin'а
+    # (A) не читается. Приватность в обе стороны, admin НЕ суперпользователь.
+    factory = create_session_factory(engine)
+    projects = Projects(PostgresProjectRepository(factory))
+    project_a = await create_project(projects, ACCESS_A, "A")
+    project_b = await create_project(projects, ACCESS_B, "B")
+    links = PostgresProjectContentLinkRepository(factory)
+    for update_id, access, project_id in (
+        (11, ACCESS_A, project_a),
+        (12, ACCESS_B, project_b),
+    ):
+        source = await PostgresCaptureEventRepository(factory).create(
+            capture_command(access, update_id)
+        )
+        note = await PostgresNoteRepository(factory).create(
+            CreateNoteCommand(access, "private", source.id, NOW, TRACE_ID)
+        )
+        assert await links.link(
+            LinkProjectContentCommand(
+                access,
+                project_id,
+                ProjectContentKind.NOTE,
+                note.id,
+                NOW,
+                TRACE_ID,
+            )
+        )
+
+    await session.execute(
+        text("SELECT set_config('second_brain.user_space_id', :value, true)"),
+        {"value": str(ACCESS_B.user_space_id)},
+    )
+
+    assert (await session.scalars(select(ProjectModel.id))).all() == [project_b]
+    assert await session.scalar(select(func.count()).select_from(ProjectModel)) == 1
+    assert (
+        await session.scalar(select(func.count()).select_from(ProjectContextModel)) == 1
+    )
+    assert (await session.scalars(select(ProjectNoteLinkModel.project_id))).all() == [
+        project_b
+    ]
+
+
+@pytest.mark.asyncio
 async def test_owner_insert_cannot_create_cross_space_typed_link(
     engine: AsyncEngine, schema_engine: AsyncEngine
 ) -> None:

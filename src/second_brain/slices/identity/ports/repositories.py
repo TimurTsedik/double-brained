@@ -20,6 +20,7 @@ class BootstrapInviteUnavailable(RuntimeError):
 class EnrollmentOutcome(StrEnum):
     ENROLLED = "enrolled"
     REJECTED = "rejected"
+    ALREADY_ENROLLED = "already_enrolled"
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class NewBootstrapInvite:
     pepper_key_id: str
     created_at: datetime
     expires_at: datetime
+    role: str = "admin"
 
 
 class EnrollmentRepository(Protocol):
@@ -93,6 +95,14 @@ class UpdateTransaction(
         telegram_user_id: int,
         now: datetime,
     ) -> EnrollmentOutcome: ...
+
+    async def create_member_invite(
+        self,
+        telegram_user_id: int,
+        token_hash: bytes,
+        pepper_key_id: str,
+        now: datetime,
+    ) -> bool: ...
 
     async def read_user_space_language(
         self, access_context: AccessContext

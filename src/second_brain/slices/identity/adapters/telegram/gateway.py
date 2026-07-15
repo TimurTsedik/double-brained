@@ -4,7 +4,10 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from second_brain.shared.i18n import DEFAULT_LOCALE, Locale
 from second_brain.slices.capture.application.contracts import TelegramVoiceMetadata
 from second_brain.slices.identity.adapters.telegram import messages
-from second_brain.slices.identity.application.contracts import LocaleResolver
+from second_brain.slices.identity.application.contracts import (
+    LocaleResolver,
+    PanelContextResolver,
+)
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
 from second_brain.slices.projects.application.contracts import ProjectPanelResult
@@ -20,10 +23,17 @@ MAX_PROJECT_DISPLAY_LENGTH = 160
 class AiogramGateway:
     """Direct, deliberately narrow aiogram wrapper for local polling."""
 
-    def __init__(self, bot: Bot, bot_id: int, locale_resolver: LocaleResolver) -> None:
+    def __init__(
+        self,
+        bot: Bot,
+        bot_id: int,
+        locale_resolver: LocaleResolver,
+        panel_context_resolver: PanelContextResolver | None = None,
+    ) -> None:
         self._bot = bot
         self.bot_id = bot_id
         self._locale_resolver = locale_resolver
+        self._panel_context_resolver = panel_context_resolver
 
     async def _resolve_locale(self, update: TelegramUpdate) -> Locale:
         # Единый DB-read в момент построения сообщения: свежий и дублирующий
@@ -65,18 +75,37 @@ class AiogramGateway:
     async def send_panel(self, update: TelegramUpdate) -> None:
         if not update.is_private or update.telegram_user_id is None:
             return
-        locale = await self._resolve_locale(update)
+        if self._panel_context_resolver is None:
+            raise RuntimeError("send_panel requires a panel context resolver")
+        # Панель резолвит locale И is_admin ОДНИМ round-trip'ом (оба поля лежат на
+        # одном join-пути TelegramIdentity→User→UserSpace).
+        panel_context = await self._panel_context_resolver.resolve_panel_context(
+            update.telegram_user_id
+        )
+        locale = panel_context.locale
+        is_admin = panel_context.is_admin
         inline_keyboard = [
             [
                 InlineKeyboardButton(text=label, callback_data=callback_data)
                 for label, callback_data in row
             ]
-            for row in messages.panel_button_rows(locale)
+            for row in messages.panel_button_rows(locale, is_admin)
         ]
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
             text=messages.panel_text(locale),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=inline_keyboard),
+        )
+
+    async def send_invite_link(self, update: TelegramUpdate, link: str) -> None:
+        # Ссылка уходит В ЛИЧКУ самому админу (это ок) — приватный чат, известный
+        # актёр. Токен в тексте, но нигде не логируется и не хранится.
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=messages.invite_message_text(link, locale),
         )
 
     async def send_selection_feedback(self, update: TelegramUpdate) -> None:

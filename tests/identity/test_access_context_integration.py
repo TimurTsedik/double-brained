@@ -42,7 +42,7 @@ async def create_identity(
 ) -> tuple[User, UserSpace]:
     user = User(
         id=uuid4(),
-        role="admin",
+        role="member",
         is_active=user_active,
         created_at=NOW,
         updated_at=NOW,

@@ -133,7 +133,7 @@ async def reset_indexing_schema(
             [
                 {
                     "id": access.user_id,
-                    "role": "admin",
+                    "role": "member",
                     "is_active": True,
                     "created_at": NOW,
                     "updated_at": NOW,

@@ -55,14 +55,14 @@ async def reset_task_schema(
             [
                 {
                     "id": ACCESS_A.user_id,
-                    "role": "admin",
+                    "role": "member",
                     "is_active": True,
                     "created_at": NOW,
                     "updated_at": NOW,
                 },
                 {
                     "id": ACCESS_B.user_id,
-                    "role": "admin",
+                    "role": "member",
                     "is_active": True,
                     "created_at": NOW,
                     "updated_at": NOW,

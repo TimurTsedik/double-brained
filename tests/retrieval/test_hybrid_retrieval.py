@@ -462,7 +462,7 @@ async def seeded_spaces(
 def _user_row(access: AccessContext) -> dict[str, object]:
     return {
         "id": access.user_id,
-        "role": "admin",
+        "role": "member",
         "is_active": True,
         "created_at": NOW,
         "updated_at": NOW,

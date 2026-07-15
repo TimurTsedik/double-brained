@@ -74,9 +74,11 @@ async def reset_semantic_schema(
 
 
 def user_row(access: AccessContext) -> dict[str, object]:
+    # Пространство A = admin, B = member: admin НЕ суперпользователь — семантический
+    # индекс изолирован RLS по user_space_id (не по роли), в обе стороны.
     return {
         "id": access.user_id,
-        "role": "admin",
+        "role": "admin" if access == ACCESS_A else "member",
         "is_active": True,
         "created_at": NOW,
         "updated_at": NOW,

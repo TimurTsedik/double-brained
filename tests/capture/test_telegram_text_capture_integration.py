@@ -184,7 +184,7 @@ async def seed_known_actor(schema_engine: AsyncEngine) -> None:
         await connection.execute(
             insert(User).values(
                 id=ACCESS.user_id,
-                role="admin",
+                role="member",
                 is_active=True,
                 created_at=NOW,
                 updated_at=NOW,
@@ -303,7 +303,18 @@ async def test_unsupported_input_does_not_invoke_capture() -> None:
         capture_port,
     ).process(TelegramUpdate(1, 108, True, 404, "unknown actor", 1108))
 
-    assert [result.kind for result in results] == [AcknowledgementKind.IGNORED] * 7
+    # Известный актёр, повторно открывший invite («/start a-token»), получает
+    # welcome-back (KNOWN_USER_STARTED), а не молчание; «\n/start …» — обычная
+    # команда → IGNORED. Ни один путь не заводит capture.
+    assert [result.kind for result in results] == [
+        AcknowledgementKind.IGNORED,
+        AcknowledgementKind.IGNORED,
+        AcknowledgementKind.IGNORED,
+        AcknowledgementKind.IGNORED,
+        AcknowledgementKind.KNOWN_USER_STARTED,
+        AcknowledgementKind.IGNORED,
+        AcknowledgementKind.IGNORED,
+    ]
     assert unknown_result.kind is AcknowledgementKind.IGNORED
     assert capture_port.commands == []
 

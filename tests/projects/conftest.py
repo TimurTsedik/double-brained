@@ -40,7 +40,9 @@ async def reset_project_schema(
             [
                 {
                     "id": access.user_id,
-                    "role": "admin",
+                    # A = admin, B = member: admin НЕ суперпользователь; проекты
+                    # изолированы RLS по user_space_id, не по роли.
+                    "role": "admin" if access == ACCESS_A else "member",
                     "is_active": True,
                     "created_at": NOW,
                     "updated_at": NOW,

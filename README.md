@@ -42,11 +42,20 @@ fixed status lines, never a copy of your content.
 That is the whole loop: capture freely, organize with types and projects, and ask
 your memory when you need it.
 
+**Inviting someone.** Each person gets their own private memory — nobody sees
+anyone else's notes. If you are the admin, press **➕ Invite** in the panel: the
+bot replies with a one-time link. Send that link to the person you want to add;
+when they open it, they get their own empty space and pick their language. The
+link works for whoever opens it first and expires in 24 hours, so share it only
+with the intended person. If you ever lose it, just press **➕ Invite** again.
+
 ## Local identity enrollment
 
-This prototype supports one local Telegram bootstrap-admin enrollment flow. It
-accepts only private-chat messages and callback buttons through local polling;
-webhook mode and production ingestion are inactive.
+The first person to enroll (via the bootstrap link below) becomes the **admin**.
+The admin can invite additional **members** from the bot with **➕ Invite**; each
+member gets an isolated space and cannot see other people's data or invite anyone
+else. Enrollment accepts only private-chat messages and callback buttons through
+local polling; webhook mode and production ingestion are inactive.
 
 ### Start PostgreSQL
 

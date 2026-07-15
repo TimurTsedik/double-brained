@@ -7,8 +7,8 @@ from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.identity.domain.entities import UserRole
 
 
-def test_user_role_has_only_admin() -> None:
-    assert [role.value for role in UserRole] == ["admin"]
+def test_user_role_has_admin_and_member() -> None:
+    assert [role.value for role in UserRole] == ["admin", "member"]
 
 
 def test_access_context_holds_only_internal_ids() -> None:

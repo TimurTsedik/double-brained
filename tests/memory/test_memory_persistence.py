@@ -77,7 +77,7 @@ async def reset_memory_schema(
 def _user(access: AccessContext) -> dict[str, object]:
     return {
         "id": access.user_id,
-        "role": "admin",
+        "role": "member",
         "is_active": True,
         "created_at": NOW,
         "updated_at": NOW,

@@ -29,7 +29,7 @@ from second_brain.slices.tasks.application.contracts import (
     TaskListItem,
     TaskPanelResult,
 )
-from tests.identity.locale_fakes import FakeLocaleResolver
+from tests.identity.locale_fakes import FakeLocaleResolver, FakePanelContextResolver
 
 NOW = datetime(2026, 7, 15, tzinfo=UTC)
 
@@ -45,7 +45,10 @@ class RecordingAiogramBot:
 def _gateway(locale: Locale) -> tuple[RecordingAiogramBot, AiogramGateway]:
     bot = RecordingAiogramBot()
     gateway = AiogramGateway(
-        cast(Bot, bot), bot_id=1, locale_resolver=FakeLocaleResolver(locale)
+        cast(Bot, bot),
+        bot_id=1,
+        locale_resolver=FakeLocaleResolver(locale),
+        panel_context_resolver=FakePanelContextResolver(locale, is_admin=False),
     )
     return bot, gateway
 

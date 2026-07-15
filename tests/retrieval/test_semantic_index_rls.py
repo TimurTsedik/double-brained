@@ -143,6 +143,42 @@ async def test_search_similar_never_surfaces_closer_foreign_rows(
 
 
 @pytest.mark.asyncio
+async def test_search_similar_hides_closer_admin_rows_from_member(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # Реципрокно: member (B) поиском по вектору не видит даже более БЛИЗКИХ строк
+    # admin'а (A). Приватность в обе стороны, admin НЕ суперпользователь.
+    record_b = uuid4()
+    capture_a = await add_capture(schema_engine, ACCESS_A)
+    capture_b = await add_capture(schema_engine, ACCESS_B)
+    query = vector_of(1.0)
+    await store_chunks(
+        engine,
+        chunks_command(
+            ACCESS_A,
+            record_id=uuid4(),
+            capture_event_id=capture_a,
+            chunks=(make_chunk(0, "a exact match", query),),
+        ),
+    )
+    await store_chunks(
+        engine,
+        chunks_command(
+            ACCESS_B,
+            record_id=record_b,
+            capture_event_id=capture_b,
+            chunks=(make_chunk(0, "b farther", vector_of(0.6, 0.8)),),
+        ),
+    )
+
+    matches = await search_similar(engine, ACCESS_B, query, limit=10)
+
+    assert [(match.record_id, match.text) for match in matches] == [
+        (record_b, "b farther")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_semantic_tables_enable_and_force_row_level_security(
     isolated_database: IsolatedDatabase, schema_engine: AsyncEngine
 ) -> None:
