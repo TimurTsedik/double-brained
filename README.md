@@ -1,6 +1,46 @@
 # Second Brain
 
-Python implementation of Second Brain.
+Your personal memory in Telegram: send a note or a voice message and it is saved,
+organized, and searchable — then ask questions in plain language and get grounded
+answers with sources.
+
+## Using the bot
+
+**First time.** Open your one-time enrollment link, press **Start**, and choose a
+language (🇷🇺 Русский / 🇬🇧 English). Everything after that is in your language;
+switch anytime with **🌐 Язык / Language**. Send `/start` to open the panel.
+
+**Two independent things — don't mix them up:**
+
+- **Type** = *what* the record is: **📝 Note**, **✅ Task**, **💡 Idea**,
+  **⚖️ Decision**, **❓ Question**. The default is **Note**. Press a type button,
+  then send your text or voice, and it is saved as that type.
+- **Project** = *where* it goes. Press **📁 Projects** to create/select/clear a
+  project. The selected project becomes *current* and stays current (sticky) until
+  you switch or clear it — everything you capture meanwhile is attached to it.
+
+They stack. Select **Project X**, press **✅ Task**, then dictate → a *Task in
+Project X*. Just dictate after selecting a project (no type button) → a *Note in
+Project X* (Note is the default). A voice message is always a record; you cannot
+name a project by voice — project names are typed.
+
+**Capturing.** Just send text or a voice message. Voice is transcribed
+automatically and the transcript becomes the record. Telegram only ever shows you
+fixed status lines, never a copy of your content.
+
+**Finding things — two ways:**
+
+- **🔎 Search** — exact word search across your Notes, Tasks, Ideas, Decisions,
+  and Questions. Fast and literal. The next message you send is treated as the
+  search query (not saved as new content).
+- **🧠 Ask memory** — ask a question in plain language. The bot finds the relevant
+  pieces *by meaning* (not just exact words) and answers, leading with a
+  confidence badge — **✅ Straight from notes**, **🧩 Pieced together**,
+  **💭 A guess**, or **∅ Nothing in memory** — and the stored records it used as
+  sources. It says "nothing in memory" instead of inventing an answer.
+
+That is the whole loop: capture freely, organize with types and projects, and ask
+your memory when you need it.
 
 ## Local identity enrollment
 
