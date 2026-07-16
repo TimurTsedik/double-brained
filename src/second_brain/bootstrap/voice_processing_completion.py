@@ -1,12 +1,16 @@
+from datetime import datetime
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from second_brain.bootstrap.task_capture_in_transaction import (
     build_task_capture,
+    send_reminder_confirmations,
 )
 from second_brain.slices.capture.adapters.persistence.repository import (
     PostgresVoiceAttachmentWriter,
 )
 from second_brain.slices.capture.application.contracts import MarkVoiceStoredCommand
+from second_brain.slices.identity.application.contracts import WorkerIdentityPort
 from second_brain.slices.processing.adapters.persistence.repository import (
     PostgresProcessingWriter,
 )
@@ -21,6 +25,7 @@ from second_brain.slices.projects.application.contracts import (
     InheritCaptureProjectLinksCommand,
 )
 from second_brain.slices.projects.domain.entities import ProjectContentKind
+from second_brain.slices.reminders.application.contracts import ReminderDeliveryPort
 from second_brain.slices.retrieval.adapters.persistence.repository import (
     PostgresSemanticIndexWriter,
 )
@@ -58,19 +63,32 @@ class VoiceDownloadCompletionInTransaction:
 
 
 class VoiceTranscriptionCompletionInTransaction:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        delivery_port: ReminderDeliveryPort,
+        identity: WorkerIdentityPort,
+    ) -> None:
         self._session_factory = session_factory
+        self._delivery_port = delivery_port
+        self._identity = identity
 
     async def complete(self, command: CompleteVoiceTranscriptionCommand) -> None:
         if not command.draft.text.strip():
             raise EmptyTranscriptError
+        # (remind_at UTC, tz пространства) созданных здесь напоминаний — для
+        # подтверждения «⏰ Напомню…» после коммита.
+        confirmations: list[tuple[datetime, str]] = []
         async with self._session_factory() as session:
             async with session.begin():
                 processing = PostgresProcessingWriter(session)
                 target = await processing.lock_transcription_target(
                     command.access_context, command.step_id
                 )
-                record = await build_task_capture(session).create_for_selection(
+                record = await build_task_capture(
+                    session,
+                    lambda remind_at, tz: confirmations.append((remind_at, tz)),
+                ).create_for_selection(
                     CreateTypedCaptureCommand(
                         access_context=command.access_context,
                         selection=PendingCaptureType(target.output_type.value),
@@ -101,3 +119,9 @@ class VoiceTranscriptionCompletionInTransaction:
                     )
                 )
                 await processing.complete_voice_transcription(command)
+        # После коммита: голосовая задача со временем иначе молчала бы —
+        # владелец не знал бы, что будильник заведён. Осознанный lean-край: сбой
+        # между коммитом и отправкой теряет/дублирует ТОЛЬКО подтверждение.
+        await send_reminder_confirmations(
+            self._delivery_port, self._identity, command.access_context, confirmations
+        )

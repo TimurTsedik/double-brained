@@ -134,6 +134,46 @@ def test_bug_c_relative_minutes_are_recognized(
     assert instant == datetime(2026, 7, 16, 10, 5, tzinfo=UTC)
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_utc"),
+    [
+        # Прод-находка владельца: «через 1 минуту» работало, «через минуту» — нет
+        # (прескрин требовал цифру, маркер — цифру перед словом времени).
+        ("позвонить через минуту", datetime(2026, 7, 16, 10, 1, tzinfo=UTC)),
+        ("встретиться через час", datetime(2026, 7, 16, 11, 0, tzinfo=UTC)),
+        ("выйти через полчаса", datetime(2026, 7, 16, 10, 30, tzinfo=UTC)),
+        ("позвонить через пару минут", datetime(2026, 7, 16, 10, 2, tzinfo=UTC)),
+        ("созвон через пару часов", datetime(2026, 7, 16, 12, 0, tzinfo=UTC)),
+        ("call mom in a minute", datetime(2026, 7, 16, 10, 1, tzinfo=UTC)),
+        ("check the oven in an hour", datetime(2026, 7, 16, 11, 0, tzinfo=UTC)),
+        # dateparser это НЕ парсит (search_dates видит лишь «an hour» → +1 час,
+        # что неверно) — считается детерминированно: +30 минут.
+        ("leave in half an hour", datetime(2026, 7, 16, 10, 30, tzinfo=UTC)),
+    ],
+)
+def test_wordy_relative_time_without_digits_is_recognized(
+    extractor: DateparserTimeExtractor, text: str, expected_utc: datetime
+) -> None:
+    instant = extractor.extract_due(text, NOW, JERUSALEM)
+
+    assert instant == expected_utc
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # «через» без слова времени — обычный текст, не напоминание.
+        "сходить через дорогу",
+        # «через неделю» — дата без времени-суток → None по правилу M2.
+        "вернуться через неделю",
+    ],
+)
+def test_wordy_relative_without_clock_meaning_yields_none(
+    extractor: DateparserTimeExtractor, text: str
+) -> None:
+    assert extractor.extract_due(text, NOW, JERUSALEM) is None
+
+
 def test_clock_one_minute_before_midnight_stays_today(
     extractor: DateparserTimeExtractor,
 ) -> None:

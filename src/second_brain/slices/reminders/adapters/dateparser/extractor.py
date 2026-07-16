@@ -13,9 +13,36 @@ _TIME_MARKER = re.compile(
     r"\d{1,2}[:.]\d{2}"
     r"|\bв\s*\d{1,2}\b"
     r"|\bat\s*\d"
-    r"|\d\s*(?:am|pm|утра|вечера|дня|ночи|минут|мин|minutes|min|ч|h)",
+    r"|\d\s*(?:am|pm|утра|вечера|дня|ночи|минут|мин|minutes|min|ч|h)"
+    # Словесные относительные БЕЗ цифр («через минуту», "in an hour") — прод-
+    # находка: «через 1 минуту» работало, «через минуту» — нет. Список закрыт:
+    # «через неделю/дорогу» сюда не входят и остаются date-only/не-временем.
+    r"|\bчерез\s+(?:минуту|полчаса|час\b|пару\s+(?:минут|часов))"
+    r"|\bin\s+(?:a\s+minute|an\s+hour|half\s+an\s+hour)\b",
     re.IGNORECASE,
 )
+
+# Те же словесные формы для прескрина и детерминированного запасного пути.
+# dateparser сам разбирает все, КРОМЕ "in half an hour" (search_dates видит лишь
+# "an hour" → +1 час, т.е. неверно) — такие считаем сами по таблице сдвигов.
+_WORDY_RELATIVE = re.compile(
+    r"\bчерез\s+(?:(?P<minute>минуту)|(?P<half_hour>полчаса)|(?P<hour>час)\b"
+    r"|пару\s+(?:(?P<two_minutes>минут)|(?P<two_hours>часов)))"
+    r"|\bin\s+(?:(?P<en_minute>a\s+minute)|(?P<en_half_hour>half\s+an\s+hour)"
+    r"|(?P<en_hour>an\s+hour))\b",
+    re.IGNORECASE,
+)
+
+_WORDY_DELTAS = {
+    "minute": timedelta(minutes=1),
+    "en_minute": timedelta(minutes=1),
+    "half_hour": timedelta(minutes=30),
+    "en_half_hour": timedelta(minutes=30),
+    "hour": timedelta(hours=1),
+    "en_hour": timedelta(hours=1),
+    "two_minutes": timedelta(minutes=2),
+    "two_hours": timedelta(hours=2),
+}
 
 # Hotfix BUG B: русская тире-запись часов «в 11-52» dateparser читал как ГОД
 # 2052. Нормализуем в «11:52» ДО парсинга — только при валидных часах/минутах.
@@ -55,8 +82,11 @@ class DateparserTimeExtractor:
     """TimeExtractor over ``dateparser``. Deterministic given ``now`` + ``tz``."""
 
     def extract_due(self, text: str, now: datetime, tz: str) -> datetime | None:
-        # Прескрин: нет цифр или слишком длинно → времени быть не может.
-        if len(text) > _MAX_TEXT_LENGTH or not any(ch.isdigit() for ch in text):
+        # Прескрин: слишком длинно, либо нет ни цифр, ни словесной относительной
+        # формы («через минуту») → времени быть не может.
+        if len(text) > _MAX_TEXT_LENGTH:
+            return None
+        if not any(ch.isdigit() for ch in text) and not _WORDY_RELATIVE.search(text):
             return None
 
         text = _normalize_dash_clock(text)
@@ -84,6 +114,12 @@ class DateparserTimeExtractor:
             # Явное время нашлось, но всё в прошлом (напр. «вчера в 9») или за
             # sanity cap → None. НЕ падаем в fallback: дата задана намеренно (M6).
             return None
+
+        # Словесная относительная форма, которую dateparser не разобрал
+        # ("in half an hour"): сдвиг от now по таблице — детерминированно.
+        wordy = _wordy_relative_instant(text, now)
+        if wordy is not None:
+            return wordy
 
         # Голый час без даты, который search_dates пропустил (напр. «в 9»):
         # ближайшее будущее HH:00 в зоне пространства (M6).
@@ -175,6 +211,14 @@ def _clock_instant(
     if candidate <= now_local:
         candidate += timedelta(days=1)
     return candidate
+
+
+def _wordy_relative_instant(text: str, now: datetime) -> datetime | None:
+    match = _WORDY_RELATIVE.search(text)
+    if match is None:
+        return None
+    delta = _WORDY_DELTAS[str(match.lastgroup)]
+    return (now + delta).astimezone(UTC)
 
 
 def _bare_hour_instant(

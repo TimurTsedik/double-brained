@@ -18,6 +18,7 @@ from second_brain.bootstrap.voice_processing_completion import (
     VoiceDownloadCompletionInTransaction,
     VoiceTranscriptionCompletionInTransaction,
 )
+from second_brain.shared.i18n import Locale
 from second_brain.slices.capture.adapters.persistence.models import (
     CaptureEventModel,
     TelegramAttachmentModel,
@@ -40,7 +41,10 @@ from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
 )
 from second_brain.slices.identity.adapters.persistence.models import User, UserSpace
-from second_brain.slices.identity.application.contracts import AccessContext
+from second_brain.slices.identity.application.contracts import (
+    AccessContext,
+    TelegramRecipient,
+)
 from second_brain.slices.knowledge.adapters.persistence.models import IdeaModel
 from second_brain.slices.processing.adapters.persistence.models import TranscriptModel
 from second_brain.slices.processing.adapters.persistence.repository import (
@@ -71,6 +75,24 @@ ACCESS_B = AccessContext(
 )
 TRACE_ID = "c" * 32
 TRANSCRIPT = "Надо проверить Graphiti. Это может помочь проекту."
+
+
+class NullConfirmationDelivery:
+    async def deliver(self, text: str, recipient: TelegramRecipient) -> None:
+        return None
+
+
+class FixedWorkerIdentity:
+    async def list_active_access_contexts(self) -> tuple[AccessContext, ...]:
+        return (ACCESS,)
+
+    async def resolve_telegram_recipient(
+        self, access_context: AccessContext
+    ) -> TelegramRecipient:
+        return TelegramRecipient(telegram_user_id=42)
+
+    async def resolve_locale(self, access_context: AccessContext) -> Locale:
+        return Locale.RU
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -210,7 +232,9 @@ async def _complete_voice_transcription(
         ACCESS, NOW + timedelta(seconds=1), timedelta(minutes=15), voice_types
     )
     assert transcription is not None
-    await VoiceTranscriptionCompletionInTransaction(session_factory).complete(
+    await VoiceTranscriptionCompletionInTransaction(
+        session_factory, NullConfirmationDelivery(), FixedWorkerIdentity()
+    ).complete(
         CompleteVoiceTranscriptionCommand(
             access_context=ACCESS,
             step_id=transcription.step_id,
@@ -238,7 +262,9 @@ async def test_voice_classification_reads_exact_committed_transcript(
         queue=repository,
         source_reader=PostgresClassificationSourceReader(session_factory),
         classifier=ClassifySource(model),
-        completion=ClassificationCompletionInTransaction(session_factory),
+        completion=ClassificationCompletionInTransaction(
+            session_factory, NullConfirmationDelivery(), FixedWorkerIdentity()
+        ),
     )
 
     worked = await worker.process_once(ACCESS, NOW + timedelta(seconds=3))
@@ -274,7 +300,9 @@ async def test_worker_and_source_reader_never_cross_or_mismatch_scope(
         queue=repository,
         source_reader=reader,
         classifier=ClassifySource(model),
-        completion=ClassificationCompletionInTransaction(session_factory),
+        completion=ClassificationCompletionInTransaction(
+            session_factory, NullConfirmationDelivery(), FixedWorkerIdentity()
+        ),
     )
 
     worked = await worker.process_once(ACCESS_B, NOW + timedelta(seconds=3))

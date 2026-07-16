@@ -1,3 +1,6 @@
+from collections.abc import Callable
+from datetime import datetime
+
 from second_brain.slices.knowledge.application.contracts import (
     CreateDecisionCommand,
     CreateIdeaCommand,
@@ -37,6 +40,7 @@ class TaskCapture:
         reminder_writer: ReminderWriter | None = None,
         time_extractor: TimeExtractor | None = None,
         timezone_reader: SpaceTimezoneReader | None = None,
+        on_reminder_created: Callable[[datetime, str], None] | None = None,
     ) -> None:
         if (task_writer is None) != (knowledge_capture is None):
             raise ValueError("typed task capture requires both writers")
@@ -46,6 +50,11 @@ class TaskCapture:
         self._reminder_writer = reminder_writer
         self._time_extractor = time_extractor
         self._timezone_reader = timezone_reader
+        # Слушатель «напоминание создано» (remind_at UTC, tz пространства) —
+        # его задают воркер-пути (классификация/голос), чтобы подтвердить
+        # «⏰ Напомню…» ПОСЛЕ коммита; кнопочный путь подтверждает poller-ack'ом
+        # и слушателя не передаёт — двойного подтверждения нет.
+        self._on_reminder_created = on_reminder_created
 
     async def set_awaiting_task(self, command: SetAwaitingTaskCommand) -> None:
         await self._pending_capture_selection_store.set_awaiting_task(command)
@@ -177,6 +186,8 @@ class TaskCapture:
                 trace_id=command.trace_id,
             )
         )
+        if self._on_reminder_created is not None:
+            self._on_reminder_created(remind_at, tz)
 
 
 def _is_eligible(command: ConsumePendingTaskTextCommand) -> bool:

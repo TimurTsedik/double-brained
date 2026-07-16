@@ -68,6 +68,7 @@ from second_brain.slices.processing.domain.entities import (
     TranscriptSegment,
     TranscriptWord,
 )
+from second_brain.slices.reminders.adapters.persistence.models import ReminderModel
 from tests.identity.conftest import IsolatedDatabase
 
 NOW = datetime(2026, 7, 14, 14, 0, tzinfo=UTC)
@@ -144,8 +145,41 @@ async def voice_worker_database(
         )
 
 
+class SpyConfirmationDelivery:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, int]] = []
+
+    async def deliver(self, text: str, recipient: TelegramRecipient) -> None:
+        self.sent.append((text, recipient.telegram_user_id))
+
+
+class FixedWorkerIdentity:
+    async def list_active_access_contexts(self) -> tuple[AccessContext, ...]:
+        return (ACCESS,)
+
+    async def resolve_telegram_recipient(
+        self, access_context: AccessContext
+    ) -> TelegramRecipient:
+        return TelegramRecipient(telegram_user_id=42)
+
+    async def resolve_locale(self, access_context: AccessContext) -> Locale:
+        return Locale.RU
+
+
+def _transcription_completion(
+    engine: AsyncEngine, spy: SpyConfirmationDelivery | None = None
+) -> VoiceTranscriptionCompletionInTransaction:
+    return VoiceTranscriptionCompletionInTransaction(
+        create_session_factory(engine),
+        spy or SpyConfirmationDelivery(),
+        FixedWorkerIdentity(),
+    )
+
+
 async def _create_claimed_transcription(
-    engine: AsyncEngine, schema_engine: AsyncEngine
+    engine: AsyncEngine,
+    schema_engine: AsyncEngine,
+    output_type: TranscriptionOutputType = TranscriptionOutputType.IDEA,
 ) -> tuple[PostgresProcessingRepository, UUID, UUID]:
     capture_id = uuid4()
     async with schema_engine.begin() as connection:
@@ -190,7 +224,7 @@ async def _create_claimed_transcription(
         CreateVoiceProcessingRunCommand(
             access_context=ACCESS,
             capture_event_id=capture_id,
-            output_type=TranscriptionOutputType.IDEA,
+            output_type=output_type,
             created_at=NOW,
             trace_id=TRACE_ID,
         )
@@ -229,9 +263,9 @@ async def _create_claimed_transcription(
     return repository, run.id, transcription.step_id
 
 
-def _draft(*, language: str = "ru") -> TranscriptionDraft:
+def _draft(*, language: str = "ru", text: str = "голосовая идея") -> TranscriptionDraft:
     return TranscriptionDraft(
-        text="голосовая идея",
+        text=text,
         language=language,
         language_probability=0.98,
         model_name="whisper-test-model",
@@ -239,8 +273,8 @@ def _draft(*, language: str = "ru") -> TranscriptionDraft:
             TranscriptSegment(
                 start=0.0,
                 end=1.0,
-                text="голосовая идея",
-                words=(TranscriptWord(0.0, 1.0, "голосовая идея"),),
+                text=text,
+                words=(TranscriptWord(0.0, 1.0, text),),
             ),
         ),
     )
@@ -252,9 +286,7 @@ async def test_completion_atomically_creates_transcript_frozen_type_and_notice(
 ) -> None:
     _, run_id, step_id = await _create_claimed_transcription(engine, schema_engine)
 
-    await VoiceTranscriptionCompletionInTransaction(
-        create_session_factory(engine)
-    ).complete(
+    await _transcription_completion(engine).complete(
         CompleteVoiceTranscriptionCommand(
             access_context=ACCESS,
             step_id=step_id,
@@ -300,13 +332,65 @@ async def test_completion_atomically_creates_transcript_frozen_type_and_notice(
 
 
 @pytest.mark.asyncio
+async def test_voice_task_with_time_sends_one_reminder_confirmation(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # Голосовая задача со временем — тот же баг тишины, что и у классификации:
+    # напоминание создавалось, но владельцу никто не говорил «⏰ Напомню…».
+    _, _, step_id = await _create_claimed_transcription(
+        engine, schema_engine, output_type=TranscriptionOutputType.TASK
+    )
+    spy = SpyConfirmationDelivery()
+
+    await _transcription_completion(engine, spy).complete(
+        CompleteVoiceTranscriptionCommand(
+            access_context=ACCESS,
+            step_id=step_id,
+            draft=_draft(text="позвонить в банк завтра в 10:00"),
+            completed_at=NOW + timedelta(seconds=2),
+        )
+    )
+
+    # NOW = 14.07 14:00 UTC = 17:00 Иерусалима → «завтра в 10:00» = 15.07 10:00
+    # локального времени пространства; ровно ОДНО подтверждение получателю.
+    assert spy.sent == [("⏰ Напомню 15.07.2026 10:00", 42)]
+    async with schema_engine.connect() as connection:
+        remind_at = await connection.scalar(select(ReminderModel.remind_at))
+    assert remind_at == datetime(2026, 7, 15, 7, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_voice_task_without_time_sends_no_confirmation(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    _, _, step_id = await _create_claimed_transcription(
+        engine, schema_engine, output_type=TranscriptionOutputType.TASK
+    )
+    spy = SpyConfirmationDelivery()
+
+    await _transcription_completion(engine, spy).complete(
+        CompleteVoiceTranscriptionCommand(
+            access_context=ACCESS,
+            step_id=step_id,
+            draft=_draft(text="просто голосовая задача"),
+            completed_at=NOW + timedelta(seconds=2),
+        )
+    )
+
+    assert spy.sent == []
+    async with schema_engine.connect() as connection:
+        reminders = await connection.scalar(
+            select(func.count()).select_from(ReminderModel)
+        )
+    assert reminders == 0
+
+
+@pytest.mark.asyncio
 async def test_failed_completion_rolls_back_then_retry_creates_one_result(
     engine: AsyncEngine, schema_engine: AsyncEngine
 ) -> None:
     repository, _, step_id = await _create_claimed_transcription(engine, schema_engine)
-    completion = VoiceTranscriptionCompletionInTransaction(
-        create_session_factory(engine)
-    )
+    completion = _transcription_completion(engine)
 
     with pytest.raises(DBAPIError):
         await completion.complete(
@@ -397,9 +481,7 @@ async def test_other_space_cannot_complete_or_observe_the_transcription(
         )
 
     with pytest.raises(LookupError):
-        await VoiceTranscriptionCompletionInTransaction(
-            create_session_factory(engine)
-        ).complete(
+        await _transcription_completion(engine).complete(
             CompleteVoiceTranscriptionCommand(
                 access_context=ACCESS_B,
                 step_id=step_id,

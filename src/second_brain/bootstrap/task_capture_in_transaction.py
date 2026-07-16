@@ -1,3 +1,4 @@
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import cast
 from uuid import UUID
@@ -19,9 +20,14 @@ from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresUpdateTransaction,
     read_user_space_timezone,
 )
+from second_brain.slices.identity.adapters.telegram.gateway import (
+    REMINDER_WHEN_FORMAT,
+)
+from second_brain.slices.identity.adapters.telegram.messages import reminder_set_text
 from second_brain.slices.identity.application.contracts import (
     AccessContext,
     UpdateTransaction,
+    WorkerIdentityPort,
 )
 from second_brain.slices.knowledge.adapters.persistence.repository import (
     PostgresKnowledgeWriter,
@@ -53,6 +59,7 @@ from second_brain.slices.reminders.application.contracts import (
     DEFAULT_TIMEZONE,
     CancelReminderForTaskCommand,
     ReminderAckReader,
+    ReminderDeliveryPort,
 )
 from second_brain.slices.reminders.domain.entities import ReminderStatus
 from second_brain.slices.retrieval.adapters.persistence.repository import (
@@ -256,12 +263,20 @@ class PostgresSpaceTimezoneReader:
         return timezone or DEFAULT_TIMEZONE
 
 
-def build_task_capture(session: AsyncSession) -> TaskCapture:
+def build_task_capture(
+    session: AsyncSession,
+    on_reminder_created: Callable[[datetime, str], None] | None = None,
+) -> TaskCapture:
     """Reminder-enabled TaskCapture over a caller-owned session.
 
     One construction point for every task-creation path (typed text capture,
     auto-classification, voice transcription) so a due time typed into the task
     always yields a reminder — the single creation point stays single.
+
+    ``on_reminder_created`` задают ТОЛЬКО воркер-пути (классификация/голос) —
+    там некому ответить в чате, и подтверждение «⏰ Напомню…» шлёт сам воркер
+    после коммита. Кнопочный путь подтверждает существующим poller-ack'ом и
+    слушателя не передаёт — двойного подтверждения не бывает.
     """
     return TaskCapture(
         PostgresPendingCaptureSelectionWriter(session),
@@ -270,7 +285,31 @@ def build_task_capture(session: AsyncSession) -> TaskCapture:
         reminder_writer=PostgresReminderWriter(session),
         time_extractor=DateparserTimeExtractor(),
         timezone_reader=PostgresSpaceTimezoneReader(session),
+        on_reminder_created=on_reminder_created,
     )
+
+
+async def send_reminder_confirmations(
+    delivery_port: ReminderDeliveryPort,
+    identity: WorkerIdentityPort,
+    access_context: AccessContext,
+    confirmations: Sequence[tuple[datetime, str]],
+) -> None:
+    """Подтверждение «⏰ Напомню {when}» для напоминаний, созданных воркером.
+
+    Тот же локализованный текст и формат времени, что и в poller-ack'е
+    (``reminder.set`` + ``REMINDER_WHEN_FORMAT``), момент — в часовом поясе
+    пространства. Вызывать строго ПОСЛЕ коммита создающей транзакции:
+    осознанный lean-край — сбой между коммитом и отправкой теряет/дублирует
+    только подтверждение, само напоминание уже надёжно в базе.
+    """
+    if not confirmations:
+        return
+    locale = await identity.resolve_locale(access_context)
+    recipient = await identity.resolve_telegram_recipient(access_context)
+    for remind_at, timezone in confirmations:
+        when = remind_at.astimezone(ZoneInfo(timezone)).strftime(REMINDER_WHEN_FORMAT)
+        await delivery_port.deliver(reminder_set_text(when, locale), recipient)
 
 
 def _typed_task_capture(session: AsyncSession) -> TaskCapture:

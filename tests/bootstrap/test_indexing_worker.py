@@ -33,6 +33,7 @@ from second_brain.bootstrap.voice_processing_completion import (
     VoiceDownloadCompletionInTransaction,
     VoiceTranscriptionCompletionInTransaction,
 )
+from second_brain.shared.i18n import Locale
 from second_brain.slices.capture.adapters.persistence.models import (
     CaptureEventModel,
     TelegramAttachmentModel,
@@ -353,6 +354,24 @@ class UnusedNotifier:
         raise AssertionError("notifier must not be used without a notice")
 
 
+class NullConfirmationDelivery:
+    async def deliver(self, text: str, recipient: TelegramRecipient) -> None:
+        return None
+
+
+class FixedWorkerIdentity:
+    async def list_active_access_contexts(self) -> tuple[AccessContext, ...]:
+        return (ACCESS,)
+
+    async def resolve_telegram_recipient(
+        self, access_context: AccessContext
+    ) -> TelegramRecipient:
+        return TelegramRecipient(telegram_user_id=42)
+
+    async def resolve_locale(self, access_context: AccessContext) -> Locale:
+        return Locale.RU
+
+
 async def _seed_voice_run(
     engine: AsyncEngine,
     schema_engine: AsyncEngine,
@@ -443,7 +462,9 @@ async def _transcribe_voice_run(
         ACCESS, NOW + timedelta(seconds=1), LEASE, voice_types
     )
     assert transcription is not None
-    await VoiceTranscriptionCompletionInTransaction(session_factory).complete(
+    await VoiceTranscriptionCompletionInTransaction(
+        session_factory, NullConfirmationDelivery(), FixedWorkerIdentity()
+    ).complete(
         CompleteVoiceTranscriptionCommand(
             access_context=ACCESS,
             step_id=transcription.step_id,
@@ -628,7 +649,9 @@ async def test_classifier_sibling_materialized_first_is_not_indexed(
         queue=repository,
         source_reader=PostgresClassificationSourceReader(session_factory),
         classifier=ClassifySource(RecordingClassificationModel()),
-        completion=ClassificationCompletionInTransaction(session_factory),
+        completion=ClassificationCompletionInTransaction(
+            session_factory, NullConfirmationDelivery(), FixedWorkerIdentity()
+        ),
     )
     assert (
         await classification_worker.process_once(ACCESS, NOW + timedelta(seconds=3))

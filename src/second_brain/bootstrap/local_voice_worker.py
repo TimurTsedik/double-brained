@@ -170,6 +170,9 @@ async def run_local_voice_worker(settings: Settings) -> None:
         session_factory = create_session_factory(engine)
         processing = PostgresProcessingRepository(session_factory)
         identities = PostgresWorkerIdentityRepository(session_factory)
+        # Один telegram-адаптер напоминаний на процесс: доставка созревших
+        # напоминаний И подтверждения «⏰ Напомню…» из completion'ов.
+        reminder_send = AiogramReminderDelivery(bot)
         worker = VoiceWorker(
             queue=processing,
             voice_source=PostgresVoiceSourceRepository(session_factory),
@@ -178,14 +181,16 @@ async def run_local_voice_worker(settings: Settings) -> None:
             download_completion=VoiceDownloadCompletionInTransaction(session_factory),
             transcription_model=transcription_model,
             transcription_completion=VoiceTranscriptionCompletionInTransaction(
-                session_factory
+                session_factory, reminder_send, identities
             ),
         )
         classification_worker = ClassificationWorker(
             queue=processing,
             source_reader=PostgresClassificationSourceReader(session_factory),
             classifier=ClassifySource(classification_model),
-            completion=ClassificationCompletionInTransaction(session_factory),
+            completion=ClassificationCompletionInTransaction(
+                session_factory, reminder_send, identities
+            ),
         )
         # The E5 weights load lazily on the first step that needs them, so the
         # embedding model is not a startup dependency of the process. One
@@ -215,7 +220,7 @@ async def run_local_voice_worker(settings: Settings) -> None:
         )
         notifier = AiogramVoiceNotifier(bot)
         reminder_delivery = ReminderDeliveryStep(
-            session_factory, AiogramReminderDelivery(bot), identities
+            session_factory, reminder_send, identities
         )
         clock = SystemClock()
         while True:

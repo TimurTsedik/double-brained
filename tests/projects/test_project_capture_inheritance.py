@@ -17,6 +17,7 @@ from second_brain.bootstrap.voice_processing_completion import (
     VoiceDownloadCompletionInTransaction,
     VoiceTranscriptionCompletionInTransaction,
 )
+from second_brain.shared.i18n import Locale
 from second_brain.slices.capture.application.contracts import (
     CaptureTextCommand,
     CaptureVoiceCommand,
@@ -38,6 +39,10 @@ from second_brain.slices.identity.adapters.persistence.database import (
 )
 from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresUpdateTransaction,
+)
+from second_brain.slices.identity.application.contracts import (
+    AccessContext,
+    TelegramRecipient,
 )
 from second_brain.slices.processing.adapters.persistence.repository import (
     PostgresProcessingRepository,
@@ -78,6 +83,25 @@ from tests.projects.test_project_persistence import (
     TRACE_ID,
     create_project,
 )
+
+
+class NullConfirmationDelivery:
+    async def deliver(self, text: str, recipient: TelegramRecipient) -> None:
+        return None
+
+
+class FixedWorkerIdentity:
+    async def list_active_access_contexts(self) -> tuple[AccessContext, ...]:
+        return (ACCESS_A,)
+
+    async def resolve_telegram_recipient(
+        self, access_context: AccessContext
+    ) -> TelegramRecipient:
+        return TelegramRecipient(telegram_user_id=42)
+
+    async def resolve_locale(self, access_context: AccessContext) -> Locale:
+        return Locale.RU
+
 
 LINK_MODELS = {
     "note": ProjectNoteLinkModel,
@@ -210,7 +234,9 @@ async def test_voice_record_inherits_ingress_project_after_current_project_switc
         (ProcessingStepType.AUDIO_DOWNLOAD, ProcessingStepType.TRANSCRIPTION),
     )
     assert transcription is not None
-    await VoiceTranscriptionCompletionInTransaction(factory).complete(
+    await VoiceTranscriptionCompletionInTransaction(
+        factory, NullConfirmationDelivery(), FixedWorkerIdentity()
+    ).complete(
         CompleteVoiceTranscriptionCommand(
             access_context=ACCESS_A,
             step_id=transcription.step_id,
@@ -285,7 +311,9 @@ async def test_classifier_record_inherits_all_source_links_not_live_selection(
         skipped_reason=None,
     )
 
-    await ClassificationCompletionInTransaction(factory).complete(
+    await ClassificationCompletionInTransaction(
+        factory, NullConfirmationDelivery(), FixedWorkerIdentity()
+    ).complete(
         CompleteClassificationCommand(
             access_context=ACCESS_A,
             step_id=claim.step_id,
