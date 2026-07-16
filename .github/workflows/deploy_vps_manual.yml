@@ -1,9 +1,11 @@
 name: Deploy to VPS (manual)
 
-# Manual, owner-triggered deploy: run the full test suite against a real
-# pgvector Postgres, then build and push the image to GHCR, then redeploy on the
-# VPS over SSH. Kept on workflow_dispatch (not push) so a deploy never races the
-# local bot for the single Telegram getUpdates consumer.
+# Manual, owner-triggered deploy: the full test suite (against a real pgvector
+# Postgres) and the GHCR image build run IN PARALLEL; the VPS redeploy waits for
+# both, so nothing untested is ever deployed. Only the immutable sha tag is
+# pushed — no :latest, since the build may finish before the tests pass. Kept on
+# workflow_dispatch (not push) so a deploy never races the local bot for the
+# single Telegram getUpdates consumer.
 on:
   workflow_dispatch:
     inputs:
@@ -56,6 +58,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           version: "0.11.19"
+          enable-cache: true
 
       - name: Create test database
         run: |
@@ -80,7 +83,8 @@ jobs:
         run: uv run mypy src
 
   build-and-push:
-    needs: test
+    # Deliberately does NOT wait for tests — runs in parallel to hide the build
+    # inside the test time. The deploy job below gates on BOTH.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -115,14 +119,12 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: |
-            ${{ steps.meta.outputs.image }}
-            ${{ env.IMAGE_NAME }}:latest
+          tags: ${{ steps.meta.outputs.image }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   deploy:
-    needs: build-and-push
+    needs: [test, build-and-push]
     runs-on: ubuntu-latest
     environment: production
     steps:
