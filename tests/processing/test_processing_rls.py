@@ -7,7 +7,7 @@ from sqlalchemy import func, insert, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from second_brain.bootstrap.schema import reset_prototype_schema
+from second_brain.bootstrap.schema import initialize_schema, reset_prototype_schema
 from second_brain.slices.capture.adapters.persistence.models import CaptureEventModel
 from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
@@ -287,6 +287,118 @@ async def test_retry_backoff_and_final_download_failure_skip_transcription(
         )
     )
     assert await repository.claim_due_notice(ACCESS_A, NOW + timedelta(days=2)) is None
+
+
+@pytest.mark.asyncio
+async def test_empty_transcript_is_terminal_on_the_first_attempt(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # Пустая запись детерминированно пуста: ретраи бессмысленны — падаем сразу,
+    # с ПЕРВОЙ попытки, и ставим честное уведомление empty_voice (не generic).
+    repository, run, _ = await _create_run(
+        engine, schema_engine, ACCESS_A, update_id=112
+    )
+    download = await repository.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS)
+    assert download is not None
+    await repository.succeed_step(
+        SucceedProcessingStepCommand(ACCESS_A, download.step_id, NOW)
+    )
+    transcription = await repository.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS)
+    assert transcription is not None
+    assert transcription.attempt_count == 1
+
+    failed = await repository.fail_step(
+        FailProcessingStepCommand(
+            access_context=ACCESS_A,
+            step_id=transcription.step_id,
+            failed_at=NOW + timedelta(seconds=1),
+            safe_error_code="empty_transcript",
+        )
+    )
+
+    assert failed.status is ProcessingStepStatus.FAILED
+    assert failed.attempt_count == 1
+    assert failed.next_attempt_at is None
+    # Больше НИКОГДА не claim'ится — даже много позже.
+    assert (
+        await repository.claim_due_step(
+            ACCESS_A, NOW + timedelta(days=1), LEASE, VOICE_STEPS
+        )
+        is None
+    )
+    loaded = await repository.get_run(ACCESS_A, run.id)
+    assert loaded is not None
+    assert loaded.overall_status is ProcessingStepStatus.FAILED
+    assert [step.status for step in loaded.steps] == [
+        ProcessingStepStatus.SUCCEEDED,
+        ProcessingStepStatus.FAILED,
+        ProcessingStepStatus.SKIPPED,
+        ProcessingStepStatus.SKIPPED,
+    ]
+    notice = await repository.claim_due_notice(ACCESS_A, NOW + timedelta(seconds=1))
+    assert notice is not None
+    assert notice.kind.value == "empty_voice"
+
+
+@pytest.mark.asyncio
+async def test_other_error_codes_keep_retrying_with_a_generic_failure_notice(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # Контраст к empty_transcript: обычный сбой ретраится как раньше и после
+    # исчерпания бюджета даёт generic failure-уведомление.
+    repository, _, _ = await _create_run(engine, schema_engine, ACCESS_A, update_id=113)
+    download = await repository.claim_due_step(ACCESS_A, NOW, LEASE, VOICE_STEPS)
+    assert download is not None
+    retried = await repository.fail_step(
+        FailProcessingStepCommand(
+            access_context=ACCESS_A,
+            step_id=download.step_id,
+            failed_at=NOW + timedelta(seconds=1),
+            safe_error_code="transcription_failed",
+        )
+    )
+    assert retried.status is ProcessingStepStatus.PENDING
+    assert retried.next_attempt_at is not None
+
+
+@pytest.mark.asyncio
+async def test_init_db_reconciles_the_notice_kind_check_on_an_existing_db(
+    engine: AsyncEngine, isolated_database: IsolatedDatabase, schema_engine: AsyncEngine
+) -> None:
+    # Живая база несёт СТАРЫЙ CHECK kind IN ('success','failure') — вставка
+    # empty_voice падала бы. init-db обязан идемпотентно переприменить CHECK.
+    schema = isolated_database.schema
+    table = f'"{schema}".processing_notices'
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            text(f"ALTER TABLE {table} DROP CONSTRAINT processing_notice_kind")
+        )
+        await connection.execute(
+            text(
+                f"ALTER TABLE {table} ADD CONSTRAINT processing_notice_kind "
+                "CHECK (kind IN ('success', 'failure'))"
+            )
+        )
+
+    await initialize_schema(schema_engine, schema)
+
+    _, run, _ = await _create_run(engine, schema_engine, ACCESS_A, update_id=114)
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            insert(ProcessingNoticeModel).values(
+                id=uuid4(),
+                user_space_id=ACCESS_A.user_space_id,
+                processing_run_id=run.id,
+                kind="empty_voice",
+                status="pending",
+                attempt_count=0,
+                next_attempt_at=NOW,
+                sent_at=None,
+                created_at=NOW,
+                updated_at=NOW,
+                trace_id="f" * 32,
+            )
+        )
 
 
 @pytest.mark.asyncio

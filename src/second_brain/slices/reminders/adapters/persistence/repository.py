@@ -117,10 +117,15 @@ class PostgresReminderWriter:
         await self._session.flush()
 
     async def mark_sent(
-        self, access_context: AccessContext, reminder_id: UUID, sent_at: datetime
+        self,
+        access_context: AccessContext,
+        reminder_id: UUID,
+        sent_at: datetime,
+        telegram_message_id: int,
     ) -> bool:
         # Идемпотентный переход pending → sent: RETURNING-guard, повтор/второй
         # тик по уже отправленной строке ничего не меняет (rowcount 0 → False).
+        # telegram_message_id — доказательство доставки (id сообщения в Telegram).
         await _set_user_space_scope(self._session, access_context)
         sent_id = await self._session.scalar(
             update(ReminderModel)
@@ -129,7 +134,11 @@ class PostgresReminderWriter:
                 ReminderModel.user_space_id == access_context.user_space_id,
                 ReminderModel.status == ReminderStatus.PENDING,
             )
-            .values(status=ReminderStatus.SENT, updated_at=sent_at)
+            .values(
+                status=ReminderStatus.SENT,
+                updated_at=sent_at,
+                telegram_message_id=telegram_message_id,
+            )
             .returning(ReminderModel.id)
         )
         await self._session.flush()

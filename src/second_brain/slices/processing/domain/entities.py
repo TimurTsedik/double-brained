@@ -31,6 +31,9 @@ class TranscriptionOutputType(StrEnum):
 class ProcessingNoticeKind(StrEnum):
     SUCCESS = "success"
     FAILURE = "failure"
+    # Пустая запись (empty_transcript) — не ошибка системы: честная подсказка
+    # пользователю без Trace ID, ставится сразу с первой попытки (без ретраев).
+    EMPTY_VOICE = "empty_voice"
 
 
 class ProcessingNoticeStatus(StrEnum):

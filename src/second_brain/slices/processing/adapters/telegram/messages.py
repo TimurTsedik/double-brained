@@ -39,6 +39,16 @@ CATALOG: dict[str, dict[Locale, str]] = {
         Locale.RU: "Не удалось обработать запись.\nTrace ID: {trace_id}",
         Locale.EN: "Could not process the recording.\nTrace ID: {trace_id}",
     },
+    # Пустая запись — не ошибка системы, а честная подсказка: без Trace ID.
+    "notice.empty_voice": {
+        Locale.RU: (
+            "🎙️ Не расслышал — запись пустая или слишком короткая. Попробуйте ещё раз."
+        ),
+        Locale.EN: (
+            "🎙️ Couldn't hear anything — the recording is empty or too short. "
+            "Please try again."
+        ),
+    },
 }
 
 
@@ -47,4 +57,6 @@ def notice_text(notice: ProcessingNoticeClaim, locale: Locale) -> str:
     if notice.kind is ProcessingNoticeKind.SUCCESS:
         label = SUCCESS_LABELS[notice.output_type][locale]
         return CATALOG["notice.success"][locale].format(label=label)
+    if notice.kind is ProcessingNoticeKind.EMPTY_VOICE:
+        return CATALOG["notice.empty_voice"][locale]
     return CATALOG["notice.failure"][locale].format(trace_id=notice.trace_id)

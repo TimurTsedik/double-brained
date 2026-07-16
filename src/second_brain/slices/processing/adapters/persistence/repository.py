@@ -38,6 +38,9 @@ from second_brain.slices.processing.domain.entities import (
 MAX_ATTEMPTS = 3
 FIRST_RETRY_DELAY = timedelta(minutes=1)
 SECOND_RETRY_DELAY = timedelta(minutes=5)
+# Детерминированные исходы: повтор даст ровно тот же результат, поэтому шаг
+# падает сразу с первой попытки — без ретраев (пустая запись пуста всегда).
+TERMINAL_ERROR_CODES = frozenset({"empty_transcript"})
 _STEP_ORDER = {
     ProcessingStepType.AUDIO_DOWNLOAD: 0,
     ProcessingStepType.TRANSCRIPTION: 1,
@@ -485,7 +488,10 @@ class PostgresProcessingWriter:
         step.lease_expires_at = None
         step.safe_error_code = command.safe_error_code
         step.updated_at = command.failed_at
-        if step.attempt_count >= MAX_ATTEMPTS:
+        if (
+            step.attempt_count >= MAX_ATTEMPTS
+            or command.safe_error_code in TERMINAL_ERROR_CODES
+        ):
             step.status = ProcessingStepStatus.FAILED.value
             step.next_attempt_at = None
             step.completed_at = command.failed_at
@@ -503,7 +509,10 @@ class PostgresProcessingWriter:
                 await self._create_notice(
                     command.access_context,
                     step.processing_run_id,
-                    ProcessingNoticeKind.FAILURE,
+                    # Пустая запись — честное «не расслышал», не generic-сбой.
+                    ProcessingNoticeKind.EMPTY_VOICE
+                    if command.safe_error_code == "empty_transcript"
+                    else ProcessingNoticeKind.FAILURE,
                     command.failed_at,
                     step.trace_id,
                 )

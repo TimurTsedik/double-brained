@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     Enum,
@@ -59,6 +60,9 @@ class ReminderModel(Base):
     next_attempt_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    # Доказательство доставки: message_id отправленного Telegram-сообщения.
+    # NULL = ещё не отправлено (или отправлено до появления колонки).
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

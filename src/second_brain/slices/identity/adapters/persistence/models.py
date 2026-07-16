@@ -166,7 +166,7 @@ class TelegramUpdateReceipt(Base):
             "'memory_question_queued', 'memory_question_required', "
             "'language_prompt_shown', 'language_selected', "
             "'invite_created', 'invite_forbidden', 'already_enrolled', "
-            "'ignored')",
+            "'contact_saved', 'ignored')",
             name=RESULT_KIND_CHECK_NAME,
         ),
         CheckConstraint(

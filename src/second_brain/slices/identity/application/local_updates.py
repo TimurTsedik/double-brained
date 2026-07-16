@@ -14,6 +14,10 @@ from second_brain.slices.capture.application.contracts import (
     CaptureVoiceCommand,
     CaptureVoicePort,
 )
+from second_brain.slices.contacts.application.contracts import (
+    ContactIntakePort,
+    SaveContactCommand,
+)
 from second_brain.slices.identity.application.access_context import ResolveAccessContext
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
@@ -87,6 +91,7 @@ class AcknowledgementKind(StrEnum):
     VOICE_QUEUED = "voice_queued"
     INVITE_CREATED = "invite_created"
     INVITE_FORBIDDEN = "invite_forbidden"
+    CONTACT_SAVED = "contact_saved"
     IGNORED = "ignored"
 
 
@@ -106,6 +111,9 @@ class UpdateResult:
     # «На когда» только что поставленное напоминание (в tz пространства):
     # поллер добавляет к captured-ack сообщение «⏰ Напомню …».
     reminder_when: datetime | None = None
+    # Имя только что сохранённого контакта — transient-payload для ack
+    # «📇 Контакт сохранён: {name}» (PII: имя вне repr/логов).
+    contact_name: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -115,6 +123,7 @@ class _TransientUpdatePayload:
     project_panel: ProjectPanelResult | None = None
     invite_link: str | None = None
     reminder_when: datetime | None = None
+    contact_name: str | None = None
 
 
 class LocalUpdateProcessor:
@@ -133,6 +142,7 @@ class LocalUpdateProcessor:
         memory_ask_port: MemoryQuestionPort | None = None,
         bot_username: str | None = None,
         reminder_ack_port: ReminderAckReader | None = None,
+        contact_port: ContactIntakePort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -147,6 +157,7 @@ class LocalUpdateProcessor:
         self._project_panel_port = project_panel_port
         self._memory_ask_port = memory_ask_port
         self._reminder_ack_port = reminder_ack_port
+        self._contact_port = contact_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -173,6 +184,7 @@ class LocalUpdateProcessor:
             project_panel=None if receipt.existing else payload.project_panel,
             invite_link=None if receipt.existing else payload.invite_link,
             reminder_when=None if receipt.existing else payload.reminder_when,
+            contact_name=None if receipt.existing else payload.contact_name,
         )
 
     async def _process_new(
@@ -224,6 +236,30 @@ class LocalUpdateProcessor:
         language = await transaction.read_user_space_language(access_context)
         if not is_language_chosen(language):
             return AcknowledgementKind.LANGUAGE_PROMPT_SHOWN
+
+        if update.contact is not None:
+            # Карточка контакта от enrolled-отправителя в личке: upsert в ЕГО
+            # пространстве (access_context уже отрезал незнакомца → IGNORED).
+            # Маршрут — по отправителю (from_user), никогда по contact.user_id.
+            if self._contact_port is None:
+                return AcknowledgementKind.IGNORED
+            display_name = (
+                f"{update.contact.first_name} {update.contact.last_name or ''}"
+            ).strip()
+            if not display_name:
+                return AcknowledgementKind.IGNORED
+            await self._contact_port.save(
+                SaveContactCommand(
+                    access_context=access_context,
+                    display_name=display_name,
+                    phone_number=update.contact.phone_number,
+                    saved_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            payload.contact_name = display_name
+            return AcknowledgementKind.CONTACT_SAVED
 
         if update.voice is not None:
             if self._exact_search_port is not None:

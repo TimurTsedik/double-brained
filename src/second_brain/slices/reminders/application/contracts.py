@@ -79,4 +79,11 @@ class ReminderAckReader(Protocol):
 
 
 class ReminderDeliveryPort(Protocol):
-    async def deliver(self, text: str, recipient: TelegramRecipient) -> None: ...
+    """Sends one message; returns the Telegram message_id of the sent message.
+
+    Возвращённый message_id — доказательство доставки: доставка напоминаний
+    сохраняет его на строке (mark_sent), подтверждения «⏰ Напомню…» его
+    игнорируют.
+    """
+
+    async def deliver(self, text: str, recipient: TelegramRecipient) -> int: ...

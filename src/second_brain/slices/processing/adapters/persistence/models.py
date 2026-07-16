@@ -27,6 +27,9 @@ from second_brain.slices.processing.domain.entities import (
 )
 
 TRACE_CHECK = "trace_id ~ '^[0-9a-f]{32}$' AND trace_id <> repeat('0', 32)"
+# Не-нативный Enum именует свой CHECK по имени типа (см. kind ниже); имя нужно
+# реконсиляции init-db, когда живая база несёт старый набор kind'ов.
+NOTICE_KIND_CHECK_NAME = "processing_notice_kind"
 
 
 class ProcessingRunModel(Base):

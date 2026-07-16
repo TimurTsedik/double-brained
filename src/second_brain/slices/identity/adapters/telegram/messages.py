@@ -225,6 +225,12 @@ CATALOG: dict[str, dict[Locale, str]] = {
         Locale.RU: "⏰ Напоминание: {text}",
         Locale.EN: "⏰ Reminder: {text}",
     },
+    # --- контакты ---
+    # Ack на карточку контакта: имя — transient-payload (в receipt не хранится).
+    "contact.saved": {
+        Locale.RU: "📇 Контакт сохранён: {name}",
+        Locale.EN: "📇 Contact saved: {name}",
+    },
     # --- selection-feedback (по callback_data) ---
     "selection.capture:note": {Locale.RU: "📝 Заметка", Locale.EN: "📝 Note"},
     "selection.capture:task": {Locale.RU: "✅ Задача", Locale.EN: "✅ Task"},
@@ -458,6 +464,13 @@ def reminder_set_text(when: str, locale: Locale) -> str:
 
 def reminder_delivered_text(text: str, locale: Locale) -> str:
     return _text("reminder.delivered", locale).format(text=text)
+
+
+# --- контакты ---
+
+
+def contact_saved_text(name: str, locale: Locale) -> str:
+    return _text("contact.saved", locale).format(name=name)
 
 
 # --- ack'и и selection-feedback ---

@@ -28,6 +28,7 @@ TIMESTAMP = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
 EXPECTED_PROTOTYPE_TABLES = {
     "capture_events",
     "classification_results",
+    "contacts",
     "enrollment_attempts",
     "enrollment_invites",
     "indexing_targets",

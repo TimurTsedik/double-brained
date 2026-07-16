@@ -237,6 +237,53 @@ async def test_failure_notifier_ru_regression_keeps_current_strings() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_voice_notifier_is_honest_and_carries_no_trace_id() -> None:
+    # Пустая запись — не ошибка системы: честная подсказка без Trace ID.
+    bot = FakeBot()
+    notifier = AiogramVoiceNotifier(cast(Bot, bot))
+
+    await notifier.send(
+        SendProcessingNoticeCommand(
+            recipient_telegram_id=555,
+            notice=notice(ProcessingNoticeKind.EMPTY_VOICE),
+            locale=Locale.RU,
+        )
+    )
+
+    assert bot.messages == [
+        (
+            555,
+            "🎙️ Не расслышал — запись пустая или слишком короткая. Попробуйте ещё раз.",
+        )
+    ]
+    assert "Trace ID" not in bot.messages[0][1]
+    assert "a" * 32 not in bot.messages[0][1]
+
+
+@pytest.mark.asyncio
+async def test_empty_voice_notifier_en_is_english_without_trace_id() -> None:
+    bot = FakeBot()
+    notifier = AiogramVoiceNotifier(cast(Bot, bot))
+
+    await notifier.send(
+        SendProcessingNoticeCommand(
+            recipient_telegram_id=555,
+            notice=notice(ProcessingNoticeKind.EMPTY_VOICE),
+            locale=Locale.EN,
+        )
+    )
+
+    assert bot.messages == [
+        (
+            555,
+            "🎙️ Couldn't hear anything — the recording is empty or too short. "
+            "Please try again.",
+        )
+    ]
+    assert "a" * 32 not in bot.messages[0][1]
+
+
+@pytest.mark.asyncio
 async def test_failure_notifier_en_carries_trace_without_content() -> None:
     bot = FakeBot()
     notifier = AiogramVoiceNotifier(cast(Bot, bot))

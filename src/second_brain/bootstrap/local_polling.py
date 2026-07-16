@@ -2,6 +2,9 @@ import asyncio
 
 from aiogram import Bot
 
+from second_brain.bootstrap.contact_intake_in_transaction import (
+    ContactIntakeInTransaction,
+)
 from second_brain.bootstrap.exact_search_in_transaction import (
     ExactSearchInTransaction,
 )
@@ -59,6 +62,7 @@ async def run_local_polling(settings: Settings) -> None:
             memory_ask_port=MemoryAskInTransaction(),
             bot_username=bot_user.username,
             reminder_ack_port=task_capture,
+            contact_port=ContactIntakeInTransaction(),
         )
         poller = LocalPoller(
             AiogramGateway(

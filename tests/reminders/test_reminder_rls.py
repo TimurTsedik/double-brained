@@ -7,7 +7,7 @@ from sqlalchemy import func, insert, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from second_brain.bootstrap.schema import reset_prototype_schema
+from second_brain.bootstrap.schema import initialize_schema, reset_prototype_schema
 from second_brain.slices.capture.adapters.persistence.repository import (
     PostgresCaptureEventRepository,
 )
@@ -211,11 +211,14 @@ async def test_mark_sent_is_idempotent_pending_to_sent_once(
     session_factory = create_session_factory(engine)
     async with session_factory() as session, session.begin():
         first = await PostgresReminderWriter(session).mark_sent(
-            ACCESS_A, reminder.id, NOW
+            ACCESS_A, reminder.id, NOW, telegram_message_id=555_001
         )
     async with session_factory() as session, session.begin():
         second = await PostgresReminderWriter(session).mark_sent(
-            ACCESS_A, reminder.id, NOW + timedelta(seconds=1)
+            ACCESS_A,
+            reminder.id,
+            NOW + timedelta(seconds=1),
+            telegram_message_id=555_002,
         )
 
     assert first is True
@@ -266,6 +269,33 @@ async def test_reminders_table_has_forced_row_level_security(
         )
 
     assert result.all() == [(True, True)]
+
+
+@pytest.mark.asyncio
+async def test_init_db_adds_telegram_message_id_to_an_existing_reminders_table(
+    isolated_database: IsolatedDatabase, schema_engine: AsyncEngine
+) -> None:
+    # Живая прод-база уже несёт reminders БЕЗ telegram_message_id;
+    # create_all(checkfirst=True) существующую таблицу не трогает — колонку
+    # обязан идемпотентно дорастить init-db (ADD COLUMN IF NOT EXISTS).
+    table = f'"{isolated_database.schema}".reminders'
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            text(f"ALTER TABLE {table} DROP COLUMN telegram_message_id")
+        )
+
+    await initialize_schema(schema_engine, isolated_database.schema)
+
+    async with schema_engine.connect() as connection:
+        column_type = await connection.scalar(
+            text(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_schema = :schema AND table_name = 'reminders' "
+                "AND column_name = 'telegram_message_id'"
+            ),
+            {"schema": isolated_database.schema},
+        )
+    assert column_type == "bigint"
 
 
 @pytest.mark.asyncio

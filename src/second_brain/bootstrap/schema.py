@@ -12,6 +12,7 @@ from second_brain.slices.capture.adapters.persistence.models import (
 from second_brain.slices.classification.adapters.persistence.models import (
     ClassificationResultModel,
 )
+from second_brain.slices.contacts.adapters.persistence.models import ContactModel
 from second_brain.slices.identity.adapters.persistence.schema import (
     APPLICATION_ROLE,
     initialize_identity_schema,
@@ -37,11 +38,13 @@ from second_brain.slices.memory.adapters.persistence.models import (
     PendingMemoryQuestionModel,
 )
 from second_brain.slices.processing.adapters.persistence.models import (
+    NOTICE_KIND_CHECK_NAME,
     ProcessingNoticeModel,
     ProcessingRunModel,
     ProcessingStepModel,
     TranscriptModel,
 )
+from second_brain.slices.processing.domain.entities import ProcessingNoticeKind
 from second_brain.slices.projects.adapters.persistence.models import (
     ProjectCaptureEventLinkModel,
     ProjectContextModel,
@@ -115,6 +118,7 @@ MEMORY_TABLES = (
     cast(Table, MemoryAnswerSourceModel.__table__),
 )
 REMINDER_TABLES = (cast(Table, ReminderModel.__table__),)
+CONTACT_TABLES = (cast(Table, ContactModel.__table__),)
 MEMORY_TABLE_NAMES = (
     "pending_memory_questions",
     "memory_questions",
@@ -143,6 +147,7 @@ async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") ->
     await _initialize_retrieval_schema(engine, schema_name)
     await _initialize_memory_schema(engine, schema_name)
     await _initialize_reminder_schema(engine, schema_name)
+    await _initialize_contact_schema(engine, schema_name)
 
 
 async def reset_prototype_schema(
@@ -152,6 +157,7 @@ async def reset_prototype_schema(
         await reset_identity_prototype_schema(engine, confirm, schema_name)
         return
     await _ensure_vector_extension(engine)
+    await _drop_contact_schema(engine)
     await _drop_reminder_schema(engine)
     await _drop_memory_schema(engine)
     await _drop_retrieval_schema(engine)
@@ -171,6 +177,7 @@ async def reset_prototype_schema(
     await _initialize_retrieval_schema(engine, schema_name)
     await _initialize_memory_schema(engine, schema_name)
     await _initialize_reminder_schema(engine, schema_name)
+    await _initialize_contact_schema(engine, schema_name)
 
 
 async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> None:
@@ -189,6 +196,7 @@ async def _drop_capture_schema(engine: AsyncEngine) -> None:
 async def _initialize_processing_schema(engine: AsyncEngine, schema_name: str) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_create_processing_tables)
+        await _reconcile_notice_kind_check(connection, schema_name)
         for table_name in (
             "processing_runs",
             "processing_steps",
@@ -197,6 +205,32 @@ async def _initialize_processing_schema(engine: AsyncEngine, schema_name: str) -
         ):
             await _configure_user_space_rls(connection, schema_name, table_name)
         await _grant_processing_privileges(connection, schema_name)
+
+
+async def _reconcile_notice_kind_check(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    # create_all(checkfirst=True) skips an existing processing_notices table, so
+    # a live prod DB keeps its OLD kind CHECK (success/failure only) and would
+    # reject 'empty_voice'. Re-apply the current ORM definition idempotently:
+    # harmless drop+add of the same predicate on a fresh DB, a repair on a live
+    # one. The new set is a strict superset — no existing row violates it.
+    expression = _notice_kind_check_expression()
+    table = f"{_quote_identifier(schema_name)}.processing_notices"
+    quoted_name = _quote_identifier(NOTICE_KIND_CHECK_NAME)
+    await connection.execute(
+        text(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {quoted_name}")
+    )
+    await connection.execute(
+        text(f"ALTER TABLE {table} ADD CONSTRAINT {quoted_name} CHECK ({expression})")
+    )
+
+
+def _notice_kind_check_expression() -> str:
+    # Тот же единственный источник, из которого не-нативный Enum генерирует свой
+    # CHECK: сами значения ProcessingNoticeKind.
+    kinds = ", ".join(f"'{kind.value}'" for kind in ProcessingNoticeKind)
+    return f"kind IN ({kinds})"
 
 
 async def _drop_processing_schema(engine: AsyncEngine) -> None:
@@ -315,13 +349,39 @@ async def _drop_memory_schema(engine: AsyncEngine) -> None:
 async def _initialize_reminder_schema(engine: AsyncEngine, schema_name: str) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_create_reminder_tables)
+        await _reconcile_reminder_telegram_message_id(connection, schema_name)
         await _configure_user_space_rls(connection, schema_name, "reminders")
         await _grant_reminder_privileges(connection, schema_name)
+
+
+async def _reconcile_reminder_telegram_message_id(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    # create_all(checkfirst=True) skips an existing reminders table, so a live
+    # prod DB never gains the delivery-evidence column. Add it idempotently:
+    # no-op on a fresh DB, a repair on a live one. Existing rows keep NULL
+    # (sent before the column existed → no evidence), so the ADD is forward-only.
+    table = f"{_quote_identifier(schema_name)}.reminders"
+    await connection.execute(
+        text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS telegram_message_id BIGINT")
+    )
 
 
 async def _drop_reminder_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_drop_reminder_tables)
+
+
+async def _initialize_contact_schema(engine: AsyncEngine, schema_name: str) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_create_contact_tables)
+        await _configure_user_space_rls(connection, schema_name, "contacts")
+        await _grant_contact_privileges(connection, schema_name)
+
+
+async def _drop_contact_schema(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_drop_contact_tables)
 
 
 def _create_capture_tables(connection: Connection) -> None:
@@ -411,6 +471,16 @@ def _create_reminder_tables(connection: Connection) -> None:
 
 def _drop_reminder_tables(connection: Connection) -> None:
     for table in reversed(REMINDER_TABLES):
+        table.drop(connection, checkfirst=True)
+
+
+def _create_contact_tables(connection: Connection) -> None:
+    for table in CONTACT_TABLES:
+        table.create(connection, checkfirst=True)
+
+
+def _drop_contact_tables(connection: Connection) -> None:
+    for table in reversed(CONTACT_TABLES):
         table.drop(connection, checkfirst=True)
 
 
@@ -617,6 +687,19 @@ async def _grant_reminder_privileges(
         text(f"REVOKE ALL PRIVILEGES ON TABLE {table} FROM {APPLICATION_ROLE}")
     )
     # create=INSERT, claim_due=SELECT, mark_sent/cancel_for_task=UPDATE. Без DELETE.
+    await connection.execute(
+        text(f"GRANT SELECT, INSERT, UPDATE ON TABLE {table} TO {APPLICATION_ROLE}")
+    )
+
+
+async def _grant_contact_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    table = f'{_quote_identifier(schema_name)}."contacts"'
+    await connection.execute(
+        text(f"REVOKE ALL PRIVILEGES ON TABLE {table} FROM {APPLICATION_ROLE}")
+    )
+    # upsert=INSERT+UPDATE (ON CONFLICT DO UPDATE), доставка=SELECT. Без DELETE.
     await connection.execute(
         text(f"GRANT SELECT, INSERT, UPDATE ON TABLE {table} TO {APPLICATION_ROLE}")
     )

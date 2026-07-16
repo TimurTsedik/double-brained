@@ -5,6 +5,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 from second_brain.shared.i18n import DEFAULT_LOCALE, Locale
 from second_brain.slices.capture.application.contracts import TelegramVoiceMetadata
+from second_brain.slices.contacts.application.contracts import TelegramContactPayload
 from second_brain.slices.identity.adapters.telegram import messages
 from second_brain.slices.identity.application.contracts import (
     LocaleResolver,
@@ -109,6 +110,16 @@ class AiogramGateway:
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
             text=messages.invite_message_text(link, locale),
+        )
+
+    async def send_contact_saved(self, update: TelegramUpdate, name: str) -> None:
+        # Имя — PII: уходит только в личку сохранившему, нигде не логируется.
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=messages.contact_saved_text(name, locale),
         )
 
     async def send_selection_feedback(self, update: TelegramUpdate) -> None:
@@ -442,6 +453,16 @@ class AiogramGateway:
                 file_size=voice.file_size,
                 mime_type=voice.mime_type,
             )
+        contact = getattr(message, "contact", None)
+        contact_payload = None
+        if contact is not None:
+            # Только payload карточки (PII, repr-hidden). contact.user_id
+            # НЕ переносим: маршрутизация всегда по отправителю (from_user).
+            contact_payload = TelegramContactPayload(
+                phone_number=contact.phone_number,
+                first_name=contact.first_name,
+                last_name=contact.last_name,
+            )
         return TelegramUpdate(
             bot_id=self.bot_id,
             update_id=update.update_id,
@@ -450,6 +471,7 @@ class AiogramGateway:
             text=message.text if isinstance(message.text, str) else None,
             telegram_message_id=message.message_id,
             voice=voice_metadata,
+            contact=contact_payload,
         )
 
 

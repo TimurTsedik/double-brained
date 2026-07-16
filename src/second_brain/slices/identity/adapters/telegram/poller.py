@@ -38,6 +38,8 @@ class TelegramGateway(Protocol):
 
     async def send_invite_link(self, update: TelegramUpdate, link: str) -> None: ...
 
+    async def send_contact_saved(self, update: TelegramUpdate, name: str) -> None: ...
+
     async def send_selection_feedback(self, update: TelegramUpdate) -> None: ...
 
     async def send_voice_queued(self, update: TelegramUpdate) -> None: ...
@@ -325,6 +327,19 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
+            if result.kind is AcknowledgementKind.CONTACT_SAVED and getattr(
+                result, "fresh", True
+            ):
+                contact_name = getattr(result, "contact_name", None)
+                if contact_name is None:
+                    raise RuntimeError("fresh contact save did not return a name")
+                while True:
+                    try:
+                        await self._gateway.send_contact_saved(update, contact_name)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             if result.kind is AcknowledgementKind.LANGUAGE_PROMPT_SHOWN and getattr(
                 result, "fresh", True
             ):
@@ -381,6 +396,7 @@ class LocalPoller:
                 AcknowledgementKind.VOICE_QUEUED,
                 AcknowledgementKind.INVITE_CREATED,
                 AcknowledgementKind.INVITE_FORBIDDEN,
+                AcknowledgementKind.CONTACT_SAVED,
             }:
                 try:
                     await self._gateway.send_acknowledgement(update, result.kind)

@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 from second_brain.slices.capture.application.contracts import TelegramVoiceMetadata
+from second_brain.slices.contacts.application.contracts import TelegramContactPayload
 
 
 @dataclass(frozen=True)
@@ -16,3 +17,5 @@ class TelegramUpdate:
     callback_query_id: str | None = field(default=None, repr=False)
     callback_data: str | None = field(default=None, repr=False)
     voice: TelegramVoiceMetadata | None = field(default=None, repr=False)
+    # Карточка контакта (message.contact): телефон/имя — PII, repr-hidden.
+    contact: TelegramContactPayload | None = field(default=None, repr=False)

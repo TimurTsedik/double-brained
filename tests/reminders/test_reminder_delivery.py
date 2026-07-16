@@ -44,8 +44,10 @@ class SpyReminderDelivery:
     def __init__(self) -> None:
         self.sent: list[tuple[str, int]] = []
 
-    async def deliver(self, text: str, recipient: TelegramRecipient) -> None:
+    async def deliver(self, text: str, recipient: TelegramRecipient) -> int:
         self.sent.append((text, recipient.telegram_user_id))
+        # Telegram message_id доставленного сообщения (как у aiogram Message).
+        return 777_000 + len(self.sent)
 
 
 class FixedWorkerIdentity:
@@ -248,6 +250,49 @@ async def read_single_reminder(schema_engine: AsyncEngine) -> ReminderModel:
         model = await session.scalar(select(ReminderModel))
     assert model is not None
     return model
+
+
+@pytest.mark.asyncio
+async def test_successful_delivery_stores_the_telegram_message_id(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # Доказательство доставки: «sent» в базе подтверждается телеграмным
+    # message_id реально отправленного сообщения, а не только нашим статусом.
+    await seed_reminder(
+        engine,
+        title="Позвонить в банк",
+        remind_at=NOW - timedelta(minutes=1),
+        update_id=370,
+    )
+    spy = SpyReminderDelivery()
+
+    worked = await delivery_step(engine, spy).process_once(ACCESS, NOW)
+
+    assert worked is True
+    reminder = await read_single_reminder(schema_engine)
+    assert reminder.status is ReminderStatus.SENT
+    assert reminder.telegram_message_id == 777_001
+
+
+@pytest.mark.asyncio
+async def test_failed_send_stores_no_telegram_message_id(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    await seed_reminder(
+        engine,
+        title="Позвонить в банк",
+        remind_at=NOW - timedelta(minutes=1),
+        update_id=371,
+    )
+    failing_step = ReminderDeliveryStep(
+        create_session_factory(engine), FailingDelivery(), FixedWorkerIdentity()
+    )
+
+    await failing_step.process_once(ACCESS, NOW)
+
+    reminder = await read_single_reminder(schema_engine)
+    assert reminder.status is ReminderStatus.PENDING
+    assert reminder.telegram_message_id is None
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,10 @@ from datetime import datetime
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from second_brain.slices.contacts.adapters.persistence.repository import (
+    PostgresContactWriter,
+)
+from second_brain.slices.contacts.application.matching import append_matched_phones
 from second_brain.slices.identity.adapters.telegram.messages import (
     reminder_delivered_text,
 )
@@ -27,8 +31,10 @@ class AiogramReminderDelivery:
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
 
-    async def deliver(self, text: str, recipient: TelegramRecipient) -> None:
-        await self._bot.send_message(recipient.telegram_user_id, text)
+    async def deliver(self, text: str, recipient: TelegramRecipient) -> int:
+        # message_id отправленного сообщения — доказательство доставки.
+        message = await self._bot.send_message(recipient.telegram_user_id, text)
+        return message.message_id
 
 
 class _SendFailed(Exception):
@@ -89,15 +95,25 @@ class ReminderDeliveryStep:
             claimed = await writer.claim_due(access_context, now)
             if claimed is None:
                 return False
+            # Подстановка номера на лету: контакты СВОЕГО пространства (та же
+            # app-транзакция, RLS-GUC уже выставлен claim'ом, плюс явный
+            # предикат user_space_id), имя в тексте → « · {номер}». Номер живёт
+            # только в исходящем сообщении — в строку напоминания не пишется.
+            contacts = await PostgresContactWriter(session).list_contacts(
+                access_context
+            )
+            delivery_text = append_matched_phones(claimed.text, contacts)
             locale = await self._identity.resolve_locale(access_context)
             recipient = await self._identity.resolve_telegram_recipient(access_context)
             try:
-                await self._delivery_port.deliver(
-                    reminder_delivered_text(claimed.text, locale), recipient
+                telegram_message_id = await self._delivery_port.deliver(
+                    reminder_delivered_text(delivery_text, locale), recipient
                 )
             except Exception as error:
                 raise _SendFailed(claimed, error) from error
-            await writer.mark_sent(access_context, claimed.reminder_id, now)
+            await writer.mark_sent(
+                access_context, claimed.reminder_id, now, telegram_message_id
+            )
             return True
 
     async def _record_send_failure(
