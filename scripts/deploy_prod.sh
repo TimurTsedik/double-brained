@@ -11,6 +11,8 @@
 # It pulls the requested image, (re)starts postgres, verifies the role exists,
 # then brings up all services and waits for them to become healthy.
 # It never runs init-db, never touches the ./data volume, and never logs secrets.
+# Schema-adding releases need a manual init-db activation first — see
+# "Schema-changing releases (production)" in README.md.
 #
 # Required environment:
 #   APP_IMAGE   full image reference to deploy (e.g. ghcr.io/timurtsedik/double-brained:sha-xxxxxxx)

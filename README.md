@@ -28,6 +28,19 @@ name a project by voice — project names are typed.
 automatically and the transcript becomes the record. Telegram only ever shows you
 fixed status lines, never a copy of your content.
 
+**Reminders.** Type the time right inside a task — nothing special to press. If
+the task text names an explicit clock time in the future, the bot confirms
+"⏰ Напомню …" and messages you "⏰ Напоминание: …" at that moment (in your
+space's timezone). Examples, relative and absolute, RU and EN:
+
+- «Позвонить в банк завтра в 10:00»
+- «Купить билеты через 2 часа»
+- «Отчёт 20 июля в 9:00»
+- "Call the bank tomorrow at 10am"
+
+A date without a clock time («завтра», "tomorrow", «20 июля») is just a task — no
+reminder, no error. Completing a task cancels its pending reminder.
+
 **Finding things — two ways:**
 
 - **🔎 Search** — exact word search across your Notes, Tasks, Ideas, Decisions,
@@ -215,6 +228,24 @@ send is retried before its Telegram offset advances. There is intentionally no
 outbox yet: if the process crashes after the receipt commits but before the
 panel reaches Telegram, a restart treats that old update as a duplicate and
 does not resend it. Send `/start` again to request a new panel.
+
+## Schema-changing releases (production)
+
+`scripts/deploy_prod.sh` deliberately never runs `init-db`, so a release that
+adds tables/columns needs a one-time manual activation on the server, with the
+NEW image, before the worker restarts:
+
+```bash
+export APP_IMAGE=ghcr.io/timurtsedik/double-brained:sha-<new>
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml stop worker
+docker compose -f docker-compose.prod.yml run --rm worker second-brain-identity init-db
+docker compose -f docker-compose.prod.yml up -d worker
+```
+
+`init-db` is idempotent and ADD-only (existing data untouched). Stop `polling`
+too only when the change touches what polling reads — for additive worker-side
+tables (e.g. `reminders`) that is not needed.
 
 ## Automated checks
 

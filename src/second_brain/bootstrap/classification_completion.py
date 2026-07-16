@@ -2,6 +2,9 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from second_brain.bootstrap.task_capture_in_transaction import (
+    build_task_capture,
+)
 from second_brain.slices.classification.adapters.persistence.repository import (
     PostgresClassificationWriter,
 )
@@ -14,9 +17,6 @@ from second_brain.slices.classification.domain.entities import (
     CandidateStorageStatus,
     GroundedCandidate,
     StoredCandidate,
-)
-from second_brain.slices.knowledge.adapters.persistence.repository import (
-    PostgresKnowledgeWriter,
 )
 from second_brain.slices.processing.adapters.persistence.repository import (
     PostgresProcessingWriter,
@@ -31,12 +31,7 @@ from second_brain.slices.projects.application.contracts import (
     InheritCaptureProjectLinksCommand,
 )
 from second_brain.slices.projects.domain.entities import ProjectContentKind
-from second_brain.slices.tasks.adapters.persistence.repository import (
-    PostgresPendingCaptureSelectionWriter,
-    PostgresTaskWriter,
-)
 from second_brain.slices.tasks.application.contracts import CreateTypedCaptureCommand
-from second_brain.slices.tasks.application.task_capture import TaskCapture
 from second_brain.slices.tasks.domain.entities import PendingCaptureType
 
 
@@ -105,11 +100,7 @@ async def _materialize_candidate(
 ) -> UUID | None:
     if candidate.disposition is not CandidateDisposition.MATERIALIZE:
         return None
-    record = await TaskCapture(
-        PostgresPendingCaptureSelectionWriter(session),
-        PostgresTaskWriter(session),
-        PostgresKnowledgeWriter(session),
-    ).create_for_selection(
+    record = await build_task_capture(session).create_for_selection(
         CreateTypedCaptureCommand(
             access_context=command.access_context,
             selection=PendingCaptureType(candidate.candidate_type.value),

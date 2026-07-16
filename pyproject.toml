@@ -11,6 +11,7 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
   "aiogram>=3,<4",
   "asyncpg>=0.30,<1",
+  "dateparser>=1.2,<2",
   "faster-whisper>=1.2,<2",
   "fastapi>=0.115,<1",
   "greenlet>=3,<4",
@@ -37,6 +38,7 @@ dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.25,<1",
   "ruff>=0.8,<1",
+  "types-dateparser>=1.2,<2",
 ]
 
 [tool.hatch.build.targets.wheel]

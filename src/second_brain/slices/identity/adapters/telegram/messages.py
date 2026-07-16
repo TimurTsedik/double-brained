@@ -214,6 +214,17 @@ CATALOG: dict[str, dict[Locale, str]] = {
         Locale.RU: "Готово. Язык переключён на русский.",
         Locale.EN: "Done. Language set to English.",
     },
+    # --- напоминания ---
+    # Подтверждение при создании задачи со временем: момент уже в tz пространства.
+    "reminder.set": {
+        Locale.RU: "⏰ Напомню {when}",
+        Locale.EN: "⏰ Reminder set for {when}",
+    },
+    # Само напоминание в назначенный момент; text = заголовок задачи.
+    "reminder.delivered": {
+        Locale.RU: "⏰ Напоминание: {text}",
+        Locale.EN: "⏰ Reminder: {text}",
+    },
     # --- selection-feedback (по callback_data) ---
     "selection.capture:note": {Locale.RU: "📝 Заметка", Locale.EN: "📝 Note"},
     "selection.capture:task": {Locale.RU: "✅ Задача", Locale.EN: "✅ Task"},
@@ -436,6 +447,17 @@ def project_announcement(
         )
         return _text(key, locale)
     return None
+
+
+# --- напоминания ---
+
+
+def reminder_set_text(when: str, locale: Locale) -> str:
+    return _text("reminder.set", locale).format(when=when)
+
+
+def reminder_delivered_text(text: str, locale: Locale) -> str:
+    return _text("reminder.delivered", locale).format(text=text)
 
 
 # --- ack'и и selection-feedback ---

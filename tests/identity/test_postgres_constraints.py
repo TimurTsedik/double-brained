@@ -51,6 +51,7 @@ EXPECTED_PROTOTYPE_TABLES = {
     "project_question_links",
     "project_task_links",
     "projects",
+    "reminders",
     "semantic_documents",
     "transcripts",
     "notes",

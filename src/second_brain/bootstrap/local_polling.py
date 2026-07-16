@@ -58,6 +58,7 @@ async def run_local_polling(settings: Settings) -> None:
             project_panel_port=project_context,
             memory_ask_port=MemoryAskInTransaction(),
             bot_username=bot_user.username,
+            reminder_ack_port=task_capture,
         )
         poller = LocalPoller(
             AiogramGateway(

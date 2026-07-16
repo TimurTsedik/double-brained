@@ -25,6 +25,10 @@ from second_brain.bootstrap.memory_retrieval_completion import (
     MemoryRetrievalCompletionInTransaction,
 )
 from second_brain.bootstrap.memory_worker import MemoryWorker
+from second_brain.bootstrap.reminder_delivery import (
+    AiogramReminderDelivery,
+    ReminderDeliveryStep,
+)
 from second_brain.bootstrap.settings import Settings
 from second_brain.bootstrap.voice_processing_completion import (
     VoiceDownloadCompletionInTransaction,
@@ -112,6 +116,7 @@ async def process_access_once(
     identity_repository: WorkerIdentityPort,
     notifier: ProcessingNotifier,
     memory_worker: StepWorker | None = None,
+    reminder_delivery: StepWorker | None = None,
 ) -> bool:
     worked = await worker.process_once(access_context, now)
     classified = await classification_worker.process_once(access_context, now)
@@ -121,7 +126,14 @@ async def process_access_once(
         if memory_worker is not None
         else False
     )
-    worked = worked or classified or indexed or answered
+    # Доставка созревших напоминаний — ещё один шаг того же цикла (без нового
+    # процесса): по одному claimed-unit на транзакцию, см. ReminderDeliveryStep.
+    reminded = (
+        await reminder_delivery.process_once(access_context, now)
+        if reminder_delivery is not None
+        else False
+    )
+    worked = worked or classified or indexed or answered or reminded
     notice = await processing_repository.claim_due_notice(access_context, now)
     if notice is None:
         return worked
@@ -202,6 +214,9 @@ async def run_local_voice_worker(settings: Settings) -> None:
             ),
         )
         notifier = AiogramVoiceNotifier(bot)
+        reminder_delivery = ReminderDeliveryStep(
+            session_factory, AiogramReminderDelivery(bot), identities
+        )
         clock = SystemClock()
         while True:
             worked = False
@@ -217,6 +232,7 @@ async def run_local_voice_worker(settings: Settings) -> None:
                         identity_repository=identities,
                         notifier=notifier,
                         memory_worker=memory_worker,
+                        reminder_delivery=reminder_delivery,
                     )
                     worked = processed or worked
                 except Exception:

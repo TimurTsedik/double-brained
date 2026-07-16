@@ -52,6 +52,7 @@ from second_brain.slices.projects.adapters.persistence.models import (
     ProjectQuestionLinkModel,
     ProjectTaskLinkModel,
 )
+from second_brain.slices.reminders.adapters.persistence.models import ReminderModel
 from second_brain.slices.retrieval.adapters.persistence.models import (
     IndexingTargetModel,
     PendingSearchModeModel,
@@ -113,6 +114,7 @@ MEMORY_TABLES = (
     cast(Table, MemoryAnswerModel.__table__),
     cast(Table, MemoryAnswerSourceModel.__table__),
 )
+REMINDER_TABLES = (cast(Table, ReminderModel.__table__),)
 MEMORY_TABLE_NAMES = (
     "pending_memory_questions",
     "memory_questions",
@@ -140,6 +142,7 @@ async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") ->
     await _initialize_project_schema(engine, schema_name)
     await _initialize_retrieval_schema(engine, schema_name)
     await _initialize_memory_schema(engine, schema_name)
+    await _initialize_reminder_schema(engine, schema_name)
 
 
 async def reset_prototype_schema(
@@ -149,6 +152,7 @@ async def reset_prototype_schema(
         await reset_identity_prototype_schema(engine, confirm, schema_name)
         return
     await _ensure_vector_extension(engine)
+    await _drop_reminder_schema(engine)
     await _drop_memory_schema(engine)
     await _drop_retrieval_schema(engine)
     await _drop_project_schema(engine)
@@ -166,6 +170,7 @@ async def reset_prototype_schema(
     await _initialize_project_schema(engine, schema_name)
     await _initialize_retrieval_schema(engine, schema_name)
     await _initialize_memory_schema(engine, schema_name)
+    await _initialize_reminder_schema(engine, schema_name)
 
 
 async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> None:
@@ -307,6 +312,18 @@ async def _drop_memory_schema(engine: AsyncEngine) -> None:
         await connection.run_sync(_drop_memory_tables)
 
 
+async def _initialize_reminder_schema(engine: AsyncEngine, schema_name: str) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_create_reminder_tables)
+        await _configure_user_space_rls(connection, schema_name, "reminders")
+        await _grant_reminder_privileges(connection, schema_name)
+
+
+async def _drop_reminder_schema(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_drop_reminder_tables)
+
+
 def _create_capture_tables(connection: Connection) -> None:
     for table in CAPTURE_TABLES:
         table.create(connection, checkfirst=True)
@@ -384,6 +401,16 @@ def _create_memory_tables(connection: Connection) -> None:
 
 def _drop_memory_tables(connection: Connection) -> None:
     for table in reversed(MEMORY_TABLES):
+        table.drop(connection, checkfirst=True)
+
+
+def _create_reminder_tables(connection: Connection) -> None:
+    for table in REMINDER_TABLES:
+        table.create(connection, checkfirst=True)
+
+
+def _drop_reminder_tables(connection: Connection) -> None:
+    for table in reversed(REMINDER_TABLES):
         table.drop(connection, checkfirst=True)
 
 
@@ -579,6 +606,19 @@ async def _grant_memory_privileges(
             f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {pending_table} "
             f"TO {APPLICATION_ROLE}"
         )
+    )
+
+
+async def _grant_reminder_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    table = f'{_quote_identifier(schema_name)}."reminders"'
+    await connection.execute(
+        text(f"REVOKE ALL PRIVILEGES ON TABLE {table} FROM {APPLICATION_ROLE}")
+    )
+    # create=INSERT, claim_due=SELECT, mark_sent/cancel_for_task=UPDATE. Без DELETE.
+    await connection.execute(
+        text(f"GRANT SELECT, INSERT, UPDATE ON TABLE {table} TO {APPLICATION_ROLE}")
     )
 
 

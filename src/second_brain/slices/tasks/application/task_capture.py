@@ -6,6 +6,12 @@ from second_brain.slices.knowledge.application.contracts import (
     KnowledgeCapturePort,
     KnowledgeRecord,
 )
+from second_brain.slices.reminders.application.contracts import (
+    CreateReminderCommand,
+    ReminderWriter,
+    SpaceTimezoneReader,
+    TimeExtractor,
+)
 from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
     ConsumePendingCaptureSelectionCommand,
@@ -28,12 +34,18 @@ class TaskCapture:
         pending_capture_selection_store: PendingCaptureSelectionStore,
         task_writer: TaskWriter | None = None,
         knowledge_capture: KnowledgeCapturePort | None = None,
+        reminder_writer: ReminderWriter | None = None,
+        time_extractor: TimeExtractor | None = None,
+        timezone_reader: SpaceTimezoneReader | None = None,
     ) -> None:
         if (task_writer is None) != (knowledge_capture is None):
             raise ValueError("typed task capture requires both writers")
         self._pending_capture_selection_store = pending_capture_selection_store
         self._task_writer = task_writer
         self._knowledge_capture = knowledge_capture
+        self._reminder_writer = reminder_writer
+        self._time_extractor = time_extractor
+        self._timezone_reader = timezone_reader
 
     async def set_awaiting_task(self, command: SetAwaitingTaskCommand) -> None:
         await self._pending_capture_selection_store.set_awaiting_task(command)
@@ -86,7 +98,7 @@ class TaskCapture:
         if self._task_writer is None or self._knowledge_capture is None:
             raise RuntimeError("typed task capture writers are incomplete")
         if command.selection is PendingCaptureType.TASK:
-            return await self._task_writer.create(
+            task = await self._task_writer.create(
                 CreateTaskCommand(
                     access_context=command.access_context,
                     title=command.text,
@@ -95,6 +107,8 @@ class TaskCapture:
                     trace_id=command.trace_id,
                 )
             )
+            await self._maybe_create_reminder(command, task)
+            return task
         if command.selection is PendingCaptureType.NOTE:
             return await self._knowledge_capture.create_note(
                 CreateNoteCommand(
@@ -130,6 +144,35 @@ class TaskCapture:
                 access_context=command.access_context,
                 text=command.text,
                 source_capture_event_id=command.source_capture_event_id,
+                created_at=command.created_at,
+                trace_id=command.trace_id,
+            )
+        )
+
+    async def _maybe_create_reminder(
+        self, command: CreateTypedCaptureCommand, task: Task
+    ) -> None:
+        # Единая точка (оба пути — текст-капча и авто-классификация в task):
+        # если в тексте задачи есть явный БУДУЩИЙ момент, ставим напоминание.
+        # Заголовок задачи НЕ переписываем. Прошлое/без времени → без напоминания.
+        if (
+            self._reminder_writer is None
+            or self._time_extractor is None
+            or self._timezone_reader is None
+        ):
+            return
+        tz = await self._timezone_reader.resolve_timezone(command.access_context)
+        remind_at = self._time_extractor.extract_due(
+            command.text, command.created_at, tz
+        )
+        if remind_at is None:
+            return
+        await self._reminder_writer.create_reminder(
+            CreateReminderCommand(
+                access_context=command.access_context,
+                remind_at=remind_at,
+                text=command.text,
+                source_task_id=task.id,
                 created_at=command.created_at,
                 trace_id=command.trace_id,
             )

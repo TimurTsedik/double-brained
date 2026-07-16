@@ -1,12 +1,12 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from second_brain.bootstrap.task_capture_in_transaction import (
+    build_task_capture,
+)
 from second_brain.slices.capture.adapters.persistence.repository import (
     PostgresVoiceAttachmentWriter,
 )
 from second_brain.slices.capture.application.contracts import MarkVoiceStoredCommand
-from second_brain.slices.knowledge.adapters.persistence.repository import (
-    PostgresKnowledgeWriter,
-)
 from second_brain.slices.processing.adapters.persistence.repository import (
     PostgresProcessingWriter,
 )
@@ -28,12 +28,7 @@ from second_brain.slices.retrieval.application.contracts import (
     RegisterIndexingTargetCommand,
 )
 from second_brain.slices.retrieval.domain.entities import SearchRecordType
-from second_brain.slices.tasks.adapters.persistence.repository import (
-    PostgresPendingCaptureSelectionWriter,
-    PostgresTaskWriter,
-)
 from second_brain.slices.tasks.application.contracts import CreateTypedCaptureCommand
-from second_brain.slices.tasks.application.task_capture import TaskCapture
 from second_brain.slices.tasks.domain.entities import PendingCaptureType
 
 
@@ -75,11 +70,7 @@ class VoiceTranscriptionCompletionInTransaction:
                 target = await processing.lock_transcription_target(
                     command.access_context, command.step_id
                 )
-                record = await TaskCapture(
-                    PostgresPendingCaptureSelectionWriter(session),
-                    PostgresTaskWriter(session),
-                    PostgresKnowledgeWriter(session),
-                ).create_for_selection(
+                record = await build_task_capture(session).create_for_selection(
                     CreateTypedCaptureCommand(
                         access_context=command.access_context,
                         selection=PendingCaptureType(target.output_type.value),

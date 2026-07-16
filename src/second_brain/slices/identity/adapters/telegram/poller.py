@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Protocol
 
 from second_brain.slices.identity.adapters.telegram.dto import TelegramUpdate
@@ -40,6 +41,10 @@ class TelegramGateway(Protocol):
     async def send_selection_feedback(self, update: TelegramUpdate) -> None: ...
 
     async def send_voice_queued(self, update: TelegramUpdate) -> None: ...
+
+    async def send_reminder_set(
+        self, update: TelegramUpdate, when: datetime
+    ) -> None: ...
 
     async def send_task_panel(
         self,
@@ -175,6 +180,19 @@ class LocalPoller:
                 while True:
                     try:
                         await self._gateway.send_voice_queued(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            reminder_when = getattr(result, "reminder_when", None)
+            if (
+                result.kind is AcknowledgementKind.CAPTURED
+                and reminder_when is not None
+                and getattr(result, "fresh", True)
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_reminder_set(update, reminder_when)
                     except Exception:
                         await self._sleep(1.0)
                         continue

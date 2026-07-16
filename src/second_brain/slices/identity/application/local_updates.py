@@ -37,6 +37,7 @@ from second_brain.slices.projects.application.contracts import (
     ProjectPanelResult,
     SelectProjectCommand,
 )
+from second_brain.slices.reminders.application.contracts import ReminderAckReader
 from second_brain.slices.retrieval.application.contracts import (
     ConsumeSearchQueryCommand,
     ExactSearchPort,
@@ -102,6 +103,9 @@ class UpdateResult:
     # в receipt/логи не попадает; поллер шлёт её как side-effect на invite_created.
     # repr=False — plaintext-токен не должен просочиться в repr/лог.
     invite_link: str | None = field(default=None, repr=False)
+    # «На когда» только что поставленное напоминание (в tz пространства):
+    # поллер добавляет к captured-ack сообщение «⏰ Напомню …».
+    reminder_when: datetime | None = None
 
 
 @dataclass
@@ -110,6 +114,7 @@ class _TransientUpdatePayload:
     search_panel: SearchPanelResult | None = None
     project_panel: ProjectPanelResult | None = None
     invite_link: str | None = None
+    reminder_when: datetime | None = None
 
 
 class LocalUpdateProcessor:
@@ -127,6 +132,7 @@ class LocalUpdateProcessor:
         project_panel_port: ProjectPanelPort | None = None,
         memory_ask_port: MemoryQuestionPort | None = None,
         bot_username: str | None = None,
+        reminder_ack_port: ReminderAckReader | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -140,6 +146,7 @@ class LocalUpdateProcessor:
         self._capture_voice_port = capture_voice_port
         self._project_panel_port = project_panel_port
         self._memory_ask_port = memory_ask_port
+        self._reminder_ack_port = reminder_ack_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -165,6 +172,7 @@ class LocalUpdateProcessor:
             search_panel=None if receipt.existing else payload.search_panel,
             project_panel=None if receipt.existing else payload.project_panel,
             invite_link=None if receipt.existing else payload.invite_link,
+            reminder_when=None if receipt.existing else payload.reminder_when,
         )
 
     async def _process_new(
@@ -299,7 +307,7 @@ class LocalUpdateProcessor:
 
         if self._capture_text_port is None:
             raise RuntimeError("capture text port is required for private text")
-        await self._capture_text_port.capture(
+        source = await self._capture_text_port.capture(
             CaptureTextCommand(
                 access_context=access_context,
                 bot_id=update.bot_id,
@@ -311,6 +319,13 @@ class LocalUpdateProcessor:
             ),
             transaction,
         )
+        if self._reminder_ack_port is not None:
+            # Задача со временем внутри → сообщаем «на когда» поставлено
+            # напоминание (момент уже в tz пространства). Нет напоминания → None,
+            # captured-ack остаётся прежним (молчаливым).
+            payload.reminder_when = await self._reminder_ack_port.reminder_for_capture(
+                access_context, source.id, transaction
+            )
         return AcknowledgementKind.CAPTURED
 
     async def _process_callback(

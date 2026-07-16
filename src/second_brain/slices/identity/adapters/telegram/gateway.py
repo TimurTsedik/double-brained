@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
@@ -18,6 +20,7 @@ MAX_TASK_TITLE_LENGTH = 160
 MAX_SEARCH_EXCERPT_LENGTH = 240
 MAX_PROJECT_BUTTON_LENGTH = 48
 MAX_PROJECT_DISPLAY_LENGTH = 160
+REMINDER_WHEN_FORMAT = "%d.%m.%Y %H:%M"
 
 
 class AiogramGateway:
@@ -116,6 +119,19 @@ class AiogramGateway:
         if text is None:
             return
         await self._bot.send_message(chat_id=update.telegram_user_id, text=text)
+
+    async def send_reminder_set(self, update: TelegramUpdate, when: datetime) -> None:
+        # `when` уже в часовом поясе пространства (aware) — здесь только формат
+        # и локализованная обёртка «⏰ Напомню …».
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=messages.reminder_set_text(
+                when.strftime(REMINDER_WHEN_FORMAT), locale
+            ),
+        )
 
     async def send_voice_queued(self, update: TelegramUpdate) -> None:
         if not update.is_private or update.telegram_user_id is None:

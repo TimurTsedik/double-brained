@@ -1,3 +1,9 @@
+from datetime import datetime
+from typing import cast
+from uuid import UUID
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from second_brain.slices.capture.adapters.persistence.repository import (
@@ -11,6 +17,7 @@ from second_brain.slices.capture.application.contracts import (
 from second_brain.slices.capture.domain.entities import CaptureEvent
 from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresUpdateTransaction,
+    read_user_space_timezone,
 )
 from second_brain.slices.identity.application.contracts import (
     AccessContext,
@@ -35,6 +42,19 @@ from second_brain.slices.projects.application.contracts import (
     LinkCurrentProjectToCaptureCommand,
 )
 from second_brain.slices.projects.domain.entities import ProjectContentKind
+from second_brain.slices.reminders.adapters.dateparser.extractor import (
+    DateparserTimeExtractor,
+)
+from second_brain.slices.reminders.adapters.persistence.models import ReminderModel
+from second_brain.slices.reminders.adapters.persistence.repository import (
+    PostgresReminderWriter,
+)
+from second_brain.slices.reminders.application.contracts import (
+    DEFAULT_TIMEZONE,
+    CancelReminderForTaskCommand,
+    ReminderAckReader,
+)
+from second_brain.slices.reminders.domain.entities import ReminderStatus
 from second_brain.slices.retrieval.adapters.persistence.repository import (
     PostgresSemanticIndexWriter,
 )
@@ -42,6 +62,7 @@ from second_brain.slices.retrieval.application.contracts import (
     RegisterIndexingTargetCommand,
 )
 from second_brain.slices.retrieval.domain.entities import SearchRecordType
+from second_brain.slices.tasks.adapters.persistence.models import TaskModel
 from second_brain.slices.tasks.adapters.persistence.repository import (
     PostgresPendingCaptureSelectionWriter,
     PostgresTaskPanelWriter,
@@ -62,7 +83,9 @@ from second_brain.slices.tasks.application.task_panel import TaskPanel
 from second_brain.slices.tasks.domain.entities import Task
 
 
-class TaskCaptureInTransaction(CaptureTextPort, TaskModePort, TaskPanelPort):
+class TaskCaptureInTransaction(
+    CaptureTextPort, TaskModePort, TaskPanelPort, ReminderAckReader
+):
     """Bootstrap-only composition for receipt, source, task, and mode writes."""
 
     async def capture(
@@ -150,9 +173,66 @@ class TaskCaptureInTransaction(CaptureTextPort, TaskModePort, TaskPanelPort):
     async def complete(
         self, command: CompleteTaskCommand, transaction: UpdateTransaction
     ) -> TaskPanelResult:
-        return await TaskPanel(
-            PostgresTaskPanelWriter(_active_session(transaction))
-        ).complete(command)
+        session = _active_session(transaction)
+        result = await TaskPanel(PostgresTaskPanelWriter(session)).complete(command)
+        # Хук завершения: сделанная задача больше не пингует — её ещё pending-
+        # напоминание гасим (sent/cancelled не трогаем; нет напоминания — no-op).
+        await PostgresReminderWriter(session).cancel_for_task(
+            CancelReminderForTaskCommand(
+                access_context=command.access_context,
+                source_task_id=command.task_id,
+                cancelled_at=command.completed_at,
+            )
+        )
+        return result
+
+    async def reminder_for_capture(
+        self,
+        access_context: AccessContext,
+        capture_event_id: UUID,
+        transaction: UpdateTransaction,
+    ) -> datetime | None:
+        # Ack-канал: «на когда» напоминание, поставленное задачей из ЭТОЙ капчи.
+        # Возвращаем момент в часовом поясе пространства — ack показывает его.
+        session = _active_session(transaction)
+        remind_at = await _read_capture_reminder_at(
+            session, access_context, capture_event_id
+        )
+        if remind_at is None:
+            return None
+        timezone = await PostgresSpaceTimezoneReader(session).resolve_timezone(
+            access_context
+        )
+        return remind_at.astimezone(ZoneInfo(timezone))
+
+
+async def _read_capture_reminder_at(
+    session: AsyncSession,
+    access_context: AccessContext,
+    capture_event_id: UUID,
+) -> datetime | None:
+    await session.execute(
+        text("SELECT set_config('second_brain.user_space_id', :user_space_id, true)"),
+        {"user_space_id": str(access_context.user_space_id)},
+    )
+    return cast(
+        datetime | None,
+        await session.scalar(
+            select(ReminderModel.remind_at)
+            .join(
+                TaskModel,
+                and_(
+                    TaskModel.id == ReminderModel.source_task_id,
+                    TaskModel.user_space_id == ReminderModel.user_space_id,
+                ),
+            )
+            .where(
+                TaskModel.source_capture_event_id == capture_event_id,
+                ReminderModel.user_space_id == access_context.user_space_id,
+                ReminderModel.status == ReminderStatus.PENDING,
+            )
+        ),
+    )
 
 
 def _active_session(transaction: UpdateTransaction) -> AsyncSession:
@@ -161,12 +241,40 @@ def _active_session(transaction: UpdateTransaction) -> AsyncSession:
     return transaction.active_session
 
 
-def _typed_task_capture(session: AsyncSession) -> TaskCapture:
+class PostgresSpaceTimezoneReader:
+    """Resolves a space's timezone on a caller-owned session for the capture flow."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def resolve_timezone(self, access_context: AccessContext) -> str:
+        timezone = await read_user_space_timezone(
+            self._session,
+            access_context.user_space_id,
+            access_context.user_id,
+        )
+        return timezone or DEFAULT_TIMEZONE
+
+
+def build_task_capture(session: AsyncSession) -> TaskCapture:
+    """Reminder-enabled TaskCapture over a caller-owned session.
+
+    One construction point for every task-creation path (typed text capture,
+    auto-classification, voice transcription) so a due time typed into the task
+    always yields a reminder — the single creation point stays single.
+    """
     return TaskCapture(
         PostgresPendingCaptureSelectionWriter(session),
         PostgresTaskWriter(session),
         PostgresKnowledgeWriter(session),
+        reminder_writer=PostgresReminderWriter(session),
+        time_extractor=DateparserTimeExtractor(),
+        timezone_reader=PostgresSpaceTimezoneReader(session),
     )
+
+
+def _typed_task_capture(session: AsyncSession) -> TaskCapture:
+    return build_task_capture(session)
 
 
 def _record_output_type(

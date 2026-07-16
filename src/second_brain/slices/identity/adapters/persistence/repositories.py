@@ -304,6 +304,22 @@ async def read_user_space_language(
     )
 
 
+async def read_user_space_timezone(
+    session: AsyncSession, user_space_id: UUID, owner_user_id: UUID
+) -> str | None:
+    # Owner-предикат как у read_user_space_language: часовой пояс читается только
+    # из СВОЕГО space, ошибочно сшитый AccessContext не достанет чужой.
+    return cast(
+        str | None,
+        await session.scalar(
+            select(UserSpace.timezone).where(
+                UserSpace.id == user_space_id,
+                UserSpace.owner_user_id == owner_user_id,
+            )
+        ),
+    )
+
+
 async def set_user_space_language(
     session: AsyncSession,
     user_space_id: UUID,
