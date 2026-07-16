@@ -1,10 +1,13 @@
+from uuid import uuid4
+
 from second_brain.slices.memory.application.contracts import (
+    AnswerSourceRef,
     DeliveryPayload,
     LabelledSnippet,
     ReasoningDraft,
     ReasoningRequest,
 )
-from second_brain.slices.memory.domain.entities import EvidenceLevel
+from second_brain.slices.memory.domain.entities import EvidenceLevel, MemoryRecordKind
 
 
 def test_reasoning_request_repr_hides_question_and_text() -> None:
@@ -44,3 +47,24 @@ def test_delivery_payload_repr_hides_text_and_trace() -> None:
     assert "secret answer text" not in repr(success)
     assert "trace-secret-123" not in repr(failure)
     assert "reasoning_unavailable" in repr(failure)
+
+
+def test_delivery_payload_source_refs_repr_hides_record_id() -> None:
+    record_id = uuid4()
+    payload = DeliveryPayload.success(
+        "secret answer text",
+        sources=(
+            AnswerSourceRef(
+                record_kind=MemoryRecordKind.NOTE,
+                record_id=record_id,
+                label="Заметка · 15.07.2026",
+            ),
+        ),
+    )
+
+    text = repr(payload)
+
+    assert "secret answer text" not in text
+    assert str(record_id) not in text
+    # The label is content-free chrome (kind + date) and may stay visible.
+    assert "Заметка · 15.07.2026" in text

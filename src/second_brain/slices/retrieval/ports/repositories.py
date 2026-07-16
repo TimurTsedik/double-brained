@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from second_brain.slices.retrieval.application.contracts import (
     StoreSemanticChunksCommand,
 )
 from second_brain.slices.retrieval.domain.entities import (
+    DigestCounters,
     IndexingTarget,
     RecordView,
     SearchRecord,
@@ -54,6 +56,24 @@ class SemanticIndexStore(Protocol):
         query_vector: tuple[float, ...],
         limit: int,
     ) -> tuple[SemanticMatch, ...]: ...
+
+
+class DigestStore(Protocol):
+    async def count_records(
+        self,
+        access_context: AccessContext,
+        start: datetime,
+        end: datetime,
+    ) -> DigestCounters: ...
+
+    async def read_page(
+        self,
+        access_context: AccessContext,
+        start: datetime,
+        end: datetime,
+        offset: int,
+        limit: int,
+    ) -> tuple[RecordView, ...]: ...
 
 
 class RecordViewStore(Protocol):

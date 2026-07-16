@@ -8,6 +8,10 @@ from second_brain.slices.identity.application.contracts import (
     UpdateTransaction,
 )
 from second_brain.slices.retrieval.domain.entities import (
+    DigestCounters as DigestCounters,
+)
+from second_brain.slices.retrieval.domain.entities import DigestPeriod as DigestPeriod
+from second_brain.slices.retrieval.domain.entities import (
     EvidenceBundle,
     IndexedChunk,
 )
@@ -125,6 +129,37 @@ class RecordViewPort(Protocol):
         record_id: UUID,
         transaction: UpdateTransaction,
     ) -> tuple[RecordView, ...]: ...
+
+
+@dataclass(frozen=True)
+class DigestPage:
+    """Страница сводки одного снимка as_of — transient-payload показа.
+
+    Тексты записей не должны просочиться в repr/логи. `period_start` и `as_of`
+    уже в поясе пространства (транспорт только форматирует); `total` — все
+    записи снимка, по нему транспорт решает судьбу кнопки «Ещё».
+    """
+
+    period: DigestPeriod
+    period_start: datetime
+    as_of: datetime
+    offset: int
+    total: int
+    counters: DigestCounters
+    items: tuple[RecordView, ...] = field(repr=False)
+
+
+class DigestPort(Protocol):
+    """Сводка за календарный период внутри update-транзакции."""
+
+    async def read_digest_page(
+        self,
+        access_context: AccessContext,
+        period: DigestPeriod,
+        offset: int,
+        as_of: datetime,
+        transaction: UpdateTransaction,
+    ) -> DigestPage: ...
 
 
 class ExactSearchPort(Protocol):

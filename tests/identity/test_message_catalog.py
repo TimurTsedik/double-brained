@@ -246,7 +246,11 @@ async def test_panel_ru_matches_today_and_carries_language_button() -> None:
         "capture:question",
         "capture:cancel",
     ]
-    lang_row = markup.inline_keyboard[3]
+    # Ряд сводки — виден ВСЕМ пользователям (не только админу).
+    digest_row = markup.inline_keyboard[3]
+    assert [b.callback_data for b in digest_row] == ["digest:menu"]
+    assert digest_row[0].text == "📊 Сводка"
+    lang_row = markup.inline_keyboard[4]
     assert [b.callback_data for b in lang_row] == ["lang:menu"]
     assert lang_row[0].text == "🌐 Язык / Language"
     assert [b.text for b in markup.inline_keyboard[0]] == [
@@ -273,8 +277,10 @@ async def test_panel_en_is_english_with_same_layout() -> None:
         "memory:ask",
         "projects:list",
     ]
-    assert markup.inline_keyboard[3][0].callback_data == "lang:menu"
-    assert markup.inline_keyboard[3][0].text == "🌐 Язык / Language"
+    assert markup.inline_keyboard[3][0].callback_data == "digest:menu"
+    assert markup.inline_keyboard[3][0].text == "📊 Digest"
+    assert markup.inline_keyboard[4][0].callback_data == "lang:menu"
+    assert markup.inline_keyboard[4][0].text == "🌐 Язык / Language"
 
 
 @pytest.mark.asyncio

@@ -3,8 +3,13 @@ from datetime import datetime
 from uuid import UUID
 
 from aiogram import Bot
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from second_brain.shared.i18n import Locale
+from second_brain.slices.identity.adapters.telegram.gateway import (
+    SHOW_BUTTONS_PER_ROW,
+)
 from second_brain.slices.identity.application.contracts import (
     AccessContext,
     TelegramRecipient,
@@ -15,13 +20,19 @@ from second_brain.slices.memory.adapters.persistence.repository import (
 )
 from second_brain.slices.memory.application.contracts import (
     AnswerDeliveryPort,
+    AnswerSourceRef,
     DeliveryPayload,
 )
 from second_brain.slices.memory.application.render import (
     render_answer,
     render_safe_failure,
+    render_source_label,
 )
-from second_brain.slices.memory.domain.entities import MemoryRunStatus
+from second_brain.slices.memory.domain.entities import (
+    EvidenceLevel,
+    MemoryAnswer,
+    MemoryRunStatus,
+)
 from second_brain.slices.memory.ports.repositories import SucceedMemoryStepCommand
 
 # Any terminal-but-unanswered upstream (reasoning FAILED, or retrieval FAILED so
@@ -43,7 +54,12 @@ class AiogramAnswerDelivery:
     parse_mode, mirroring AiogramVoiceNotifier: model output must never be
     interpreted as Markdown/HTML markup. Rendering (in the user's locale) already
     happened in the completion, which has the language; this adapter has only a
-    TelegramRecipient, so it never renders and just forwards payload.text."""
+    TelegramRecipient, so it never renders and just forwards payload.text.
+
+    When the payload carries source refs, the message gets numbered show-buttons
+    (same audited show:<kind>:<uuid> callbacks as search results; the polling
+    process answers them even though the worker sent the message). No sources —
+    no reply_markup, message unchanged."""
 
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
@@ -51,7 +67,34 @@ class AiogramAnswerDelivery:
     async def deliver(
         self, payload: DeliveryPayload, recipient_context: TelegramRecipient
     ) -> None:
+        if payload.sources:
+            await self._bot.send_message(
+                recipient_context.telegram_user_id,
+                payload.text,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=_source_button_rows(payload.sources)
+                ),
+            )
+            return
         await self._bot.send_message(recipient_context.telegram_user_id, payload.text)
+
+
+def _source_button_rows(
+    sources: tuple[AnswerSourceRef, ...],
+) -> list[list[InlineKeyboardButton]]:
+    # Номерные кнопки «1…N» в рядах по 5, как у результатов поиска: та же
+    # ширина ряда (SHOW_BUTTONS_PER_ROW) и тот же строгий callback show:тип:uuid.
+    buttons = [
+        InlineKeyboardButton(
+            text=f"{number}",
+            callback_data=f"show:{ref.record_kind.value}:{ref.record_id}",
+        )
+        for number, ref in enumerate(sources, start=1)
+    ]
+    return [
+        buttons[index : index + SHOW_BUTTONS_PER_ROW]
+        for index in range(0, len(buttons), SHOW_BUTTONS_PER_ROW)
+    ]
 
 
 class MemoryDeliveryCompletionInTransaction:
@@ -102,9 +145,27 @@ class MemoryDeliveryCompletionInTransaction:
         if state is not None and state.status is MemoryRunStatus.SUCCEEDED:
             answer = await writer.read_answer(command.access_context, command.run_id)
             if answer is not None:
-                return DeliveryPayload.success(render_answer(answer, locale))
+                return DeliveryPayload.success(
+                    render_answer(answer, locale),
+                    sources=_source_refs(answer, locale),
+                )
         return DeliveryPayload(
             text=render_safe_failure(command.trace_id, locale),
             safe_error_code=DELIVERY_FAILURE_CODE,
             trace_id=command.trace_id,
         )
+
+
+def _source_refs(answer: MemoryAnswer, locale: Locale) -> tuple[AnswerSourceRef, ...]:
+    # Mirrors render_answer: an ∅/insufficient answer shows no "Источники:"
+    # lines, so it also gets no source refs (and thus no buttons).
+    if answer.evidence_level is EvidenceLevel.INSUFFICIENT:
+        return ()
+    return tuple(
+        AnswerSourceRef(
+            record_kind=source.record_kind,
+            label=render_source_label(source, locale),
+            record_id=source.record_id,
+        )
+        for source in answer.sources
+    )

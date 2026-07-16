@@ -8,7 +8,7 @@ from second_brain.slices.identity.application.contracts import (
     TelegramRecipient,
     UpdateTransaction,
 )
-from second_brain.slices.memory.domain.entities import EvidenceLevel
+from second_brain.slices.memory.domain.entities import EvidenceLevel, MemoryRecordKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +39,17 @@ class ReasoningModel(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class AnswerSourceRef:
+    # One "open the source" reference for the answer message: enough to build a
+    # show:<kind>:<uuid> button. The label is content-free chrome (kind label +
+    # date, the same line the message text already shows), so it may stay in
+    # repr; the record id is hidden like everywhere else in the slice.
+    record_kind: MemoryRecordKind
+    label: str
+    record_id: UUID = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class DeliveryPayload:
     # Success carries the ready answer text; failure carries a safe code plus a
     # trace reference. The delivery port never receives a bare MemoryAnswer, so
@@ -46,13 +57,18 @@ class DeliveryPayload:
     # text is always pre-rendered by the delivery completion (success answer or
     # safe-failure chrome) — never None, so the adapter can forward it verbatim
     # with no silent-drop branch.
+    # sources mirror the "Источники:" lines of the text: one ref per listed
+    # source, empty for ∅/insufficient and failure payloads (then no buttons).
     text: str = field(repr=False)
     safe_error_code: str | None = None
     trace_id: str | None = field(default=None, repr=False)
+    sources: tuple[AnswerSourceRef, ...] = ()
 
     @classmethod
-    def success(cls, text: str) -> "DeliveryPayload":
-        return cls(text=text)
+    def success(
+        cls, text: str, sources: tuple[AnswerSourceRef, ...] = ()
+    ) -> "DeliveryPayload":
+        return cls(text=text, sources=sources)
 
     @classmethod
     def failure(

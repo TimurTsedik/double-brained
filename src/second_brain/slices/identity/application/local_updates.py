@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from hmac import digest
 from secrets import token_urlsafe
@@ -45,6 +45,9 @@ from second_brain.slices.projects.application.contracts import (
 from second_brain.slices.reminders.application.contracts import ReminderAckReader
 from second_brain.slices.retrieval.application.contracts import (
     ConsumeSearchQueryCommand,
+    DigestPage,
+    DigestPeriod,
+    DigestPort,
     ExactSearchPort,
     RecordViewPort,
     RecordViewResult,
@@ -71,6 +74,18 @@ ENROLLMENT_ATTEMPT_WINDOW = timedelta(minutes=15)
 _SHOW_CALLBACK_PATTERN = re.compile(
     r"show:(note|task|idea|decision|question):"
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+)
+
+# Строгий парс callback'ов сводки. Периоды — закрытый enum; offset — только
+# беззнаковое десятичное без ведущих нулей ограниченной длины; as_of — только
+# unix-секунды (1-10 цифр, без нуля и ведущих нулей). Любой иной digest:*
+# гасится до любой другой обработки. Максимальная форма
+# «digest:more:half_year:999999:9999999999» — 40 байт, в 64-байтовый лимит
+# Telegram влезает.
+DIGEST_MENU_CALLBACK = "digest:menu"
+_DIGEST_PERIOD_CALLBACK_PATTERN = re.compile(r"digest:(week|month|half_year|year)")
+_DIGEST_MORE_CALLBACK_PATTERN = re.compile(
+    r"digest:more:(week|month|half_year|year):(0|[1-9][0-9]{0,5}):([1-9][0-9]{0,9})"
 )
 
 
@@ -105,6 +120,8 @@ class AcknowledgementKind(StrEnum):
     INVITE_CREATED = "invite_created"
     INVITE_FORBIDDEN = "invite_forbidden"
     CONTACT_SAVED = "contact_saved"
+    DIGEST_MENU_SHOWN = "digest_menu_shown"
+    DIGEST_SHOWN = "digest_shown"
     IGNORED = "ignored"
 
 
@@ -130,6 +147,8 @@ class UpdateResult:
     # Открытая запись + «похожее» (полный текст — вне repr/логов): живёт только
     # в памяти свежего прохода, replay дубля payload'а не получает.
     record_view: RecordViewResult | None = field(default=None, repr=False)
+    # Страница сводки (тексты записей — вне repr/логов): fresh-only, как выше.
+    digest_page: DigestPage | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -141,6 +160,7 @@ class _TransientUpdatePayload:
     reminder_when: datetime | None = None
     contact_name: str | None = None
     record_view: RecordViewResult | None = None
+    digest_page: DigestPage | None = None
 
 
 class LocalUpdateProcessor:
@@ -161,6 +181,7 @@ class LocalUpdateProcessor:
         reminder_ack_port: ReminderAckReader | None = None,
         contact_port: ContactIntakePort | None = None,
         record_view_port: RecordViewPort | None = None,
+        digest_port: DigestPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -177,6 +198,7 @@ class LocalUpdateProcessor:
         self._reminder_ack_port = reminder_ack_port
         self._contact_port = contact_port
         self._record_view_port = record_view_port
+        self._digest_port = digest_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -205,6 +227,7 @@ class LocalUpdateProcessor:
             reminder_when=None if receipt.existing else payload.reminder_when,
             contact_name=None if receipt.existing else payload.contact_name,
             record_view=None if receipt.existing else payload.record_view,
+            digest_page=None if receipt.existing else payload.digest_page,
         )
 
     async def _process_new(
@@ -405,6 +428,29 @@ class LocalUpdateProcessor:
             and show_match is None
         ):
             return AcknowledgementKind.IGNORED
+        # digest:* принимается ТОЛЬКО в трёх строгих формах (menu / период /
+        # more:период:offset:as_of); любой иной digest:* — IGNORED до любой
+        # другой обработки (спуф не отличим от мусора).
+        is_digest = update.callback_data is not None and (
+            update.callback_data.startswith("digest:")
+        )
+        digest_period_match = (
+            _DIGEST_PERIOD_CALLBACK_PATTERN.fullmatch(update.callback_data)
+            if update.callback_data is not None
+            else None
+        )
+        digest_more_match = (
+            _DIGEST_MORE_CALLBACK_PATTERN.fullmatch(update.callback_data)
+            if update.callback_data is not None
+            else None
+        )
+        if (
+            is_digest
+            and update.callback_data != DIGEST_MENU_CALLBACK
+            and digest_period_match is None
+            and digest_more_match is None
+        ):
+            return AcknowledgementKind.IGNORED
         selections = {
             "capture:note": "note",
             "capture:task": "task",
@@ -443,6 +489,7 @@ class LocalUpdateProcessor:
             and not is_task_completion
             and not is_project_selection
             and show_match is None
+            and not is_digest
         ):
             return AcknowledgementKind.IGNORED
         if update.telegram_user_id is None:
@@ -664,6 +711,46 @@ class LocalUpdateProcessor:
                     transaction,
                 )
             return AcknowledgementKind.TASK_COMPLETED
+        if update.callback_data == DIGEST_MENU_CALLBACK:
+            if self._digest_port is None:
+                return AcknowledgementKind.IGNORED
+            return AcknowledgementKind.DIGEST_MENU_SHOWN
+        if digest_period_match is not None:
+            if self._digest_port is None:
+                return AcknowledgementKind.IGNORED
+            # Снимок момента: as_of фиксируется на выборе периода с точностью
+            # до целой секунды — в callback «Ещё» едут unix-секунды, и фильтр
+            # ВСЕХ страниц обязан совпадать с закодированным as_of бит-в-бит.
+            as_of = now.replace(microsecond=0)
+            payload.digest_page = await self._digest_port.read_digest_page(
+                access_context,
+                DigestPeriod(digest_period_match.group(1)),
+                0,
+                as_of,
+                transaction,
+            )
+            return AcknowledgementKind.DIGEST_SHOWN
+        if digest_more_match is not None:
+            if self._digest_port is None:
+                return AcknowledgementKind.IGNORED
+            offset = int(digest_more_match.group(2))
+            as_of = datetime.fromtimestamp(int(digest_more_match.group(3)), UTC)
+            # as_of из будущего этот бот выдать не мог — спуф, гасим до чтения.
+            if as_of > now:
+                return AcknowledgementKind.IGNORED
+            page = await self._digest_port.read_digest_page(
+                access_context,
+                DigestPeriod(digest_more_match.group(1)),
+                offset,
+                as_of,
+                transaction,
+            )
+            # Offset за концом снимка → IGNORED, неотличимо от мусора: callback
+            # отвечен, ни одного сообщения, payload'а нет.
+            if offset >= page.total:
+                return AcknowledgementKind.IGNORED
+            payload.digest_page = page
+            return AcknowledgementKind.DIGEST_SHOWN
         if show_match is not None:
             if self._record_view_port is None:
                 return AcknowledgementKind.IGNORED

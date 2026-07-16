@@ -12,6 +12,8 @@ RU-значения совпадают ДОСЛОВНО с прежними ст
 from second_brain.shared.i18n import Locale
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
 from second_brain.slices.retrieval.application.contracts import (
+    DigestCounters,
+    DigestPeriod,
     SearchRecord,
     SearchRecordType,
 )
@@ -146,6 +148,53 @@ CATALOG: dict[str, dict[Locale, str]] = {
         Locale.RU: "🧬 Похожее по смыслу:",
         Locale.EN: "🧬 Similar in meaning:",
     },
+    # --- сводка за период ---
+    # Кнопка панели видна ВСЕМ пользователям (не только админу).
+    "panel.btn.digest": {Locale.RU: "📊 Сводка", Locale.EN: "📊 Digest"},
+    "digest.menu.prompt": {
+        Locale.RU: "📊 Сводка за какой период?",
+        Locale.EN: "📊 Digest for which period?",
+    },
+    "digest.period.week": {Locale.RU: "Неделя", Locale.EN: "Week"},
+    "digest.period.month": {Locale.RU: "Месяц", Locale.EN: "Month"},
+    "digest.period.half_year": {Locale.RU: "Полгода", Locale.EN: "Half-year"},
+    "digest.period.year": {Locale.RU: "Год", Locale.EN: "Year"},
+    # Заголовок и строка записи — формат, одинаковый в обоих языках намеренно.
+    "digest.header": {
+        Locale.RU: "📊 {period}: {start} — {end}",
+        Locale.EN: "📊 {period}: {start} — {end}",
+    },
+    "digest.counters": {
+        Locale.RU: (
+            "📝 {notes} · ✅ {tasks} (☑️ {tasks_completed} выполнено) · "
+            "💡 {ideas} · ⚖️ {decisions} · ❓ {questions}"
+        ),
+        Locale.EN: (
+            "📝 {notes} · ✅ {tasks} (☑️ {tasks_completed} done) · "
+            "💡 {ideas} · ⚖️ {decisions} · ❓ {questions}"
+        ),
+    },
+    "digest.row": {
+        Locale.RU: "{number}. {label} · {date} — {excerpt}",
+        Locale.EN: "{number}. {label} · {date} — {excerpt}",
+    },
+    "digest.empty.week": {
+        Locale.RU: "📊 За неделю записей нет.",
+        Locale.EN: "📊 No records for the week.",
+    },
+    "digest.empty.month": {
+        Locale.RU: "📊 За месяц записей нет.",
+        Locale.EN: "📊 No records for the month.",
+    },
+    "digest.empty.half_year": {
+        Locale.RU: "📊 За полгода записей нет.",
+        Locale.EN: "📊 No records for the half-year.",
+    },
+    "digest.empty.year": {
+        Locale.RU: "📊 За год записей нет.",
+        Locale.EN: "📊 No records for the year.",
+    },
+    "digest.more_btn": {Locale.RU: "⬇️ Ещё", Locale.EN: "⬇️ More"},
     # --- проекты: промпт названия ---
     "project_name_prompt.required": {
         Locale.RU: "Название не может быть пустым. Напишите название проекта.",
@@ -300,8 +349,9 @@ def panel_button_rows(
 ) -> list[list[tuple[str, str]]]:
     """Строки панели как ряды пар (подпись, callback_data).
 
-    Ряд «➕ Пригласить» добавляется ТОЛЬКО админу (member его не видит). Скрытие
-    кнопки — не авторизация: сервер заново проверяет роль на invite:create.
+    Ряд «📊 Сводка» виден ВСЕМ пользователям. Ряд «➕ Пригласить» добавляется
+    ТОЛЬКО админу (member его не видит). Скрытие кнопки — не авторизация:
+    сервер заново проверяет роль на invite:create.
     """
     rows = [
         [
@@ -319,6 +369,9 @@ def panel_button_rows(
             (_text("panel.btn.capture_decision", locale), "capture:decision"),
             (_text("panel.btn.capture_question", locale), "capture:question"),
             (_text("panel.btn.capture_cancel", locale), "capture:cancel"),
+        ],
+        [
+            (_text("panel.btn.digest", locale), "digest:menu"),
         ],
         [
             (_text("panel.btn.lang_menu", locale), "lang:menu"),
@@ -410,6 +463,48 @@ def record_view_header(label: str, date: str, locale: Locale) -> str:
 
 def related_section_header(locale: Locale) -> str:
     return _text("record_view.related_header", locale)
+
+
+# --- сводка за период ---
+
+
+def digest_menu_prompt(locale: Locale) -> str:
+    return _text("digest.menu.prompt", locale)
+
+
+def digest_period_label(period: DigestPeriod, locale: Locale) -> str:
+    return _text(f"digest.period.{period.value}", locale)
+
+
+def digest_header(period_label: str, start: str, end: str, locale: Locale) -> str:
+    return _text("digest.header", locale).format(
+        period=period_label, start=start, end=end
+    )
+
+
+def digest_counters_line(counters: DigestCounters, locale: Locale) -> str:
+    return _text("digest.counters", locale).format(
+        notes=counters.notes,
+        tasks=counters.tasks,
+        tasks_completed=counters.tasks_completed,
+        ideas=counters.ideas,
+        decisions=counters.decisions,
+        questions=counters.questions,
+    )
+
+
+def digest_row(number: int, label: str, date: str, excerpt: str, locale: Locale) -> str:
+    return _text("digest.row", locale).format(
+        number=number, label=label, date=date, excerpt=excerpt
+    )
+
+
+def digest_empty_text(period: DigestPeriod, locale: Locale) -> str:
+    return _text(f"digest.empty.{period.value}", locale)
+
+
+def digest_more_button(locale: Locale) -> str:
+    return _text("digest.more_btn", locale)
 
 
 # --- память ---

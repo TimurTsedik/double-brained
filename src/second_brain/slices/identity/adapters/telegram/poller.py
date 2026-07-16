@@ -10,6 +10,7 @@ from second_brain.slices.identity.application.local_updates import (
 )
 from second_brain.slices.projects.application.contracts import ProjectPanelResult
 from second_brain.slices.retrieval.application.contracts import (
+    DigestPage,
     RecordViewResult,
     SearchPanelResult,
 )
@@ -84,6 +85,14 @@ class TelegramGateway(Protocol):
         self,
         update: TelegramUpdate,
         result: RecordViewResult,
+    ) -> None: ...
+
+    async def send_digest_menu(self, update: TelegramUpdate) -> None: ...
+
+    async def send_digest(
+        self,
+        update: TelegramUpdate,
+        result: DigestPage,
     ) -> None: ...
 
     async def send_project_name_prompt(
@@ -302,6 +311,29 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
+            if result.kind is AcknowledgementKind.DIGEST_MENU_SHOWN and getattr(
+                result, "fresh", True
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_digest_menu(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            if result.kind is AcknowledgementKind.DIGEST_SHOWN and getattr(
+                result, "fresh", True
+            ):
+                digest_page = getattr(result, "digest_page", None)
+                if digest_page is None:
+                    raise RuntimeError("fresh digest did not return a page")
+                while True:
+                    try:
+                        await self._gateway.send_digest(update, digest_page)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             if result.kind in {
                 AcknowledgementKind.PROJECT_NAME_MODE_SET,
                 AcknowledgementKind.PROJECT_NAME_REQUIRED,
@@ -420,6 +452,8 @@ class LocalPoller:
                 AcknowledgementKind.INVITE_CREATED,
                 AcknowledgementKind.INVITE_FORBIDDEN,
                 AcknowledgementKind.CONTACT_SAVED,
+                AcknowledgementKind.DIGEST_MENU_SHOWN,
+                AcknowledgementKind.DIGEST_SHOWN,
             }:
                 try:
                     await self._gateway.send_acknowledgement(update, result.kind)

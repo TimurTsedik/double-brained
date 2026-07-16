@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -33,6 +34,9 @@ from second_brain.slices.identity.application.contracts import (
     AccessContext,
     TelegramRecipient,
 )
+from second_brain.slices.identity.application.local_updates import (
+    _SHOW_CALLBACK_PATTERN,
+)
 from second_brain.slices.knowledge.adapters.persistence.models import NoteModel
 from second_brain.slices.memory.adapters.persistence.models import (
     MemoryAnswerModel,
@@ -45,6 +49,7 @@ from second_brain.slices.memory.adapters.persistence.repository import (
 )
 from second_brain.slices.memory.application.answer_question import AnswerMemoryQuestion
 from second_brain.slices.memory.application.contracts import (
+    AnswerSourceRef,
     DeliveryPayload,
     ReasoningDraft,
     ReasoningRequest,
@@ -52,6 +57,7 @@ from second_brain.slices.memory.application.contracts import (
 from second_brain.slices.memory.application.render import (
     render_answer,
     render_safe_failure,
+    render_source_label,
 )
 from second_brain.slices.memory.application.structured_output import (
     PROMPT_VERSION,
@@ -60,6 +66,7 @@ from second_brain.slices.memory.application.structured_output import (
 from second_brain.slices.memory.domain.entities import (
     EvidenceLevel,
     MemoryAnswer,
+    MemoryRecordKind,
     MemoryRunStatus,
     MemoryStepType,
 )
@@ -459,6 +466,8 @@ async def test_insufficient_snapshot_skips_provider(
     )
     statuses = await _step_statuses(schema_engine, run_id)
     assert statuses[MemoryStepType.DELIVERY] is MemoryRunStatus.SUCCEEDED
+    # ∅-answer carries no source refs, so the sent message gets no buttons.
+    assert payload.sources == ()
 
 
 @pytest.mark.asyncio
@@ -697,6 +706,101 @@ async def test_process_once_advances_one_step_per_cycle(
     assert statuses[MemoryStepType.RETRIEVAL] is MemoryRunStatus.SUCCEEDED
     assert statuses[MemoryStepType.REASONING] is MemoryRunStatus.PENDING
     assert statuses[MemoryStepType.DELIVERY] is MemoryRunStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_success_payload_carries_source_refs_for_show_buttons(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # The delivery payload carries (kind, record_id, label) per answer source so
+    # the adapter can attach show:<type>:<uuid> buttons matching the sources.
+    note_id, _ = await _add_note(schema_engine, ACCESS_A, CLEAN_TEXT)
+    run_id = await _create_run(engine, schema_engine, ACCESS_A, update_id=111)
+    delivery_port = FakeAnswerDeliveryPort()
+    queue, worker = _build_worker(
+        engine,
+        reasoner=FakeReasoningModel(),
+        delivery_port=delivery_port,
+        identity=FakeWorkerIdentity(),
+    )
+
+    assert await worker.process_once(ACCESS_A, NOW) is True  # retrieval
+    assert await worker.process_once(ACCESS_A, NOW) is True  # reasoning
+    assert await worker.process_once(ACCESS_A, NOW) is True  # delivery
+
+    stored = await queue.read_answer(ACCESS_A, run_id)
+    assert stored is not None
+    assert stored.sources != ()
+    payload, _ = delivery_port.deliveries[0]
+    assert [(ref.record_kind, ref.record_id) for ref in payload.sources] == [
+        (source.record_kind, source.record_id) for source in stored.sources
+    ]
+    assert {ref.record_id for ref in payload.sources} == {note_id}
+    for ref, source in zip(payload.sources, stored.sources, strict=True):
+        assert ref.label == render_source_label(source, Locale.RU)
+        assert ref.label in payload.text  # same line the message already shows
+    # record ids stay out of reprs, like everywhere else in the slice.
+    assert UUID_PATTERN.search(repr(payload)) is None
+
+
+@pytest.mark.asyncio
+async def test_aiogram_delivery_attaches_numbered_source_buttons() -> None:
+    bot = RecordingBot()
+    delivery = AiogramAnswerDelivery(bot)  # type: ignore[arg-type]
+    record_ids = [uuid4() for _ in range(6)]
+    kinds = [
+        MemoryRecordKind.NOTE,
+        MemoryRecordKind.TASK,
+        MemoryRecordKind.IDEA,
+        MemoryRecordKind.DECISION,
+        MemoryRecordKind.QUESTION,
+        MemoryRecordKind.NOTE,
+    ]
+    payload = DeliveryPayload.success(
+        "готовый ответ",
+        sources=tuple(
+            AnswerSourceRef(record_kind=kind, record_id=record_id, label="Заметка")
+            for kind, record_id in zip(kinds, record_ids, strict=True)
+        ),
+    )
+
+    await delivery.deliver(payload, TelegramRecipient(telegram_user_id=42))
+
+    assert len(bot.messages) == 1
+    args, kwargs = bot.messages[0]
+    assert args == (42, "готовый ответ")
+    assert "parse_mode" not in kwargs
+    markup = kwargs["reply_markup"]
+    assert isinstance(markup, InlineKeyboardMarkup)
+    rows = markup.inline_keyboard
+    assert [len(row) for row in rows] == [5, 1]  # rows of 5, like search
+    buttons = [button for row in rows for button in row]
+    assert [button.text for button in buttons] == ["1", "2", "3", "4", "5", "6"]
+    assert [button.callback_data for button in buttons] == [
+        f"show:{kind.value}:{record_id}"
+        for kind, record_id in zip(kinds, record_ids, strict=True)
+    ]
+    for button in buttons:
+        assert button.callback_data is not None
+        assert len(button.callback_data.encode()) <= 64  # Telegram limit
+        # Every callback matches the strict, already-shipped show handler.
+        assert _SHOW_CALLBACK_PATTERN.fullmatch(button.callback_data) is not None
+
+
+@pytest.mark.asyncio
+async def test_aiogram_delivery_without_sources_sends_no_reply_markup() -> None:
+    bot = RecordingBot()
+    delivery = AiogramAnswerDelivery(bot)  # type: ignore[arg-type]
+
+    await delivery.deliver(
+        DeliveryPayload.success("ответ без источников"),
+        TelegramRecipient(telegram_user_id=42),
+    )
+
+    assert len(bot.messages) == 1
+    args, kwargs = bot.messages[0]
+    assert args == (42, "ответ без источников")
+    assert "reply_markup" not in kwargs
 
 
 @pytest.mark.asyncio

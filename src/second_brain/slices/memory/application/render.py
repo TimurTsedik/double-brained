@@ -2,6 +2,7 @@ from datetime import datetime
 
 from second_brain.shared.i18n import Locale
 from second_brain.slices.memory.domain.entities import (
+    AnswerSource,
     EvidenceLevel,
     MemoryAnswer,
     MemoryRecordKind,
@@ -76,6 +77,13 @@ def _format_date(value: datetime, locale: Locale) -> str:
     return value.strftime("%d.%m.%Y")
 
 
+def render_source_label(source: AnswerSource, locale: Locale) -> str:
+    # One "Источники:" line — also reused verbatim as the show-button label in
+    # the delivery payload, so buttons and text always describe sources alike.
+    kind = _KIND_LABELS[locale][source.record_kind]
+    return f"{kind} · {_format_date(source.created_at, locale)}"
+
+
 def render_answer(answer: MemoryAnswer, locale: Locale) -> str:
     badge = _LEVEL_BADGES[locale][answer.evidence_level]
     if answer.evidence_level is EvidenceLevel.INSUFFICIENT:
@@ -85,10 +93,8 @@ def render_answer(answer: MemoryAnswer, locale: Locale) -> str:
     if answer.sources:
         lines.append("")
         lines.append(_SOURCES_HEADER[locale])
-        kind_labels = _KIND_LABELS[locale]
         for source in answer.sources:
-            kind = kind_labels[source.record_kind]
-            lines.append(f"{kind} · {_format_date(source.created_at, locale)}")
+            lines.append(render_source_label(source, locale))
     return "\n".join(lines)
 
 

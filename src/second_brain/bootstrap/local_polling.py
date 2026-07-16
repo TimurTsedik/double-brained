@@ -5,6 +5,7 @@ from aiogram import Bot
 from second_brain.bootstrap.contact_intake_in_transaction import (
     ContactIntakeInTransaction,
 )
+from second_brain.bootstrap.digest_in_transaction import DigestInTransaction
 from second_brain.bootstrap.exact_search_in_transaction import (
     ExactSearchInTransaction,
 )
@@ -65,6 +66,7 @@ async def run_local_polling(settings: Settings) -> None:
             reminder_ack_port=task_capture,
             contact_port=ContactIntakeInTransaction(),
             record_view_port=RecordViewInTransaction(),
+            digest_port=DigestInTransaction(),
         )
         poller = LocalPoller(
             AiogramGateway(

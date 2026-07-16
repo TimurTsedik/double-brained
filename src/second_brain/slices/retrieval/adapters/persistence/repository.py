@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -46,6 +48,7 @@ from second_brain.slices.retrieval.application.contracts import (
     StoreSemanticChunksCommand,
 )
 from second_brain.slices.retrieval.domain.entities import (
+    DigestCounters,
     IndexingTarget,
     MatchQuality,
     RecordView,
@@ -462,6 +465,163 @@ class PostgresRecordViewReader:
         )
         rows = (await self._session.execute(statement)).all()
         return tuple((row.source_kind, row.source_record_id) for row in rows)
+
+
+class PostgresDigestReader:
+    """Счётчики и страница сводки за окно `start <= created_at <= end` под RLS.
+
+    Оба чтения — по одному запросу (UNION по типовым таблицам, НЕ по запросу на
+    запись) и по одному и тому же окну снимка: записи, созданные после `end`
+    (as_of), не видны ни счётчикам, ни страницам. Порядок детерминированный:
+    created_at DESC, затем тип и id — страницы стабильны при равных датах.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def count_records(
+        self,
+        access_context: AccessContext,
+        start: datetime,
+        end: datetime,
+    ) -> DigestCounters:
+        await _set_user_space_scope(self._session, access_context)
+        completed_tasks = func.count().filter(TaskModel.status == TaskStatus.COMPLETED)
+        branches = tuple(
+            select(
+                literal(source.record_type.value).label("record_type"),
+                func.count().label("total"),
+                (
+                    completed_tasks
+                    if source.record_type is SearchRecordType.TASK
+                    else literal(0)
+                ).label("completed"),
+            ).where(
+                source.user_space_column == access_context.user_space_id,
+                source.created_column >= start,
+                source.created_column <= end,
+            )
+            for source in _digest_sources()
+        )
+        rows = (await self._session.execute(union_all(*branches))).all()
+        by_type = {row.record_type: row for row in rows}
+
+        def total_of(record_type: SearchRecordType) -> int:
+            row = by_type.get(record_type.value)
+            return int(row.total) if row is not None else 0
+
+        task_row = by_type.get(SearchRecordType.TASK.value)
+        return DigestCounters(
+            notes=total_of(SearchRecordType.NOTE),
+            tasks=total_of(SearchRecordType.TASK),
+            tasks_completed=int(task_row.completed) if task_row is not None else 0,
+            ideas=total_of(SearchRecordType.IDEA),
+            decisions=total_of(SearchRecordType.DECISION),
+            questions=total_of(SearchRecordType.QUESTION),
+        )
+
+    async def read_page(
+        self,
+        access_context: AccessContext,
+        start: datetime,
+        end: datetime,
+        offset: int,
+        limit: int,
+    ) -> tuple[RecordView, ...]:
+        await _set_user_space_scope(self._session, access_context)
+        task_completed = (TaskModel.status == TaskStatus.COMPLETED).label(
+            "task_completed"
+        )
+        not_a_task = cast(literal(None), Boolean).label("task_completed")
+        branches = tuple(
+            select(
+                literal(source.record_type.value).label("record_type"),
+                source.id_column.label("id"),
+                source.content_column.label("text"),
+                source.created_column.label("created_at"),
+                (
+                    task_completed
+                    if source.record_type is SearchRecordType.TASK
+                    else not_a_task
+                ),
+            ).where(
+                source.user_space_column == access_context.user_space_id,
+                source.created_column >= start,
+                source.created_column <= end,
+            )
+            for source in _digest_sources()
+        )
+        combined = union_all(*branches).subquery()
+        statement = (
+            select(combined)
+            .order_by(
+                combined.c.created_at.desc(),
+                combined.c.record_type,
+                combined.c.id,
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self._session.execute(statement)).mappings()
+        return tuple(
+            RecordView(
+                id=row["id"],
+                record_type=SearchRecordType(row["record_type"]),
+                text=row["text"],
+                created_at=row["created_at"],
+                task_completed=row["task_completed"],
+            )
+            for row in rows
+        )
+
+
+@dataclass(frozen=True)
+class _DigestSource:
+    record_type: SearchRecordType
+    id_column: InstrumentedAttribute[UUID]
+    user_space_column: InstrumentedAttribute[UUID]
+    content_column: InstrumentedAttribute[str]
+    created_column: InstrumentedAttribute[Any]
+
+
+def _digest_sources() -> tuple[_DigestSource, ...]:
+    return (
+        _DigestSource(
+            SearchRecordType.NOTE,
+            NoteModel.id,
+            NoteModel.user_space_id,
+            NoteModel.text,
+            NoteModel.created_at,
+        ),
+        _DigestSource(
+            SearchRecordType.TASK,
+            TaskModel.id,
+            TaskModel.user_space_id,
+            TaskModel.title,
+            TaskModel.created_at,
+        ),
+        _DigestSource(
+            SearchRecordType.IDEA,
+            IdeaModel.id,
+            IdeaModel.user_space_id,
+            IdeaModel.text,
+            IdeaModel.created_at,
+        ),
+        _DigestSource(
+            SearchRecordType.DECISION,
+            DecisionModel.id,
+            DecisionModel.user_space_id,
+            DecisionModel.text,
+            DecisionModel.created_at,
+        ),
+        _DigestSource(
+            SearchRecordType.QUESTION,
+            QuestionModel.id,
+            QuestionModel.user_space_id,
+            QuestionModel.text,
+            QuestionModel.created_at,
+        ),
+    )
 
 
 def _search_branch(

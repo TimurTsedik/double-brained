@@ -16,6 +16,8 @@ from second_brain.slices.identity.application.local_updates import Acknowledgeme
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
 from second_brain.slices.projects.application.contracts import ProjectPanelResult
 from second_brain.slices.retrieval.application.contracts import (
+    DigestPage,
+    DigestPeriod,
     RecordView,
     RecordViewResult,
     SearchPanelResult,
@@ -350,6 +352,90 @@ class AiogramGateway:
             return
         await self._bot.send_message(chat_id=update.telegram_user_id, text=parts[-1])
 
+    async def send_digest_menu(self, update: TelegramUpdate) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=messages.digest_menu_prompt(locale),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=messages.digest_period_label(period, locale),
+                            callback_data=f"digest:{period.value}",
+                        )
+                        for period in DigestPeriod
+                    ]
+                ]
+            ),
+        )
+
+    async def send_digest(self, update: TelegramUpdate, result: DigestPage) -> None:
+        # Тексты записей уходят лично вызывающему и нигде не логируются. Бюджет
+        # 4096 считается по ВСЕМУ сообщению; при превышении страница ужимается
+        # ЦЕЛЫМИ строками (текст записи не режется посреди слова), а offset
+        # следующей страницы равен числу ФАКТИЧЕСКИ отрендеренных строк.
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        if result.total == 0:
+            await self._bot.send_message(
+                chat_id=update.telegram_user_id,
+                text=messages.digest_empty_text(result.period, locale),
+            )
+            return
+        header = messages.digest_header(
+            messages.digest_period_label(result.period, locale),
+            result.period_start.strftime(RECORD_VIEW_DATE_FORMAT),
+            result.as_of.strftime(RECORD_VIEW_DATE_FORMAT),
+            locale,
+        )
+        counters_line = messages.digest_counters_line(result.counters, locale)
+        rows = [
+            messages.digest_row(
+                result.offset + position,
+                messages.record_label(item.record_type, item.task_completed, locale),
+                item.created_at.strftime(RECORD_VIEW_DATE_FORMAT),
+                _search_excerpt(item.text),
+                locale,
+            )
+            for position, item in enumerate(result.items, start=1)
+        ]
+
+        def build_text(row_count: int) -> str:
+            return f"{header}\n{counters_line}\n\n" + "\n".join(rows[:row_count])
+
+        # Одна строка (фрагмент ≤240) в лимит влезает всегда — ниже 1 не ужимаем.
+        rendered = len(rows)
+        while rendered > 1 and len(build_text(rendered)) > (
+            MAX_TELEGRAM_MESSAGE_LENGTH
+        ):
+            rendered -= 1
+        keyboard_rows = _show_button_rows(
+            result.items[:rendered], start=result.offset + 1
+        )
+        next_offset = result.offset + rendered
+        if next_offset < result.total:
+            as_of_unix = int(result.as_of.timestamp())
+            keyboard_rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=messages.digest_more_button(locale),
+                        callback_data=(
+                            f"digest:more:{result.period.value}:"
+                            f"{next_offset}:{as_of_unix}"
+                        ),
+                    )
+                ]
+            )
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=build_text(rendered),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+        )
+
     async def send_project_name_prompt(
         self,
         update: TelegramUpdate,
@@ -538,13 +624,14 @@ def _search_excerpt(text: str) -> str:
 
 def _show_button_rows(
     items: Sequence[SearchRecord | RecordView],
+    start: int = 1,
 ) -> list[list[InlineKeyboardButton]]:
     buttons = [
         InlineKeyboardButton(
             text=f"{number}",
             callback_data=f"show:{item.record_type.value}:{item.id}",
         )
-        for number, item in enumerate(items, start=1)
+        for number, item in enumerate(items, start=start)
     ]
     return [
         buttons[start : start + SHOW_BUTTONS_PER_ROW]

@@ -78,3 +78,28 @@ class RecordView:
     text: str = field(repr=False)
     created_at: datetime
     task_completed: bool | None
+
+
+class DigestPeriod(StrEnum):
+    """Календарный период сводки (закрытый список — часть callback-контракта)."""
+
+    WEEK = "week"
+    MONTH = "month"
+    HALF_YEAR = "half_year"
+    YEAR = "year"
+
+
+@dataclass(frozen=True)
+class DigestCounters:
+    """Счётчики записей периода по типам; задачи — с числом выполненных."""
+
+    notes: int
+    tasks: int
+    tasks_completed: int
+    ideas: int
+    decisions: int
+    questions: int
+
+    @property
+    def total(self) -> int:
+        return self.notes + self.tasks + self.ideas + self.decisions + self.questions
