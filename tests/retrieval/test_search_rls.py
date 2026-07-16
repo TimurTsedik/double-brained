@@ -19,6 +19,8 @@ from second_brain.slices.knowledge.adapters.persistence.models import (
     NoteModel,
     QuestionModel,
 )
+from second_brain.slices.reminders.adapters.persistence.models import ReminderModel
+from second_brain.slices.reminders.domain.entities import ReminderStatus
 from second_brain.slices.retrieval.adapters.persistence.models import (
     PendingSearchModeModel,
 )
@@ -141,6 +143,31 @@ async def _add_record(
     return record_id, source_id
 
 
+async def _add_reminder(
+    schema_engine: AsyncEngine,
+    access: AccessContext,
+    source_task_id: UUID,
+    *,
+    status: ReminderStatus = ReminderStatus.SENT,
+) -> None:
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            insert(ReminderModel).values(
+                id=uuid4(),
+                user_space_id=access.user_space_id,
+                remind_at=NOW,
+                text="alarm reminder",
+                status=status.value,
+                source_task_id=source_task_id,
+                send_attempts=0,
+                next_attempt_at=NOW,
+                created_at=NOW,
+                updated_at=NOW,
+                trace_id="1" * 32,
+            )
+        )
+
+
 async def _search(
     engine: AsyncEngine,
     access: AccessContext,
@@ -215,6 +242,50 @@ async def test_search_returns_all_typed_records_with_provenance_and_task_state(
         if result.record_type is SearchRecordType.TASK
     ] == [True, False]
     assert {result.match_quality for result in results} == {MatchQuality.SUBSTRING}
+
+
+@pytest.mark.asyncio
+async def test_completed_task_with_reminder_is_hidden_from_search(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # «Задача-будильник» («позвонить Ави в 11:53»): ЗАВЕРШЕНА и имеет
+    # напоминание (любого статуса) — после выполнения это шум, поиск её
+    # скрывает. Завершённая БЕЗ напоминания и незавершённая С напоминанием
+    # остаются видимыми.
+    alarm_done_id, _ = await _add_record(
+        schema_engine,
+        ACCESS_A,
+        TaskModel,
+        "avicall alarm done",
+        created_at=NOW,
+        task_status=TaskStatus.COMPLETED,
+    )
+    await _add_reminder(schema_engine, ACCESS_A, alarm_done_id)
+    plain_done_id, _ = await _add_record(
+        schema_engine,
+        ACCESS_A,
+        TaskModel,
+        "avicall plain done",
+        created_at=NOW + timedelta(minutes=1),
+        task_status=TaskStatus.COMPLETED,
+    )
+    alarm_open_id, _ = await _add_record(
+        schema_engine,
+        ACCESS_A,
+        TaskModel,
+        "avicall alarm open",
+        created_at=NOW + timedelta(minutes=2),
+        task_status=TaskStatus.INBOX,
+    )
+    await _add_reminder(schema_engine, ACCESS_A, alarm_open_id)
+
+    results = await _search(engine, ACCESS_A, "avicall")
+
+    by_id = {result.id: result for result in results}
+    assert alarm_done_id not in by_id
+    assert set(by_id) == {plain_done_id, alarm_open_id}
+    assert by_id[plain_done_id].task_completed is True
+    assert by_id[alarm_open_id].task_completed is False
 
 
 @pytest.mark.asyncio

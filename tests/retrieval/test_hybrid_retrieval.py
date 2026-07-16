@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from second_brain.bootstrap.schema import reset_prototype_schema
@@ -15,6 +15,8 @@ from second_brain.slices.identity.adapters.persistence.database import (
 from second_brain.slices.identity.adapters.persistence.models import User, UserSpace
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.knowledge.adapters.persistence.models import NoteModel
+from second_brain.slices.reminders.adapters.persistence.models import ReminderModel
+from second_brain.slices.reminders.domain.entities import ReminderStatus
 from second_brain.slices.retrieval.adapters.persistence.repository import (
     PostgresExactSearchWriter,
     PostgresSemanticIndexWriter,
@@ -42,6 +44,8 @@ from second_brain.slices.retrieval.domain.entities import (
     SearchRecordType,
     SemanticMatch,
 )
+from second_brain.slices.tasks.adapters.persistence.models import TaskModel
+from second_brain.slices.tasks.domain.entities import TaskStatus
 from tests.identity.conftest import IsolatedDatabase
 from tests.retrieval.embedding_fakes import FakeEmbeddingModel
 
@@ -515,6 +519,68 @@ async def _add_note(
     return record_id, source_id
 
 
+async def _add_task(
+    schema_engine: AsyncEngine,
+    access: AccessContext,
+    content: str,
+    *,
+    status: TaskStatus,
+) -> tuple[UUID, UUID]:
+    source_id = uuid4()
+    record_id = uuid4()
+    update_id = int(source_id.int % 9_000_000_000) + 1
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            insert(CaptureEventModel).values(
+                id=source_id,
+                user_space_id=access.user_space_id,
+                channel="telegram",
+                bot_id=100,
+                telegram_update_id=update_id,
+                telegram_message_id=update_id + 10_000_000_000,
+                raw_text=content,
+                received_at=NOW,
+                created_at=NOW,
+                trace_id=TRACE_ID,
+            )
+        )
+        await connection.execute(
+            insert(TaskModel).values(
+                id=record_id,
+                user_space_id=access.user_space_id,
+                source_capture_event_id=source_id,
+                title=content,
+                description=None,
+                status=status,
+                created_at=NOW,
+                updated_at=NOW,
+                trace_id=TRACE_ID,
+            )
+        )
+    return record_id, source_id
+
+
+async def _add_reminder(
+    schema_engine: AsyncEngine, access: AccessContext, source_task_id: UUID
+) -> None:
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            insert(ReminderModel).values(
+                id=uuid4(),
+                user_space_id=access.user_space_id,
+                remind_at=NOW,
+                text="alarm reminder",
+                status=ReminderStatus.SENT.value,
+                source_task_id=source_task_id,
+                send_attempts=0,
+                next_attempt_at=NOW,
+                created_at=NOW,
+                updated_at=NOW,
+                trace_id=TRACE_ID,
+            )
+        )
+
+
 def make_chunk(
     chunk_number: int, content: str, embedding: tuple[float, ...]
 ) -> IndexedChunk:
@@ -533,10 +599,11 @@ async def _store_chunks(
     record_id: UUID,
     capture_event_id: UUID,
     chunks: tuple[IndexedChunk, ...],
+    record_kind: SearchRecordType = SearchRecordType.NOTE,
 ) -> None:
     command = StoreSemanticChunksCommand(
         access_context=access,
-        record_kind=SearchRecordType.NOTE,
+        record_kind=record_kind,
         record_id=record_id,
         source_capture_event_id=capture_event_id,
         chunks=chunks,
@@ -674,3 +741,49 @@ async def test_hybrid_never_returns_another_user_space_even_when_closer(
     assert {chunk.record_id for chunk in bundle.chunks} == {own_id}
     assert {chunk.source_capture_event_id for chunk in bundle.chunks} == {own_capture}
     assert all("чужой" not in chunk.text for chunk in bundle.chunks)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_hides_completed_alarm_task_on_both_paths(
+    engine: AsyncEngine, schema_engine: AsyncEngine, seeded_spaces: None
+) -> None:
+    # «Задача-будильник»: ЗАВЕРШЕНА и имеет напоминание — не попадает в
+    # evidence ни лексическим (заголовок совпадает с вопросом), ни векторным
+    # (чанк = вектор вопроса) путём. Та же задача, пока она не завершена, —
+    # полноценный кандидат.
+    question = "постгрес"
+    base = await question_vector(question)
+    task_id, task_capture = await _add_task(
+        schema_engine,
+        ACCESS_A,
+        "постгрес задача с будильником",
+        status=TaskStatus.COMPLETED,
+    )
+    await _add_reminder(schema_engine, ACCESS_A, task_id)
+    await _store_chunks(
+        engine,
+        ACCESS_A,
+        record_id=task_id,
+        capture_event_id=task_capture,
+        chunks=(make_chunk(0, "чанк задачи с будильником", base),),
+        record_kind=SearchRecordType.TASK,
+    )
+
+    hidden = await retrieve_from_postgres(
+        engine, ACCESS_A, question, FakeEmbeddingModel()
+    )
+
+    assert hidden.chunks == ()
+
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            update(TaskModel)
+            .where(TaskModel.id == task_id)
+            .values(status=TaskStatus.INBOX)
+        )
+
+    reopened = await retrieve_from_postgres(
+        engine, ACCESS_A, question, FakeEmbeddingModel()
+    )
+
+    assert {chunk.record_id for chunk in reopened.chunks} == {task_id}

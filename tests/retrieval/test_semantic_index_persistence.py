@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, insert, select, text
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
@@ -25,6 +25,8 @@ from second_brain.slices.processing.domain.entities import (
     ProcessingRun,
     TranscriptionOutputType,
 )
+from second_brain.slices.reminders.adapters.persistence.models import ReminderModel
+from second_brain.slices.reminders.domain.entities import ReminderStatus
 from second_brain.slices.retrieval.adapters.persistence.models import (
     IndexingTargetModel,
     SemanticDocumentModel,
@@ -45,6 +47,8 @@ from second_brain.slices.retrieval.domain.entities import (
     SearchRecordType,
     SemanticMatch,
 )
+from second_brain.slices.tasks.adapters.persistence.models import TaskModel
+from second_brain.slices.tasks.domain.entities import TaskStatus
 from tests.identity.conftest import IsolatedDatabase
 
 NOW = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
@@ -153,6 +157,49 @@ async def add_capture(schema_engine: AsyncEngine, access: AccessContext) -> UUID
             )
         )
     return capture_event_id
+
+
+async def add_task(
+    schema_engine: AsyncEngine, access: AccessContext, *, status: TaskStatus
+) -> tuple[UUID, UUID]:
+    capture_event_id = await add_capture(schema_engine, access)
+    task_id = uuid4()
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            insert(TaskModel).values(
+                id=task_id,
+                user_space_id=access.user_space_id,
+                source_capture_event_id=capture_event_id,
+                title="alarm task",
+                description=None,
+                status=status,
+                created_at=NOW,
+                updated_at=NOW,
+                trace_id=TRACE_ID,
+            )
+        )
+    return task_id, capture_event_id
+
+
+async def add_reminder(
+    schema_engine: AsyncEngine, access: AccessContext, source_task_id: UUID
+) -> None:
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            insert(ReminderModel).values(
+                id=uuid4(),
+                user_space_id=access.user_space_id,
+                remind_at=NOW,
+                text="alarm reminder",
+                status=ReminderStatus.SENT.value,
+                source_task_id=source_task_id,
+                send_attempts=0,
+                next_attempt_at=NOW,
+                created_at=NOW,
+                updated_at=NOW,
+                trace_id=TRACE_ID,
+            )
+        )
 
 
 async def create_text_run(
@@ -557,6 +604,62 @@ async def test_search_similar_filters_stale_versions_and_models_before_ranking(
 
     assert [(match.record_id, match.text) for match in matches] == [
         (current_record, "current but farther")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_similar_hides_chunks_of_completed_task_with_reminder(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # «Задача-будильник»: ЗАВЕРШЕНА и имеет напоминание — её чанки скрыты из
+    # векторного поиска. Завершённая БЕЗ напоминания остаётся кандидатом, а та
+    # же задача, пока она не завершена, — снова видима.
+    alarm_task_id, alarm_capture = await add_task(
+        schema_engine, ACCESS_A, status=TaskStatus.COMPLETED
+    )
+    await add_reminder(schema_engine, ACCESS_A, alarm_task_id)
+    plain_task_id, plain_capture = await add_task(
+        schema_engine, ACCESS_A, status=TaskStatus.COMPLETED
+    )
+    await store_chunks(
+        engine,
+        chunks_command(
+            ACCESS_A,
+            record_id=alarm_task_id,
+            capture_event_id=alarm_capture,
+            chunks=(make_chunk(0, "alarm chunk", vector_of(1.0)),),
+            record_kind=SearchRecordType.TASK,
+        ),
+    )
+    await store_chunks(
+        engine,
+        chunks_command(
+            ACCESS_A,
+            record_id=plain_task_id,
+            capture_event_id=plain_capture,
+            chunks=(make_chunk(0, "plain chunk", vector_of(0.6, 0.8)),),
+            record_kind=SearchRecordType.TASK,
+        ),
+    )
+
+    matches = await search_similar(engine, ACCESS_A, vector_of(1.0), limit=10)
+
+    assert [(match.record_id, match.text) for match in matches] == [
+        (plain_task_id, "plain chunk")
+    ]
+
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            update(TaskModel)
+            .where(TaskModel.id == alarm_task_id)
+            .values(status=TaskStatus.INBOX)
+        )
+
+    reopened = await search_similar(engine, ACCESS_A, vector_of(1.0), limit=10)
+
+    assert [(match.record_id, match.text) for match in reopened] == [
+        (alarm_task_id, "alarm chunk"),
+        (plain_task_id, "plain chunk"),
     ]
 
 

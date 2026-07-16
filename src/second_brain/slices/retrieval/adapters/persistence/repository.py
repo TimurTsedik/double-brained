@@ -35,6 +35,7 @@ from second_brain.slices.knowledge.adapters.persistence.models import (
 from second_brain.slices.processing.adapters.persistence.models import (
     ProcessingRunModel,
 )
+from second_brain.slices.reminders.adapters.persistence.models import ReminderModel
 from second_brain.slices.retrieval.adapters.persistence.models import (
     IndexingTargetModel,
     PendingSearchModeModel,
@@ -138,7 +139,7 @@ class PostgresExactSearchWriter:
                 task_completed,
                 access_context.user_space_id,
                 query,
-            ),
+            ).where(~_completed_alarm_task()),
             _search_branch(
                 SearchRecordType.IDEA,
                 IdeaModel.id,
@@ -317,6 +318,17 @@ class PostgresSemanticIndexWriter:
     ) -> tuple[SemanticMatch, ...]:
         await _set_user_space_scope(self._session, access_context)
         distance = SemanticDocumentModel.embedding.cosine_distance(list(query_vector))
+        # Чанки завершённой «задачи-будильника» — такой же шум, как её строка
+        # в точном поиске: скрываем их из векторных кандидатов тем же правилом.
+        alarm_task_source = (
+            select(literal(1))
+            .where(
+                TaskModel.id == SemanticDocumentModel.source_record_id,
+                TaskModel.user_space_id == SemanticDocumentModel.user_space_id,
+                _completed_alarm_task(),
+            )
+            .exists()
+        )
         statement = (
             select(
                 SemanticDocumentModel.source_kind,
@@ -330,6 +342,10 @@ class PostgresSemanticIndexWriter:
                 SemanticDocumentModel.user_space_id == access_context.user_space_id,
                 SemanticDocumentModel.index_version == INDEX_VERSION,
                 SemanticDocumentModel.embedding_model == EMBEDDING_MODEL_NAME,
+                ~and_(
+                    SemanticDocumentModel.source_kind == SearchRecordType.TASK,
+                    alarm_task_source,
+                ),
             )
             .order_by(
                 distance,
@@ -622,6 +638,23 @@ def _digest_sources() -> tuple[_DigestSource, ...]:
             QuestionModel.created_at,
         ),
     )
+
+
+def _completed_alarm_task() -> ColumnElement[bool]:
+    """Завершённая «задача-будильник» («позвонить Ави в 11:53»): задача
+    COMPLETED, и на неё есть напоминание (любого статуса) — после выполнения
+    это шум, точный поиск и выдача памяти её скрывают. Единое правило для
+    обоих путей (FTS и вектор); предикат по user_space_id внутри EXISTS
+    повторяет RLS-границу."""
+    reminder_exists = (
+        select(literal(1))
+        .where(
+            ReminderModel.source_task_id == TaskModel.id,
+            ReminderModel.user_space_id == TaskModel.user_space_id,
+        )
+        .exists()
+    )
+    return and_(TaskModel.status == TaskStatus.COMPLETED, reminder_exists)
 
 
 def _search_branch(

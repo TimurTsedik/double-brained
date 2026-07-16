@@ -129,6 +129,7 @@ def is_documented_persistence_model_import(
         ): {
             "second_brain.slices.knowledge.adapters.persistence.models",
             "second_brain.slices.processing.adapters.persistence.models",
+            "second_brain.slices.reminders.adapters.persistence.models",
             "second_brain.slices.tasks.adapters.persistence.models",
             "second_brain.slices.tasks.domain.entities",
         },
