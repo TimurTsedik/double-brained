@@ -88,6 +88,45 @@ def test_voice_settings_have_local_defaults_and_optional_openrouter_key(
     assert settings.open_router_ai_key is None
 
 
+def _set_required_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://app@example")
+    monkeypatch.setenv("SCHEMA_DATABASE_URL", "postgresql+asyncpg://owner@example")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("INVITE_TOKEN_PEPPER", "pepper")
+    monkeypatch.setenv("INVITE_TOKEN_PEPPER_KEY_ID", "key-1")
+
+
+def test_panel_followup_defaults_to_five_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_environment(monkeypatch)
+    monkeypatch.delenv("PANEL_FOLLOWUP_SECONDS", raising=False)
+
+    assert Settings.from_environment().panel_followup_seconds == 5
+
+
+def test_panel_followup_reads_seconds_and_zero_means_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("PANEL_FOLLOWUP_SECONDS", "12")
+    assert Settings.from_environment().panel_followup_seconds == 12
+
+    monkeypatch.setenv("PANEL_FOLLOWUP_SECONDS", "0")
+    assert Settings.from_environment().panel_followup_seconds == 0
+
+
+@pytest.mark.parametrize("raw", ["-1", "abc", "1.5"])
+def test_panel_followup_rejects_invalid_values(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("PANEL_FOLLOWUP_SECONDS", raw)
+
+    with pytest.raises(RuntimeError, match="PANEL_FOLLOWUP_SECONDS"):
+        Settings.from_environment()
+
+
 def test_reset_command_requires_the_explicit_prototype_confirmation_flag() -> None:
     assert parse_args(["reset-db"]).confirm_prototype_reset is False
     assert parse_args(["reset-db", "--confirm-prototype-reset"]).confirm_prototype_reset

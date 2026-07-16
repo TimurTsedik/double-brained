@@ -40,6 +40,7 @@ async def run_local_polling(settings: Settings) -> None:
     engine = create_database_engine(settings.database_url)
     lock = PostgresPollerLock(engine)
     bot: Bot | None = None
+    poller: LocalPoller | None = None
     try:
         await assert_non_privileged_application_role(engine)
         bot = Bot(settings.telegram_bot_token)
@@ -77,11 +78,14 @@ async def run_local_polling(settings: Settings) -> None:
             ),
             processor,
             lock,
+            panel_followup_seconds=settings.panel_followup_seconds,
         )
         while True:
             await poller.run_once()
             await asyncio.sleep(1)
     finally:
+        if poller is not None:
+            await poller.shutdown()
         await lock.close()
         if bot is not None:
             await bot.session.close()

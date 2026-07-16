@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 
 DEFAULT_VOICE_STORAGE_ROOT = ".data/voice"
 DEFAULT_WHISPER_MODEL = "small"
+DEFAULT_PANEL_FOLLOWUP_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,9 @@ class Settings:
     )
     whisper_model: str = DEFAULT_WHISPER_MODEL
     open_router_ai_key: str | None = field(default=None, repr=False)
+    # Через сколько секунд после действия пользователя дослать панель с
+    # кнопками (0 = фича выключена).
+    panel_followup_seconds: int = DEFAULT_PANEL_FOLLOWUP_SECONDS
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -33,6 +37,9 @@ class Settings:
         )
         whisper_model = os.environ.get("WHISPER_MODEL") or DEFAULT_WHISPER_MODEL
         open_router_ai_key = os.environ.get("OPEN_ROUTER_AI_KEY") or None
+        panel_followup_seconds = _non_negative_int_environment(
+            "PANEL_FOLLOWUP_SECONDS", DEFAULT_PANEL_FOLLOWUP_SECONDS
+        )
         return cls(
             database_url=database_url,
             schema_database_url=schema_database_url,
@@ -42,6 +49,7 @@ class Settings:
             voice_storage_root=voice_storage_root,
             whisper_model=whisper_model,
             open_router_ai_key=open_router_ai_key,
+            panel_followup_seconds=panel_followup_seconds,
         )
 
 
@@ -49,4 +57,17 @@ def _required_environment(name: str) -> str:
     value = os.environ.get(name)
     if not value:
         raise RuntimeError(f"{name} must be configured")
+    return value
+
+
+def _non_negative_int_environment(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise RuntimeError(f"{name} must be a non-negative integer") from None
+    if value < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer")
     return value
