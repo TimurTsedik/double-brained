@@ -88,6 +88,75 @@ def test_bare_hour_at_end_of_text_is_accepted_in_english_too(
     assert instant == datetime(2026, 7, 17, 2, 0, tzinfo=UTC)
 
 
+def test_bug_a_clock_two_minutes_ahead_stays_today(
+    extractor: DateparserTimeExtractor,
+) -> None:
+    # BUG A (прод): «позвонить Ави в 11:53» в 11:51 локального создало
+    # напоминание на ЗАВТРА 11:53. Должно быть СЕГОДНЯ: 11:53 ещё впереди.
+    now = datetime(2026, 7, 16, 8, 51, tzinfo=UTC)  # 11:51 в Иерусалиме (+03)
+
+    instant = extractor.extract_due("позвонить Ави в 11:53", now, JERUSALEM)
+
+    assert instant == datetime(2026, 7, 16, 8, 53, tzinfo=UTC)  # сегодня 11:53
+
+
+def test_bug_b_dash_clock_is_time_of_day_not_year(
+    extractor: DateparserTimeExtractor,
+) -> None:
+    # BUG B (прод): «в 11-52» распарсилось как ГОД 2052. Тире-формат часов —
+    # обычная русская запись времени, нормализуется в 11:52.
+    now = datetime(2026, 7, 16, 8, 50, tzinfo=UTC)  # 11:50 в Иерусалиме
+
+    instant = extractor.extract_due("позвонить Ави в 11-52", now, JERUSALEM)
+
+    assert instant == datetime(2026, 7, 16, 8, 52, tzinfo=UTC)  # сегодня 11:52
+
+
+def test_bug_b_sanity_cap_rejects_far_future_instants(
+    extractor: DateparserTimeExtractor,
+) -> None:
+    # SANITY CAP: любой результат дальше 366 дней от now — абсурдный
+    # мис-парс как класс → None (страховка от «2052 года»).
+    instant = extractor.extract_due("встреча 20 июля 2028 в 9:00", NOW, JERUSALEM)
+
+    assert instant is None
+
+
+def test_bug_c_relative_minutes_are_recognized(
+    extractor: DateparserTimeExtractor,
+) -> None:
+    # BUG C (прод): «через 5 минут» не дало ничего — маркер знал часы, но не
+    # минуты.
+    instant = extractor.extract_due(
+        "Напомни мне позвонить Ави через 5 минут", NOW, JERUSALEM
+    )
+
+    assert instant == datetime(2026, 7, 16, 10, 5, tzinfo=UTC)
+
+
+def test_clock_one_minute_before_midnight_stays_today(
+    extractor: DateparserTimeExtractor,
+) -> None:
+    # Пин детерминированной сборки: 23:59 за минуту до полуночи — ещё СЕГОДНЯ.
+    now = datetime(2026, 7, 16, 20, 58, tzinfo=UTC)  # 23:58 в Иерусалиме
+
+    instant = extractor.extract_due("в 23:59", now, JERUSALEM)
+
+    assert instant == datetime(2026, 7, 16, 20, 59, tzinfo=UTC)  # сегодня 23:59
+
+
+def test_clock_already_past_rolls_to_tomorrow_after_midnight(
+    extractor: DateparserTimeExtractor,
+) -> None:
+    # Пин детерминированной сборки: «в 00:30» в 23:00 → ЗАВТРА 00:30.
+    now = datetime(2026, 7, 16, 20, 0, tzinfo=UTC)  # 23:00 в Иерусалиме
+
+    instant = extractor.extract_due("в 00:30", now, JERUSALEM)
+
+    # 17.07 00:30 (+03:00) = 16.07 21:30 UTC.
+    assert instant == datetime(2026, 7, 16, 21, 30, tzinfo=UTC)
+
+
 def test_m3_same_clock_time_in_different_space_timezones_differs_in_utc(
     extractor: DateparserTimeExtractor,
 ) -> None:

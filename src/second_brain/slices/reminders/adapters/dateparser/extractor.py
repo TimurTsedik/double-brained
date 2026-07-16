@@ -1,5 +1,5 @@
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from dateparser import parse as parse_date
@@ -7,14 +7,36 @@ from dateparser.search import search_dates
 
 # M2: принимаем совпадение ТОЛЬКО при явном маркере времени-суток в найденной
 # подстроке. Дата-без-времени («завтра», «20 июля») даёт None, иначе напомнили бы
-# в полночь/в текущий час. Регекс — дословно из спеки.
+# в полночь/в текущий час. Регекс — дословно из спеки + минуты (hotfix BUG C:
+# «через 5 минут» раньше отбрасывалось — маркер знал часы, но не минуты).
 _TIME_MARKER = re.compile(
     r"\d{1,2}[:.]\d{2}"
     r"|\bв\s*\d{1,2}\b"
     r"|\bat\s*\d"
-    r"|\d\s*(?:am|pm|утра|вечера|дня|ночи|ч|h)",
+    r"|\d\s*(?:am|pm|утра|вечера|дня|ночи|минут|мин|minutes|min|ч|h)",
     re.IGNORECASE,
 )
+
+# Hotfix BUG B: русская тире-запись часов «в 11-52» dateparser читал как ГОД
+# 2052. Нормализуем в «11:52» ДО парсинга — только при валидных часах/минутах.
+_DASH_CLOCK = re.compile(r"(?<=\bв\s)(\d{1,2})-(\d{2})\b", re.IGNORECASE)
+
+# Hotfix BUG A: dateparser с PREFER_DATES_FROM='future' решает «сегодня или
+# завтра» с точностью до ДНЯ и катит время-без-даты («в 11:53» в 11:51) на
+# завтра. Часы-минуты из совпадения извлекаем сами и мгновение строим сами;
+# dateparser остаётся только для поиска фразы и явных дат/относительных.
+_CLOCK = re.compile(
+    r"\b(?P<h>\d{1,2})(?:[:.](?P<m>\d{2}))?\s*(?P<ampm>am|pm)\b"
+    r"|\b(?P<h24>\d{1,2})[:.](?P<m24>\d{2})\b",
+    re.IGNORECASE,
+)
+
+# Служебные предлоги вокруг часов: не считаются «явной датой» в остатке фразы.
+_CONNECTIVES = re.compile(r"\b(?:в|во|at)\b", re.IGNORECASE)
+
+# SANITY CAP (hotfix BUG B, вторая линия): мгновение дальше 366 дней от now —
+# абсурдный мис-парс как класс («год 2052») → отвергается.
+_MAX_FUTURE_DRIFT = timedelta(days=366)
 
 # Голый час «в 9» / «at 9», который search_dates не распознаёт как время: берём
 # число и строим HH:00 сами (M6 — ближайшее будущее вхождение). Осознанно
@@ -37,6 +59,7 @@ class DateparserTimeExtractor:
         if len(text) > _MAX_TEXT_LENGTH or not any(ch.isdigit() for ch in text):
             return None
 
+        text = _normalize_dash_clock(text)
         zone = ZoneInfo(tz)
         now_local = now.astimezone(zone)
         # M3: RELATIVE_BASE — локальные «часы на стене» пространства; TIMEZONE
@@ -51,25 +74,107 @@ class DateparserTimeExtractor:
         found = search_dates(text, languages=_SETTINGS_LANGUAGES, settings=settings)
         marked = [match for match in (found or []) if _TIME_MARKER.search(match[0])]
         for matched_text, _ in marked:
-            # Переразбор найденной подстроки точнее, чем результат search_dates
-            # (напр. «tomorrow at 10am» → 10:00, а не час базы).
-            instant = parse_date(
-                matched_text, languages=_SETTINGS_LANGUAGES, settings=settings
-            )
+            instant = _instant_from_match(matched_text, now_local, zone, settings)
             if instant is None:
                 continue
-            instant = _localize(instant, zone)
-            if instant > now:
+            if instant > now and instant - now <= _MAX_FUTURE_DRIFT:
                 return instant.astimezone(UTC)
 
         if marked:
-            # Явное время нашлось, но всё в прошлом (напр. «вчера в 9») → None.
-            # НЕ падаем в fallback: прошлая дата задана намеренно (M6).
+            # Явное время нашлось, но всё в прошлом (напр. «вчера в 9») или за
+            # sanity cap → None. НЕ падаем в fallback: дата задана намеренно (M6).
             return None
 
         # Голый час без даты, который search_dates пропустил (напр. «в 9»):
         # ближайшее будущее HH:00 в зоне пространства (M6).
         return _bare_hour_instant(text, now_local, now)
+
+
+def _normalize_dash_clock(text: str) -> str:
+    """«в 11-52» → «в 11:52» — только при валидных часах (0-23) и минутах."""
+
+    def repl(match: re.Match[str]) -> str:
+        if int(match.group(1)) <= 23 and int(match.group(2)) <= 59:
+            return f"{match.group(1)}:{match.group(2)}"
+        return match.group(0)
+
+    return _DASH_CLOCK.sub(repl, text)
+
+
+def _instant_from_match(
+    matched_text: str,
+    now_local: datetime,
+    zone: ZoneInfo,
+    settings: dict[str, object],
+) -> datetime | None:
+    """Мгновение из совпадения: часы строим сами, dateparser — только даты.
+
+    Совпадение с явными часами-минутами (HH:MM или H am/pm) собирается
+    детерминированно (см. ``_clock_instant``). Остальное (относительные
+    «через 2 часа», «вчера в 9») — переразбор dateparser'ом, как раньше:
+    там RELATIVE_BASE даёт предсказуемый результат.
+    """
+    clock = _CLOCK.search(matched_text)
+    if clock is not None:
+        parts = _clock_parts(clock)
+        if parts is not None:
+            hour, minute = parts
+            return _clock_instant(
+                matched_text, clock, hour, minute, now_local, zone, settings
+            )
+    instant = parse_date(matched_text, languages=_SETTINGS_LANGUAGES, settings=settings)
+    if instant is None:
+        return None
+    return _localize(instant, zone)
+
+
+def _clock_parts(clock: re.Match[str]) -> tuple[int, int] | None:
+    """(час, минута) из совпадения ``_CLOCK``; None при невалидных значениях."""
+    if clock.group("ampm") is not None:
+        hour = int(clock.group("h"))
+        minute = int(clock.group("m") or 0)
+        if not 1 <= hour <= 12 or minute > 59:
+            return None
+        hour = hour % 12 + (12 if clock.group("ampm").lower() == "pm" else 0)
+        return hour, minute
+    hour = int(clock.group("h24"))
+    minute = int(clock.group("m24"))
+    if hour > 23 or minute > 59:
+        return None
+    return hour, minute
+
+
+def _clock_instant(
+    matched_text: str,
+    clock: re.Match[str],
+    hour: int,
+    minute: int,
+    now_local: datetime,
+    zone: ZoneInfo,
+    settings: dict[str, object],
+) -> datetime | None:
+    """Детерминированная сборка мгновения для совпадения с часами (hotfix BUG A).
+
+    Если в фразе кроме часов есть явная дата («завтра», «20 июля») — день берём
+    из dateparser, время ставим своё. Если фраза — только время («в 11:53») —
+    сегодня в HH:MM, а если уже прошло, то завтра. Никакого day-roll от
+    dateparser: сегодня-или-завтра решаем сами по часам.
+    """
+    rest = matched_text[: clock.start()] + matched_text[clock.end() :]
+    rest = _CONNECTIVES.sub(" ", rest)
+    has_explicit_date = any(ch.isalnum() for ch in rest)
+    if has_explicit_date:
+        parsed = parse_date(
+            matched_text, languages=_SETTINGS_LANGUAGES, settings=settings
+        )
+        if parsed is None:
+            return None
+        day = _localize(parsed, zone).astimezone(zone).date()
+        return datetime.combine(day, time(hour, minute), tzinfo=zone)
+    candidate = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now_local:
+        candidate += timedelta(days=1)
+    return candidate
 
 
 def _bare_hour_instant(
