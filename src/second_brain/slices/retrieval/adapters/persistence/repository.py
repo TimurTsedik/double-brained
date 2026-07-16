@@ -15,11 +15,12 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    true,
     union_all,
 )
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.orm import InstrumentedAttribute, aliased
 from sqlalchemy.sql import Select
 
 from second_brain.slices.identity.application.contracts import AccessContext
@@ -47,6 +48,7 @@ from second_brain.slices.retrieval.application.contracts import (
 from second_brain.slices.retrieval.domain.entities import (
     IndexingTarget,
     MatchQuality,
+    RecordView,
     SearchRecord,
     SearchRecordType,
     SemanticMatch,
@@ -346,6 +348,120 @@ class PostgresSemanticIndexWriter:
             )
             for row in rows
         )
+
+
+_KNOWLEDGE_MODELS: dict[
+    SearchRecordType,
+    type[NoteModel] | type[IdeaModel] | type[DecisionModel] | type[QuestionModel],
+] = {
+    SearchRecordType.NOTE: NoteModel,
+    SearchRecordType.IDEA: IdeaModel,
+    SearchRecordType.DECISION: DecisionModel,
+    SearchRecordType.QUESTION: QuestionModel,
+}
+
+
+class PostgresRecordViewReader:
+    """Читает каноническую запись по (типу, uuid, пространству) под RLS и считает
+    кандидатов «похожего» по чанкам ТЕКУЩИХ embedding_model+INDEX_VERSION."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def read_record(
+        self,
+        access_context: AccessContext,
+        record_kind: SearchRecordType,
+        record_id: UUID,
+    ) -> RecordView | None:
+        await _set_user_space_scope(self._session, access_context)
+        if record_kind is SearchRecordType.TASK:
+            task_row = (
+                await self._session.execute(
+                    select(
+                        TaskModel.title, TaskModel.created_at, TaskModel.status
+                    ).where(
+                        TaskModel.id == record_id,
+                        TaskModel.user_space_id == access_context.user_space_id,
+                    )
+                )
+            ).one_or_none()
+            if task_row is None:
+                return None
+            return RecordView(
+                id=record_id,
+                record_type=record_kind,
+                text=task_row.title,
+                created_at=task_row.created_at,
+                task_completed=task_row.status == TaskStatus.COMPLETED,
+            )
+        model = _KNOWLEDGE_MODELS[record_kind]
+        row = (
+            await self._session.execute(
+                select(model.text, model.created_at).where(
+                    model.id == record_id,
+                    model.user_space_id == access_context.user_space_id,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        return RecordView(
+            id=record_id,
+            record_type=record_kind,
+            text=row.text,
+            created_at=row.created_at,
+            task_completed=None,
+        )
+
+    async def related_candidates(
+        self,
+        access_context: AccessContext,
+        record_kind: SearchRecordType,
+        record_id: UUID,
+        limit: int,
+    ) -> tuple[tuple[SearchRecordType, UUID], ...]:
+        # Вектор запроса — СОБСТВЕННЫЕ чанки записи (без нового вызова эмбеддера),
+        # только текущих embedding_model+INDEX_VERSION: нет таких чанков — cross
+        # join пуст и секции «похожего» не будет. Ранжирование детерминированное:
+        # минимальная дистанция по всем своим чанкам (дедуп до записей через
+        # GROUP BY), затем kind и id.
+        await _set_user_space_scope(self._session, access_context)
+        own_chunks = (
+            select(SemanticDocumentModel.embedding)
+            .where(
+                SemanticDocumentModel.user_space_id == access_context.user_space_id,
+                SemanticDocumentModel.source_kind == record_kind,
+                SemanticDocumentModel.source_record_id == record_id,
+                SemanticDocumentModel.embedding_model == EMBEDDING_MODEL_NAME,
+                SemanticDocumentModel.index_version == INDEX_VERSION,
+            )
+            .subquery()
+        )
+        neighbour = aliased(SemanticDocumentModel)
+        distance = neighbour.embedding.cosine_distance(own_chunks.c.embedding)
+        statement = (
+            select(neighbour.source_kind, neighbour.source_record_id)
+            .join(own_chunks, true())
+            .where(
+                neighbour.user_space_id == access_context.user_space_id,
+                neighbour.embedding_model == EMBEDDING_MODEL_NAME,
+                neighbour.index_version == INDEX_VERSION,
+                or_(
+                    neighbour.source_kind != record_kind,
+                    neighbour.source_record_id != record_id,
+                ),
+            )
+            .group_by(neighbour.source_kind, neighbour.source_record_id)
+            .order_by(
+                func.min(distance),
+                neighbour.source_kind,
+                neighbour.source_record_id,
+            )
+            .limit(limit)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return tuple((row.source_kind, row.source_record_id) for row in rows)
 
 
 def _search_branch(

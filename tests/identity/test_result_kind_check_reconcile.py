@@ -104,3 +104,44 @@ async def test_initialize_reconciles_language_kinds_on_existing_db(
             text(f"SELECT result_kind FROM {table} ORDER BY update_id")
         )
     assert set(stored.all()) == {"language_prompt_shown", "language_selected"}
+
+
+@pytest.mark.asyncio
+async def test_initialize_reconciles_record_shown_on_existing_db(
+    isolated_database: IsolatedDatabase, schema_engine: AsyncEngine
+) -> None:
+    schema = isolated_database.schema
+    table = f'"{schema}".telegram_update_receipts'
+
+    # Живая база до слайса «показать целиком»: CHECK без record_shown.
+    async with schema_engine.begin() as connection:
+        await connection.execute(text(f"DELETE FROM {table}"))
+        await connection.execute(
+            text(
+                f"ALTER TABLE {table} "
+                "DROP CONSTRAINT ck_telegram_update_receipts_result_kind"
+            )
+        )
+        await connection.execute(
+            text(
+                f"ALTER TABLE {table} "
+                "ADD CONSTRAINT ck_telegram_update_receipts_result_kind "
+                "CHECK (result_kind IN ('captured', 'ignored'))"
+            )
+        )
+
+    await initialize_identity_schema(schema_engine, schema)
+
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            text(
+                f"INSERT INTO {table} "
+                "(bot_id, update_id, result_kind, trace_id, created_at) "
+                "VALUES (:bot, :upd, 'record_shown', :trace, :ts)"
+            ),
+            {"bot": 1, "upd": 20, "trace": "c" * 32, "ts": TS},
+        )
+        stored = await connection.scalar(
+            text(f"SELECT result_kind FROM {table} WHERE bot_id = 1 AND update_id = 20")
+        )
+    assert stored == "record_shown"

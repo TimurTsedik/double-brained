@@ -12,6 +12,7 @@ from second_brain.bootstrap.memory_ask_in_transaction import MemoryAskInTransact
 from second_brain.bootstrap.project_context_in_transaction import (
     ProjectContextInTransaction,
 )
+from second_brain.bootstrap.record_view_in_transaction import RecordViewInTransaction
 from second_brain.bootstrap.settings import Settings
 from second_brain.bootstrap.task_capture_in_transaction import TaskCaptureInTransaction
 from second_brain.bootstrap.voice_capture_in_transaction import (
@@ -63,6 +64,7 @@ async def run_local_polling(settings: Settings) -> None:
             bot_username=bot_user.username,
             reminder_ack_port=task_capture,
             contact_port=ContactIntakeInTransaction(),
+            record_view_port=RecordViewInTransaction(),
         )
         poller = LocalPoller(
             AiogramGateway(

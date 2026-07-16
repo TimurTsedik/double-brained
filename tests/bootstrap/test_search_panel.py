@@ -510,7 +510,13 @@ async def test_aiogram_gateway_sends_compact_typed_search_results() -> None:
     assert "6. ❓ Вопрос\nВопрос" in message["text"]
     assert "parse_mode" not in message
     markup = message["reply_markup"]
-    assert [button.callback_data for button in markup.inline_keyboard[0]] == [
+    # Номерные кнопки «1…N» открывают записи целиком; «Искать ещё» — последний ряд.
+    number_buttons = [button for row in markup.inline_keyboard[:-1] for button in row]
+    assert [button.text for button in number_buttons] == ["1", "2", "3", "4", "5", "6"]
+    assert [button.callback_data for button in number_buttons] == [
+        f"show:{item.record_type.value}:{item.id}" for item in result.items
+    ]
+    assert [button.callback_data for button in markup.inline_keyboard[-1]] == [
         "search:prompt"
     ]
 

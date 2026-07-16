@@ -9,7 +9,10 @@ from second_brain.slices.identity.application.local_updates import (
     UpdateResult,
 )
 from second_brain.slices.projects.application.contracts import ProjectPanelResult
-from second_brain.slices.retrieval.application.contracts import SearchPanelResult
+from second_brain.slices.retrieval.application.contracts import (
+    RecordViewResult,
+    SearchPanelResult,
+)
 from second_brain.slices.tasks.application.contracts import TaskPanelResult
 
 
@@ -75,6 +78,12 @@ class TelegramGateway(Protocol):
         self,
         update: TelegramUpdate,
         result: SearchPanelResult,
+    ) -> None: ...
+
+    async def send_record_view(
+        self,
+        update: TelegramUpdate,
+        result: RecordViewResult,
     ) -> None: ...
 
     async def send_project_name_prompt(
@@ -280,6 +289,19 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
+            if result.kind is AcknowledgementKind.RECORD_SHOWN and getattr(
+                result, "fresh", True
+            ):
+                record_view = getattr(result, "record_view", None)
+                if record_view is None:
+                    raise RuntimeError("fresh record show did not return a record view")
+                while True:
+                    try:
+                        await self._gateway.send_record_view(update, record_view)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             if result.kind in {
                 AcknowledgementKind.PROJECT_NAME_MODE_SET,
                 AcknowledgementKind.PROJECT_NAME_REQUIRED,
@@ -382,6 +404,7 @@ class LocalPoller:
                 AcknowledgementKind.SEARCH_MODE_CANCELLED,
                 AcknowledgementKind.SEARCH_QUERY_REQUIRED,
                 AcknowledgementKind.SEARCH_COMPLETED,
+                AcknowledgementKind.RECORD_SHOWN,
                 AcknowledgementKind.PROJECTS_LISTED,
                 AcknowledgementKind.PROJECT_NAME_MODE_SET,
                 AcknowledgementKind.PROJECT_NAME_REQUIRED,

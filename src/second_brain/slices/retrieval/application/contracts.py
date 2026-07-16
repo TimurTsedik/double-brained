@@ -10,9 +10,12 @@ from second_brain.slices.identity.application.contracts import (
 from second_brain.slices.retrieval.domain.entities import (
     EvidenceBundle,
     IndexedChunk,
-    SearchRecordType,
 )
+from second_brain.slices.retrieval.domain.entities import RecordView as RecordView
 from second_brain.slices.retrieval.domain.entities import SearchRecord as SearchRecord
+from second_brain.slices.retrieval.domain.entities import (
+    SearchRecordType as SearchRecordType,
+)
 
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 EMBEDDING_DIMENSIONS = 768
@@ -94,6 +97,34 @@ class MemoryRetrievalPort(Protocol):
     """Public retrieval contract consumed by the future memory slice."""
 
     async def retrieve(self, command: RetrieveMemoryCommand) -> EvidenceBundle: ...
+
+
+@dataclass(frozen=True)
+class RecordViewResult:
+    # Полный текст записи и «похожее» — transient-payload показа: текст записей
+    # не должен просочиться в repr/логи.
+    record: RecordView = field(repr=False)
+    related: tuple[RecordView, ...] = field(repr=False)
+
+
+class RecordViewPort(Protocol):
+    """Показ записи целиком + «похожее по смыслу» внутри update-транзакции."""
+
+    async def read_record_full(
+        self,
+        access_context: AccessContext,
+        record_type: SearchRecordType,
+        record_id: UUID,
+        transaction: UpdateTransaction,
+    ) -> RecordView | None: ...
+
+    async def related_records(
+        self,
+        access_context: AccessContext,
+        record_type: SearchRecordType,
+        record_id: UUID,
+        transaction: UpdateTransaction,
+    ) -> tuple[RecordView, ...]: ...
 
 
 class ExactSearchPort(Protocol):

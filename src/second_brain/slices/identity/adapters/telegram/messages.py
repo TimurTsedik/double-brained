@@ -11,7 +11,10 @@ RU-значения совпадают ДОСЛОВНО с прежними ст
 
 from second_brain.shared.i18n import Locale
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
-from second_brain.slices.retrieval.application.contracts import SearchRecord
+from second_brain.slices.retrieval.application.contracts import (
+    SearchRecord,
+    SearchRecordType,
+)
 
 # Единый словарь строк: ключ → {Locale.RU: ..., Locale.EN: ...}. Тесты полноты
 # итерируют именно по нему (каждый ключ — оба языка, паритет плейсхолдеров).
@@ -133,6 +136,16 @@ CATALOG: dict[str, dict[Locale, str]] = {
     "search_label.idea": {Locale.RU: "💡 Идея", Locale.EN: "💡 Idea"},
     "search_label.decision": {Locale.RU: "⚖️ Решение", Locale.EN: "⚖️ Decision"},
     "search_label.question": {Locale.RU: "❓ Вопрос", Locale.EN: "❓ Question"},
+    # --- показ записи целиком ---
+    # Заголовок открытой записи: метка типа + дата в tz пространства.
+    "record_view.header": {
+        Locale.RU: "{label} · {date}",
+        Locale.EN: "{label} · {date}",
+    },
+    "record_view.related_header": {
+        Locale.RU: "🧬 Похожее по смыслу:",
+        Locale.EN: "🧬 Similar in meaning:",
+    },
     # --- проекты: промпт названия ---
     "project_name_prompt.required": {
         Locale.RU: "Название не может быть пустым. Напишите название проекта.",
@@ -376,15 +389,27 @@ def search_again_button(locale: Locale) -> str:
 
 
 def search_label(record: SearchRecord, locale: Locale) -> str:
-    record_type = record.record_type.value
-    if record_type == "task":
-        key = (
-            "search_label.task_completed"
-            if record.task_completed
-            else ("search_label.task")
-        )
+    return record_label(record.record_type, record.task_completed, locale)
+
+
+def record_label(
+    record_type: SearchRecordType, task_completed: bool | None, locale: Locale
+) -> str:
+    if record_type is SearchRecordType.TASK:
+        key = "search_label.task_completed" if task_completed else ("search_label.task")
         return _text(key, locale)
-    return _text(f"search_label.{record_type}", locale)
+    return _text(f"search_label.{record_type.value}", locale)
+
+
+# --- показ записи целиком ---
+
+
+def record_view_header(label: str, date: str, locale: Locale) -> str:
+    return _text("record_view.header", locale).format(label=label, date=date)
+
+
+def related_section_header(locale: Locale) -> str:
+    return _text("record_view.related_header", locale)
 
 
 # --- память ---

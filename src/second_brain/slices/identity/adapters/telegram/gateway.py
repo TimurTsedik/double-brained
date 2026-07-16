@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import datetime
 
 from aiogram import Bot
@@ -14,7 +15,12 @@ from second_brain.slices.identity.application.contracts import (
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
 from second_brain.slices.projects.application.contracts import ProjectPanelResult
-from second_brain.slices.retrieval.application.contracts import SearchPanelResult
+from second_brain.slices.retrieval.application.contracts import (
+    RecordView,
+    RecordViewResult,
+    SearchPanelResult,
+    SearchRecord,
+)
 from second_brain.slices.tasks.application.contracts import TaskPanelResult
 
 MAX_TASK_TITLE_LENGTH = 160
@@ -22,6 +28,10 @@ MAX_SEARCH_EXCERPT_LENGTH = 240
 MAX_PROJECT_BUTTON_LENGTH = 48
 MAX_PROJECT_DISPLAY_LENGTH = 160
 REMINDER_WHEN_FORMAT = "%d.%m.%Y %H:%M"
+RECORD_VIEW_DATE_FORMAT = "%d.%m.%Y"
+# Telegram-лимит одного сообщения; сплит считает ВЕСЬ исходящий текст.
+MAX_TELEGRAM_MESSAGE_LENGTH = 4096
+SHOW_BUTTONS_PER_ROW = 5
 
 
 class AiogramGateway:
@@ -287,20 +297,58 @@ class AiogramGateway:
             )
         else:
             text = messages.search_panel_empty(locale)
+        # Номерные кнопки «1…N» открывают запись целиком (show:тип:uuid) — для
+        # ВСЕХ результатов: открытие даёт ещё и «похожее», это ценно всегда.
+        keyboard_rows = _show_button_rows(result.items)
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=messages.search_again_button(locale),
+                    callback_data="search:prompt",
+                )
+            ]
+        )
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
             text=text,
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text=messages.search_again_button(locale),
-                            callback_data="search:prompt",
-                        )
-                    ]
-                ]
-            ),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
         )
+
+    async def send_record_view(
+        self, update: TelegramUpdate, result: RecordViewResult
+    ) -> None:
+        # Полный текст записи уходит лично вызывающему и нигде не логируется.
+        # Сплит считает весь исходящий текст против лимита; секция «похожего»
+        # и её кнопки — только на последней части.
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        record = result.record
+        header = messages.record_view_header(
+            messages.record_label(record.record_type, record.task_completed, locale),
+            record.created_at.strftime(RECORD_VIEW_DATE_FORMAT),
+            locale,
+        )
+        parts = _split_outgoing_text(f"{header}\n\n{record.text}")
+        related_section = _related_section(result.related, locale)
+        if related_section is not None:
+            combined = f"{parts[-1]}\n\n{related_section}"
+            if len(combined) <= MAX_TELEGRAM_MESSAGE_LENGTH:
+                parts[-1] = combined
+            else:
+                parts.append(related_section)
+        for part in parts[:-1]:
+            await self._bot.send_message(chat_id=update.telegram_user_id, text=part)
+        if result.related:
+            await self._bot.send_message(
+                chat_id=update.telegram_user_id,
+                text=parts[-1],
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=_show_button_rows(result.related)
+                ),
+            )
+            return
+        await self._bot.send_message(chat_id=update.telegram_user_id, text=parts[-1])
 
     async def send_project_name_prompt(
         self,
@@ -486,6 +534,57 @@ def _search_excerpt(text: str) -> str:
     if len(compact) <= MAX_SEARCH_EXCERPT_LENGTH:
         return compact
     return f"{compact[: MAX_SEARCH_EXCERPT_LENGTH - 1]}…"
+
+
+def _show_button_rows(
+    items: Sequence[SearchRecord | RecordView],
+) -> list[list[InlineKeyboardButton]]:
+    buttons = [
+        InlineKeyboardButton(
+            text=f"{number}",
+            callback_data=f"show:{item.record_type.value}:{item.id}",
+        )
+        for number, item in enumerate(items, start=1)
+    ]
+    return [
+        buttons[start : start + SHOW_BUTTONS_PER_ROW]
+        for start in range(0, len(buttons), SHOW_BUTTONS_PER_ROW)
+    ]
+
+
+def _related_section(related: tuple[RecordView, ...], locale: Locale) -> str | None:
+    # Нет вектора или соседей — секции просто нет, без объяснений.
+    if not related:
+        return None
+    blocks = [
+        f"{number}. "
+        f"{messages.record_label(item.record_type, item.task_completed, locale)}\n"
+        f"{_search_excerpt(item.text)}"
+        for number, item in enumerate(related, start=1)
+    ]
+    return messages.related_section_header(locale) + "\n\n" + "\n\n".join(blocks)
+
+
+def _split_outgoing_text(text: str) -> list[str]:
+    """Режет исходящий текст на части ≤4096 по границе строки/слова.
+
+    Патологический токен длиннее лимита режется жёстко: гарантия доставки
+    выше красоты.
+    """
+    parts: list[str] = []
+    remaining = text
+    while len(remaining) > MAX_TELEGRAM_MESSAGE_LENGTH:
+        window = remaining[: MAX_TELEGRAM_MESSAGE_LENGTH + 1]
+        cut = max(window.rfind("\n"), window.rfind(" "))
+        if cut < 1:
+            parts.append(remaining[:MAX_TELEGRAM_MESSAGE_LENGTH])
+            remaining = remaining[MAX_TELEGRAM_MESSAGE_LENGTH:]
+            continue
+        parts.append(remaining[:cut])
+        remaining = remaining[cut + 1 :]
+    if remaining:
+        parts.append(remaining)
+    return parts
 
 
 def _project_button_text(name: str, current: bool) -> str:

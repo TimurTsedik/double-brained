@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -45,7 +46,10 @@ from second_brain.slices.reminders.application.contracts import ReminderAckReade
 from second_brain.slices.retrieval.application.contracts import (
     ConsumeSearchQueryCommand,
     ExactSearchPort,
+    RecordViewPort,
+    RecordViewResult,
     SearchPanelResult,
+    SearchRecordType,
     SetAwaitingSearchCommand,
 )
 from second_brain.slices.tasks.application.contracts import (
@@ -60,6 +64,14 @@ from second_brain.slices.tasks.application.contracts import (
 
 MAX_ENROLLMENT_ATTEMPTS = 5
 ENROLLMENT_ATTEMPT_WINDOW = timedelta(minutes=15)
+
+# Строгий парс callback'а «показать целиком»: ТОЛЬКО show:(тип):(uuid, нижний
+# регистр). Любой иной show:* гасится до любой другой обработки (максимум 50
+# байт — в 64-байтовый лимит Telegram влезает).
+_SHOW_CALLBACK_PATTERN = re.compile(
+    r"show:(note|task|idea|decision|question):"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+)
 
 
 class AcknowledgementKind(StrEnum):
@@ -76,6 +88,7 @@ class AcknowledgementKind(StrEnum):
     SEARCH_MODE_CANCELLED = "search_mode_cancelled"
     SEARCH_MODE_SET = "search_mode_set"
     SEARCH_QUERY_REQUIRED = "search_query_required"
+    RECORD_SHOWN = "record_shown"
     PROJECTS_LISTED = "projects_listed"
     PROJECT_NAME_MODE_SET = "project_name_mode_set"
     PROJECT_NAME_REQUIRED = "project_name_required"
@@ -114,6 +127,9 @@ class UpdateResult:
     # Имя только что сохранённого контакта — transient-payload для ack
     # «📇 Контакт сохранён: {name}» (PII: имя вне repr/логов).
     contact_name: str | None = field(default=None, repr=False)
+    # Открытая запись + «похожее» (полный текст — вне repr/логов): живёт только
+    # в памяти свежего прохода, replay дубля payload'а не получает.
+    record_view: RecordViewResult | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -124,6 +140,7 @@ class _TransientUpdatePayload:
     invite_link: str | None = None
     reminder_when: datetime | None = None
     contact_name: str | None = None
+    record_view: RecordViewResult | None = None
 
 
 class LocalUpdateProcessor:
@@ -143,6 +160,7 @@ class LocalUpdateProcessor:
         bot_username: str | None = None,
         reminder_ack_port: ReminderAckReader | None = None,
         contact_port: ContactIntakePort | None = None,
+        record_view_port: RecordViewPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -158,6 +176,7 @@ class LocalUpdateProcessor:
         self._memory_ask_port = memory_ask_port
         self._reminder_ack_port = reminder_ack_port
         self._contact_port = contact_port
+        self._record_view_port = record_view_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -185,6 +204,7 @@ class LocalUpdateProcessor:
             invite_link=None if receipt.existing else payload.invite_link,
             reminder_when=None if receipt.existing else payload.reminder_when,
             contact_name=None if receipt.existing else payload.contact_name,
+            record_view=None if receipt.existing else payload.record_view,
         )
 
     async def _process_new(
@@ -372,6 +392,19 @@ class LocalUpdateProcessor:
         now: datetime,
         payload: _TransientUpdatePayload,
     ) -> str:
+        # show:* принимается ТОЛЬКО в строгой форме show:(тип):(uuid); любой иной
+        # show:* — IGNORED до любой другой обработки (спуф не отличим от мусора).
+        show_match = (
+            _SHOW_CALLBACK_PATTERN.fullmatch(update.callback_data)
+            if update.callback_data is not None
+            else None
+        )
+        if (
+            update.callback_data is not None
+            and update.callback_data.startswith("show:")
+            and show_match is None
+        ):
+            return AcknowledgementKind.IGNORED
         selections = {
             "capture:note": "note",
             "capture:task": "task",
@@ -409,6 +442,7 @@ class LocalUpdateProcessor:
             }
             and not is_task_completion
             and not is_project_selection
+            and show_match is None
         ):
             return AcknowledgementKind.IGNORED
         if update.telegram_user_id is None:
@@ -630,6 +664,25 @@ class LocalUpdateProcessor:
                     transaction,
                 )
             return AcknowledgementKind.TASK_COMPLETED
+        if show_match is not None:
+            if self._record_view_port is None:
+                return AcknowledgementKind.IGNORED
+            # Тип из callback'а сам по себе не доверенный: запись читается строго
+            # по тройке (тип, uuid, пространство вызывающего) под RLS. Чужой /
+            # несуществующий uuid → IGNORED: callback отвечен, ни одного
+            # сообщения — поведение неотличимо от мусорного callback'а.
+            record_type = SearchRecordType(show_match.group(1))
+            record_id = UUID(show_match.group(2))
+            record = await self._record_view_port.read_record_full(
+                access_context, record_type, record_id, transaction
+            )
+            if record is None:
+                return AcknowledgementKind.IGNORED
+            related = await self._record_view_port.related_records(
+                access_context, record_type, record_id, transaction
+            )
+            payload.record_view = RecordViewResult(record=record, related=related)
+            return AcknowledgementKind.RECORD_SHOWN
         if self._task_mode_port is None:
             return AcknowledgementKind.IGNORED
         if self._exact_search_port is not None:

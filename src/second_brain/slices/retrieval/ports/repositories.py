@@ -9,6 +9,7 @@ from second_brain.slices.retrieval.application.contracts import (
 )
 from second_brain.slices.retrieval.domain.entities import (
     IndexingTarget,
+    RecordView,
     SearchRecord,
     SearchRecordType,
     SemanticMatch,
@@ -53,3 +54,20 @@ class SemanticIndexStore(Protocol):
         query_vector: tuple[float, ...],
         limit: int,
     ) -> tuple[SemanticMatch, ...]: ...
+
+
+class RecordViewStore(Protocol):
+    async def read_record(
+        self,
+        access_context: AccessContext,
+        record_kind: SearchRecordType,
+        record_id: UUID,
+    ) -> RecordView | None: ...
+
+    async def related_candidates(
+        self,
+        access_context: AccessContext,
+        record_kind: SearchRecordType,
+        record_id: UUID,
+        limit: int,
+    ) -> tuple[tuple[SearchRecordType, UUID], ...]: ...

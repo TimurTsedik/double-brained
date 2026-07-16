@@ -67,3 +67,14 @@ class SearchRecord:
     created_at: datetime
     task_completed: bool | None
     match_quality: MatchQuality
+
+
+@dataclass(frozen=True)
+class RecordView:
+    """Каноническая запись для показа целиком (и как элемент «похожего»)."""
+
+    id: UUID
+    record_type: SearchRecordType
+    text: str = field(repr=False)
+    created_at: datetime
+    task_completed: bool | None
