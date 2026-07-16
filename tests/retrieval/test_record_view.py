@@ -272,7 +272,11 @@ async def test_related_ranks_by_min_distance_across_own_chunks_and_dedupes(
             ACCESS_A,
             record_id=farthest_id,
             capture_event_id=capture,
-            chunks=(make_chunk(0, "farthest", vector_of(-1.0)),),
+            # Отрицателен к ОБОИМ чанкам показанной записи: min-дистанция ~1.7 —
+            # строго дальше «дальней» (1.0). Прежний (-1,0,…) был ортогонален
+            # второму чанку → min ровно 1.0 == «дальняя», и порядок решала
+            # лотерея случайных UUID (ловилось только на CI).
+            chunks=(make_chunk(0, "farthest", vector_of(-0.7, -0.7)),),
         ),
     )
 
