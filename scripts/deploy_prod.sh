@@ -9,10 +9,15 @@
 # run can never produce a restart-loop.
 #
 # It pulls the requested image, (re)starts postgres, verifies the role exists,
-# then brings up all services and waits for them to become healthy.
-# It never runs init-db, never touches the ./data volume, and never logs secrets.
-# Schema-adding releases need a manual init-db activation first — see
-# "Schema-changing releases (production)" in README.md.
+# then does a short cutover: stop polling+worker, reconcile the schema with
+# `init-db` (idempotent, ADD-only), and bring everything back up on the new image.
+# The stop is required — init-db briefly REVOKEs and re-GRANTs the app role's
+# privileges, so a running bot would hit permission errors mid-reconcile. Running
+# init-db on EVERY deploy means a schema-changing release can never land new code
+# on an un-migrated schema; the price is a few seconds of downtime per deploy. It
+# never touches the ./data volume and never logs secrets. First-time
+# initialisation (creating the role/owner enrollment) is still manual, once — the
+# guard below aborts on an uninitialised database.
 #
 # Required environment:
 #   APP_IMAGE   full image reference to deploy (e.g. ghcr.io/timurtsedik/double-brained:sha-xxxxxxx)
@@ -88,7 +93,20 @@ if [ "$(printf '%s' "$role_present" | tr -d '[:space:]')" != "1" ]; then
        before running a redeploy. Aborting to avoid a restart-loop."
 fi
 
-# --- bring up all services --------------------------------------------------
+# --- cutover: stop the app, reconcile the schema, restart -------------------
+# Stop polling+worker FIRST: init-db briefly REVOKEs then re-GRANTs the app
+# role's privileges (identity does a broad REVOKE ALL before the slice grants),
+# so a live old bot would hit "permission denied" during that window. With the
+# app stopped, init-db (idempotent, ADD-only) reconciles the schema safely; on a
+# no-schema release it is a near-instant no-op. Running it every deploy means a
+# schema-adding release never starts new code on an un-migrated schema.
+log "stopping polling and worker for the schema reconcile"
+docker compose -f "$COMPOSE_FILE" stop polling worker
+
+log "reconciling schema (init-db: idempotent, ADD-only)"
+docker compose -f "$COMPOSE_FILE" run --rm -T worker second-brain-identity init-db
+
+# --- bring up all services (recreates polling+worker on the new image) ------
 log "starting all services"
 docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
 

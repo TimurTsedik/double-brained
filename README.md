@@ -229,32 +229,29 @@ outbox yet: if the process crashes after the receipt commits but before the
 panel reaches Telegram, a restart treats that old update as a duplicate and
 does not resend it. Send `/start` again to request a new panel.
 
-## Schema-changing releases (production)
+## Deploys and schema changes (production)
 
-`scripts/deploy_prod.sh` deliberately never runs `init-db`, so a release that
-adds tables/columns needs a one-time manual activation on the server, with the
-NEW image, before the worker restarts:
+Every push to `main` deploys automatically (`.github/workflows/deploy_vps_manual.yml`):
+tests and the GHCR image build run in parallel, then the VPS redeploy runs
+`scripts/deploy_prod.sh`. That script does a short cutover on **every** deploy —
+stop `polling`+`worker`, run `init-db`, bring everything back up on the new image.
+The stop is required because `init-db` briefly REVOKEs and re-GRANTs the app
+role's privileges, so a running bot would hit permission errors mid-reconcile.
+`init-db` is idempotent and ADD-only, so on a release with no schema change it is
+a near-instant no-op; the cost is a few seconds of downtime per deploy. A
+schema-adding release therefore needs no manual step — the columns are grown in
+place before the new code starts. (First-time initialisation — creating the role
+and owner enrollment — is still manual, once; the script's guard aborts on an
+uninitialised database.)
 
-```bash
-export APP_IMAGE=ghcr.io/timurtsedik/double-brained:sha-<new>
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml stop worker
-docker compose -f docker-compose.prod.yml run --rm worker second-brain-identity init-db
-docker compose -f docker-compose.prod.yml up -d worker
-```
-
-`init-db` is idempotent and ADD-only (existing data untouched). Stop `polling`
-too only when the change touches what polling reads — for additive worker-side
-tables (e.g. `reminders`) that is not needed.
-
-If a release changes the MEANING of transient state, clear it once (forward-only
-— that table only holds an in-flight, not-yet-consumed button tap). The
-button-authority release does: an explicit type button is now consumed by
-DELETING its `pending_capture_selections` row, so a leftover `'note'` row from an
-older build would read as an explicit "Note" (suppressing the time→reminder
-default) until the owner's next message clears it. Reset it once right after
-`init-db`, using the schema-owner DSN from `.env` and `psql` inside the
-`postgres` service (same way `scripts/deploy_prod.sh` reaches the DB):
+**Data-meaning changes still need a one-time manual command.** `init-db` only
+adds structure; it never rewrites rows. When a release changes what EXISTING data
+means, run the fix-up once by hand. The button-authority release is the current
+example: an explicit type button is now consumed by DELETING its
+`pending_capture_selections` row, so a leftover `'note'` row from an older build
+reads as an explicit "Note" (suppressing the time→reminder default) until the
+owner's next message clears it. Reset it once, using the schema-owner DSN from
+`.env` and `psql` inside the `postgres` service:
 
 ```bash
 set -a; . ./.env; set +a

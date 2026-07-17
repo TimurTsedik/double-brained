@@ -1,18 +1,27 @@
-name: Deploy to VPS (manual)
+name: Deploy to VPS
 
-# Manual, owner-triggered deploy: the full test suite (against a real pgvector
-# Postgres) and the GHCR image build run IN PARALLEL; the VPS redeploy waits for
-# both, so nothing untested is ever deployed. Only the immutable sha tag is
-# pushed — no :latest, since the build may finish before the tests pass. Kept on
-# workflow_dispatch (not push) so a deploy never races the local bot for the
-# single Telegram getUpdates consumer.
+# Deploy on every push to main (the owner no longer runs the bot locally, so
+# there is no second Telegram getUpdates consumer to race). The full test suite
+# (against a real pgvector Postgres) and the GHCR image build run IN PARALLEL;
+# the VPS redeploy waits for both, so nothing untested is ever deployed. The
+# redeploy is a short cutover that runs `init-db` every time (idempotent,
+# ADD-only), so a schema-changing release can never land new code on an
+# un-migrated schema. Only the immutable sha tag is pushed — no :latest.
+# workflow_dispatch stays for manual rollback / deploying a specific ref.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
         description: Git ref to build and deploy
         default: main
         required: true
+
+# One deploy at a time; let an in-flight cutover finish before the next starts.
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
 
 env:
   IMAGE_NAME: ghcr.io/timurtsedik/double-brained
@@ -52,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -94,7 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Compute image reference
         id: meta
@@ -131,7 +140,7 @@ jobs:
       - name: Checkout (for compose + deploy script)
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Prepare SSH
         run: |
@@ -152,7 +161,7 @@ jobs:
             docker-compose.prod.yml scripts/deploy_prod.sh \
             "$VPS_USER@$VPS_HOST:$VPS_APP_DIR/"
 
-      - name: Redeploy (guarded; NOT first-time init)
+      - name: Redeploy (guarded cutover — stop, init-db, up; NOT first-time init)
         env:
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
