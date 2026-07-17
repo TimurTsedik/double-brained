@@ -490,6 +490,8 @@ class PostgresDigestReader:
     запись) и по одному и тому же окну снимка: записи, созданные после `end`
     (as_of), не видны ни счётчикам, ни страницам. Порядок детерминированный:
     created_at DESC, затем тип и id — страницы стабильны при равных датах.
+    Завершённые задачи-будильники (`_completed_alarm_task`) скрыты из ОБОИХ
+    чтений одинаково — счётчики никогда не расходятся со списком.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -516,6 +518,7 @@ class PostgresDigestReader:
                 source.user_space_column == access_context.user_space_id,
                 source.created_column >= start,
                 source.created_column <= end,
+                *_digest_task_filters(source),
             )
             for source in _digest_sources()
         )
@@ -564,6 +567,7 @@ class PostgresDigestReader:
                 source.user_space_column == access_context.user_space_id,
                 source.created_column >= start,
                 source.created_column <= end,
+                *_digest_task_filters(source),
             )
             for source in _digest_sources()
         )
@@ -640,12 +644,24 @@ def _digest_sources() -> tuple[_DigestSource, ...]:
     )
 
 
+def _digest_task_filters(source: _DigestSource) -> tuple[ColumnElement[bool], ...]:
+    """Доп. условия ветки сводки: у задач скрываем завершённые будильники.
+
+    Один и тот же предикат `_completed_alarm_task()` подставляется и в
+    счётчики, и в страницу — расхождение между ними исключено по построению.
+    Остальные типы записей условий не добавляют.
+    """
+    if source.record_type is SearchRecordType.TASK:
+        return (~_completed_alarm_task(),)
+    return ()
+
+
 def _completed_alarm_task() -> ColumnElement[bool]:
     """Завершённая «задача-будильник» («позвонить Ави в 11:53»): задача
     COMPLETED, и на неё есть напоминание (любого статуса) — после выполнения
-    это шум, точный поиск и выдача памяти её скрывают. Единое правило для
-    обоих путей (FTS и вектор); предикат по user_space_id внутри EXISTS
-    повторяет RLS-границу."""
+    это шум: точный поиск, выдача памяти и сводка её скрывают. Единое правило
+    для всех путей (FTS, вектор, сводка); предикат по user_space_id внутри
+    EXISTS повторяет RLS-границу."""
     reminder_exists = (
         select(literal(1))
         .where(

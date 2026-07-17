@@ -48,6 +48,7 @@ from tests.retrieval.test_semantic_index_persistence import (
     ACCESS_B,
     TRACE_ID,
     add_capture,
+    add_reminder,
     space_row,
     user_row,
 )
@@ -285,6 +286,64 @@ async def test_counters_match_the_listed_records_including_completed_tasks(
     assert all(item.created_at.utcoffset() == timedelta(hours=3) for item in page.items)
     assert page.period_start == datetime(2026, 7, 13, tzinfo=TZ)
     assert page.as_of == AS_OF.astimezone(TZ)
+
+
+@pytest.mark.asyncio
+async def test_completed_alarm_tasks_are_hidden_from_counters_and_list(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    capture = await add_capture(schema_engine, ACCESS_A)
+    in_week = AS_OF - timedelta(hours=1)
+    # Завершённая задача-будильник — шум, скрыта и из счётчиков, и из списка.
+    alarm_done = await add_record(
+        schema_engine,
+        ACCESS_A,
+        capture,
+        SearchRecordType.TASK,
+        "будильник сделан",
+        in_week,
+        status=TaskStatus.COMPLETED,
+    )
+    await add_reminder(schema_engine, ACCESS_A, alarm_done)
+    # Завершённая БЕЗ напоминания — остаётся: и в счётчике ☑️, и в списке.
+    plain_done = await add_record(
+        schema_engine,
+        ACCESS_A,
+        capture,
+        SearchRecordType.TASK,
+        "сделана без напоминания",
+        in_week - timedelta(minutes=1),
+        status=TaskStatus.COMPLETED,
+    )
+    # Незавершённая С напоминанием — остаётся видимой.
+    alarm_pending = await add_record(
+        schema_engine,
+        ACCESS_A,
+        capture,
+        SearchRecordType.TASK,
+        "будильник в работе",
+        in_week - timedelta(minutes=2),
+    )
+    await add_reminder(schema_engine, ACCESS_A, alarm_pending)
+    note_id = await add_record(
+        schema_engine,
+        ACCESS_A,
+        capture,
+        SearchRecordType.NOTE,
+        "заметка рядом",
+        in_week - timedelta(minutes=3),
+    )
+
+    page = await read_digest(engine, ACCESS_A, DigestPeriod.WEEK, 0, AS_OF)
+
+    assert page.counters == DigestCounters(
+        notes=1, tasks=2, tasks_completed=1, ideas=0, decisions=0, questions=0
+    )
+    listed = {item.id for item in page.items}
+    assert alarm_done not in listed
+    assert listed == {plain_done, alarm_pending, note_id}
+    # Счётчики и список — один снимок: total сходится с фактической страницей.
+    assert page.total == len(page.items) == 3
 
 
 @pytest.mark.asyncio
