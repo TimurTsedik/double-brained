@@ -160,12 +160,39 @@ def test_wordy_relative_time_without_digits_is_recognized(
 
 
 @pytest.mark.parametrize(
+    ("text", "expected_utc"),
+    [
+        # Прод-находка владельца: число СЛОВОМ («через две минуты») отсекалось
+        # прескрином и маркером. dateparser считает такие верно — пропускаем.
+        ("позвонить через две минуты", datetime(2026, 7, 16, 10, 2, tzinfo=UTC)),
+        ("напомни через три минуты сделать", datetime(2026, 7, 16, 10, 3, tzinfo=UTC)),
+        ("через пять минут", datetime(2026, 7, 16, 10, 5, tzinfo=UTC)),
+        ("созвон через два часа", datetime(2026, 7, 16, 12, 0, tzinfo=UTC)),
+        ("через десять минут", datetime(2026, 7, 16, 10, 10, tzinfo=UTC)),
+        ("выйти через полтора часа", datetime(2026, 7, 16, 11, 30, tzinfo=UTC)),
+        ("call the bank in two minutes", datetime(2026, 7, 16, 10, 2, tzinfo=UTC)),
+        ("remind me in three hours", datetime(2026, 7, 16, 13, 0, tzinfo=UTC)),
+        ("ping in five minutes", datetime(2026, 7, 16, 10, 5, tzinfo=UTC)),
+    ],
+)
+def test_wordy_number_relative_time_is_recognized(
+    extractor: DateparserTimeExtractor, text: str, expected_utc: datetime
+) -> None:
+    instant = extractor.extract_due(text, NOW, JERUSALEM)
+
+    assert instant == expected_utc
+
+
+@pytest.mark.parametrize(
     "text",
     [
         # «через» без слова времени — обычный текст, не напоминание.
         "сходить через дорогу",
         # «через неделю» — дата без времени-суток → None по правилу M2.
         "вернуться через неделю",
+        # Число словом БЕЗ единицы времени / не время-суток → не напоминание.
+        "увеличить в три раза",
+        "in three days",
     ],
 )
 def test_wordy_relative_without_clock_meaning_yields_none(

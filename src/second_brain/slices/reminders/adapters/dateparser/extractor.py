@@ -33,6 +33,22 @@ _WORDY_RELATIVE = re.compile(
     re.IGNORECASE,
 )
 
+# Число СЛОВОМ в относительной форме: «через две/три/пять минут», «через два
+# часа», "in two minutes", "in three hours". dateparser считает их ВЕРНО (в
+# отличие от «in half an hour») — надо лишь пропустить фразу через прескрин и
+# маркер; счёт делает сам dateparser. Двуязычно; цифрой («через 2 минуты») уже
+# ловится маркером по `\d`, одиночные «минуту/час/полчаса/пару» — в _WORDY_RELATIVE.
+# Только формы, которые dateparser реально считает: целые два..десять (ru/en) и
+# «полтора часа» (полутора-минуты dateparser не разбирает — не обещаем их).
+_WORDY_NUMBER = re.compile(
+    r"\bчерез\s+(?:дв[ае]|три|четыре|пять|шесть|семь|восемь|девять|десять)\s+"
+    r"(?:минут(?:у|ы)?|час(?:а|ов)?)\b"
+    r"|\bчерез\s+полтора\s+часа\b"
+    r"|\bin\s+(?:two|three|four|five|six|seven|eight|nine|ten)\s+"
+    r"(?:minutes?|hours?)\b",
+    re.IGNORECASE,
+)
+
 _WORDY_DELTAS = {
     "minute": timedelta(minutes=1),
     "en_minute": timedelta(minutes=1),
@@ -83,10 +99,12 @@ class DateparserTimeExtractor:
 
     def might_contain_due(self, text: str) -> bool:
         # Прескрин: слишком длинно, либо нет ни цифр, ни словесной относительной
-        # формы («через минуту») → времени быть не может. tz-независим, поэтому
-        # вызывающий может им отсечь резолв пояса для заметок без времени.
+        # формы («через минуту», «через две минуты») → времени быть не может.
+        # tz-независим, поэтому вызывающий может им отсечь резолв пояса.
         return len(text) <= _MAX_TEXT_LENGTH and (
-            any(ch.isdigit() for ch in text) or bool(_WORDY_RELATIVE.search(text))
+            any(ch.isdigit() for ch in text)
+            or bool(_WORDY_RELATIVE.search(text))
+            or bool(_WORDY_NUMBER.search(text))
         )
 
     def extract_due(self, text: str, now: datetime, tz: str) -> datetime | None:
@@ -106,7 +124,11 @@ class DateparserTimeExtractor:
         }
 
         found = search_dates(text, languages=_SETTINGS_LANGUAGES, settings=settings)
-        marked = [match for match in (found or []) if _TIME_MARKER.search(match[0])]
+        marked = [
+            match
+            for match in (found or [])
+            if _TIME_MARKER.search(match[0]) or _WORDY_NUMBER.search(match[0])
+        ]
         for matched_text, _ in marked:
             instant = _instant_from_match(matched_text, now_local, zone, settings)
             if instant is None:
