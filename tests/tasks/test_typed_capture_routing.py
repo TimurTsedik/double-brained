@@ -42,9 +42,10 @@ class InMemoryPendingSelection(PendingCaptureSelectionStore):
 
     async def consume_selection(
         self, command: ConsumePendingTaskTextCommand
-    ) -> PendingCaptureType:
-        selection = self.selection or PendingCaptureType.NOTE
-        self.selection = PendingCaptureType.NOTE
+    ) -> PendingCaptureType | None:
+        # None = кнопку не нажимали (дефолт); явный выбор потребляется «удалением».
+        selection = self.selection
+        self.selection = None
         return selection
 
     async def consume_awaiting_task(
@@ -119,7 +120,7 @@ def command(text: str | None = "  exact typed text  ") -> ConsumePendingTaskText
         (PendingCaptureType.QUESTION, Question),
     ],
 )
-async def test_eligible_text_routes_exactly_to_pending_type_then_resets_to_note(
+async def test_eligible_text_routes_exactly_to_pending_type_then_clears(
     selection: PendingCaptureType | None, expected_type: type[object]
 ) -> None:
     pending = InMemoryPendingSelection(selection)
@@ -139,7 +140,8 @@ async def test_eligible_text_routes_exactly_to_pending_type_then_resets_to_note(
     record = await capture.consume_for_text(command())
 
     assert isinstance(record, expected_type)
-    assert pending.selection is PendingCaptureType.NOTE
+    # Выбор потреблён — состояние очищено (не остаётся висеть как «Заметка»).
+    assert pending.selection is None
     assert len(task_writer.commands) + len(knowledge_writer.commands) == 1
     assert record.user_space_id == ACCESS.user_space_id
     assert record.source_capture_event_id == SOURCE

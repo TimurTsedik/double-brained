@@ -31,6 +31,7 @@ from second_brain.slices.tasks.application.contracts import (
     ConsumePendingCaptureSelectionCommand,
 )
 from second_brain.slices.tasks.application.task_capture import TaskCapture
+from second_brain.slices.tasks.domain.entities import PendingCaptureType
 
 
 class VoiceCaptureInTransaction(CaptureVoicePort):
@@ -51,6 +52,10 @@ class VoiceCaptureInTransaction(CaptureVoicePort):
                 trace_id=command.trace_id,
             )
         )
+        # selection is None → кнопку не нажимали: замораживаем NOTE как ДЕФОЛТ,
+        # который при расшифровке со временем маршрутизируется в задачу. Явно
+        # выбранный тип (в т.ч. «Заметка») уважаем как есть.
+        frozen_type = selection or PendingCaptureType.NOTE
         source = await CaptureVoice(PostgresCaptureEventWriter(session)).execute(
             command
         )
@@ -66,7 +71,8 @@ class VoiceCaptureInTransaction(CaptureVoicePort):
             CreateVoiceProcessingRunCommand(
                 access_context=command.access_context,
                 capture_event_id=source.id,
-                output_type=TranscriptionOutputType(selection.value),
+                output_type=TranscriptionOutputType(frozen_type.value),
+                route_default_by_time=selection is None,
                 created_at=command.received_at,
                 trace_id=command.trace_id,
             )

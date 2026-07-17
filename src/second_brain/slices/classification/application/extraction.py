@@ -21,6 +21,15 @@ MAX_CANDIDATES = 8
 MATERIALIZATION_CONFIDENCE = 0.90
 CREDENTIAL_DETECTED = "credential_detected"
 
+# Кандидат считается «весь текст» с точностью до окружающих пробелов и финальной
+# пунктуации: LLM часто цитирует сообщение без завершающей точки/«?»/«!». Такой
+# кандидат — дубль базовой записи, а не отдельный под-пункт.
+_WHOLE_SOURCE_EDGE = " \t\n\r.,;:!?…"
+
+
+def _covers_whole_source(quote: str, text: str) -> bool:
+    return quote.strip(_WHOLE_SOURCE_EDGE) == text.strip(_WHOLE_SOURCE_EDGE)
+
 
 class ClassifySource:
     def __init__(self, model: ClassificationModel) -> None:
@@ -95,7 +104,12 @@ def _validate_candidate(
         )
     if confidence < MATERIALIZATION_CONFIDENCE:
         return _review(draft, confidence, CandidateValidationCode.LOW_CONFIDENCE)
-    if draft.candidate_type is source.base_type and draft.source_quote == source.text:
+    if _covers_whole_source(draft.source_quote, source.text):
+        # Весь текст уже материализован базовой записью на capture (её тип задан
+        # кнопкой или временем). Кандидат, покрывающий ВЕСЬ текст, — это не
+        # вторая сущность, а дубль той же записи (даже если ИИ выбрал другой
+        # тип): не материализуем. Классификатор порождает записи только для
+        # ОТДЕЛЬНЫХ под-пунктов (частичная цитата), а не для целого сообщения.
         return GroundedCandidate(
             candidate_type=draft.candidate_type,
             source_quote=draft.source_quote,

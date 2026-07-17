@@ -67,7 +67,7 @@ class TaskCapture:
 
     async def consume_selection(
         self, command: ConsumePendingCaptureSelectionCommand
-    ) -> PendingCaptureType:
+    ) -> PendingCaptureType | None:
         return await self._pending_capture_selection_store.consume_selection(command)
 
     async def consume_for_text(
@@ -90,14 +90,18 @@ class TaskCapture:
         )
         if command.text is None:
             raise ValueError("eligible typed capture text must not be None")
+        # selection is None → кнопку НЕ нажимали: дефолтная заметка, которая при
+        # явном будущем времени станет напоминанием-задачей. Явно нажатая кнопка
+        # (в т.ч. «Заметка») ГЛАВНЕЕ времени — тип уважаем как есть.
         return await self.create_for_selection(
             CreateTypedCaptureCommand(
                 access_context=command.access_context,
-                selection=selection,
+                selection=selection or PendingCaptureType.NOTE,
                 text=command.text,
                 source_capture_event_id=command.source_capture_event_id,
                 created_at=command.created_at,
                 trace_id=command.trace_id,
+                route_default_by_time=selection is None,
             )
         )
 
@@ -107,18 +111,16 @@ class TaskCapture:
         if self._task_writer is None or self._knowledge_capture is None:
             raise RuntimeError("typed task capture writers are incomplete")
         if command.selection is PendingCaptureType.TASK:
-            task = await self._task_writer.create(
-                CreateTaskCommand(
-                    access_context=command.access_context,
-                    title=command.text,
-                    source_capture_event_id=command.source_capture_event_id,
-                    created_at=command.created_at,
-                    trace_id=command.trace_id,
-                )
-            )
-            await self._maybe_create_reminder(command, task)
-            return task
+            return await self._create_task(command, await self._due_and_tz(command))
         if command.selection is PendingCaptureType.NOTE:
+            # Дефолт «Заметка»: при интерактивном вводе (route_default_by_time —
+            # текст/голос) заметка с явным БУДУЩИМ временем сама становится
+            # напоминанием-задачей. Классификатор флаг не ставит — его под-пункты
+            # с типом NOTE остаются заметками.
+            if command.route_default_by_time:
+                due = await self._due_and_tz(command)
+                if due is not None:
+                    return await self._create_task(command, due)
             return await self._knowledge_capture.create_note(
                 CreateNoteCommand(
                     access_context=command.access_context,
@@ -158,36 +160,62 @@ class TaskCapture:
             )
         )
 
-    async def _maybe_create_reminder(
-        self, command: CreateTypedCaptureCommand, task: Task
-    ) -> None:
-        # Единая точка (оба пути — текст-капча и авто-классификация в task):
-        # если в тексте задачи есть явный БУДУЩИЙ момент, ставим напоминание.
-        # Заголовок задачи НЕ переписываем. Прошлое/без времени → без напоминания.
+    async def _create_task(
+        self, command: CreateTypedCaptureCommand, due: tuple[datetime, str] | None
+    ) -> Task:
+        # Единая точка создания задачи (кнопка «Задача», авто-классификация,
+        # дефолт со временем). Если есть явный БУДУЩИЙ момент — вешаем на задачу
+        # напоминание тем же извлечённым временем; заголовок НЕ переписываем.
+        if self._task_writer is None:
+            raise RuntimeError("typed task capture writers are incomplete")
+        task = await self._task_writer.create(
+            CreateTaskCommand(
+                access_context=command.access_context,
+                title=command.text,
+                source_capture_event_id=command.source_capture_event_id,
+                created_at=command.created_at,
+                trace_id=command.trace_id,
+            )
+        )
+        if due is not None and self._reminder_writer is not None:
+            remind_at, tz = due
+            await self._reminder_writer.create_reminder(
+                CreateReminderCommand(
+                    access_context=command.access_context,
+                    remind_at=remind_at,
+                    text=command.text,
+                    source_task_id=task.id,
+                    created_at=command.created_at,
+                    trace_id=command.trace_id,
+                )
+            )
+            if self._on_reminder_created is not None:
+                self._on_reminder_created(remind_at, tz)
+        return task
+
+    async def _due_and_tz(
+        self, command: CreateTypedCaptureCommand
+    ) -> tuple[datetime, str] | None:
+        # Единственное извлечение «на когда» на путь материализации (без двойного
+        # парсинга): (remind_at UTC, tz пространства) при явном БУДУЩЕМ моменте,
+        # иначе None. Прошлое/без времени → None.
         if (
             self._reminder_writer is None
             or self._time_extractor is None
             or self._timezone_reader is None
         ):
-            return
+            return None
+        # Копеечный tz-независимый прескрин: обычная заметка без маркера времени
+        # не должна тянуть резолв часового пояса из базы.
+        if not self._time_extractor.might_contain_due(command.text):
+            return None
         tz = await self._timezone_reader.resolve_timezone(command.access_context)
         remind_at = self._time_extractor.extract_due(
             command.text, command.created_at, tz
         )
         if remind_at is None:
-            return
-        await self._reminder_writer.create_reminder(
-            CreateReminderCommand(
-                access_context=command.access_context,
-                remind_at=remind_at,
-                text=command.text,
-                source_task_id=task.id,
-                created_at=command.created_at,
-                trace_id=command.trace_id,
-            )
-        )
-        if self._on_reminder_created is not None:
-            self._on_reminder_created(remind_at, tz)
+            return None
+        return remind_at, tz
 
 
 def _is_eligible(command: ConsumePendingTaskTextCommand) -> bool:

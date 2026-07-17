@@ -153,7 +153,7 @@ class PostgresPendingCaptureSelectionRepository:
 
     async def consume_selection(
         self, command: ConsumePendingCaptureSelectionCommand
-    ) -> PendingCaptureType:
+    ) -> PendingCaptureType | None:
         async with self._session_factory() as session:
             async with session.begin():
                 return await PostgresPendingCaptureSelectionWriter(
@@ -196,17 +196,8 @@ class PostgresPendingCaptureSelectionWriter:
         await self._session.flush()
 
     async def cancel(self, command: CancelPendingTaskCommand) -> None:
-        selection = await self._get_or_create(
-            command.access_context, command.updated_at, command.trace_id
-        )
-        selection.selection = PendingCaptureType.NOTE
-        selection.updated_at = command.updated_at
-        selection.trace_id = command.trace_id
-        await self._session.flush()
-
-    async def consume_selection(
-        self, command: ConsumePendingCaptureSelectionCommand
-    ) -> PendingCaptureType:
+        # Отмена = очистить явный выбор. Строка живёт ТОЛЬКО пока ждёт явный
+        # выбор; её отсутствие означает «кнопку не нажимали» (дефолт).
         await _set_user_space_scope(self._session, command.access_context)
         selection = await self._session.scalar(
             select(PendingCaptureSelectionModel)
@@ -216,13 +207,29 @@ class PostgresPendingCaptureSelectionWriter:
             )
             .with_for_update()
         )
-        if selection is None:
-            return PendingCaptureType.NOTE
+        if selection is not None:
+            await self._session.delete(selection)
+            await self._session.flush()
 
+    async def consume_selection(
+        self, command: ConsumePendingCaptureSelectionCommand
+    ) -> PendingCaptureType | None:
+        await _set_user_space_scope(self._session, command.access_context)
+        selection = await self._session.scalar(
+            select(PendingCaptureSelectionModel)
+            .where(
+                PendingCaptureSelectionModel.user_space_id
+                == command.access_context.user_space_id
+            )
+            .with_for_update()
+        )
+        # Нет строки → кнопку не нажимали: явного выбора нет (дефолт). Явно
+        # выбранный тип ПОТРЕБЛЯЕМ, удаляя строку (не сбрасываем в NOTE — иначе
+        # «нажал Заметку» не отличить от «не нажал ничего»).
+        if selection is None:
+            return None
         selected_type = selection.selection
-        selection.selection = PendingCaptureType.NOTE
-        selection.updated_at = command.consumed_at
-        selection.trace_id = command.trace_id
+        await self._session.delete(selection)
         await self._session.flush()
         return selected_type
 
@@ -252,9 +259,7 @@ class PostgresPendingCaptureSelectionWriter:
                 trace_id=command.trace_id,
             )
         )
-        selection.selection = PendingCaptureType.NOTE
-        selection.updated_at = command.created_at
-        selection.trace_id = command.trace_id
+        await self._session.delete(selection)
         await self._session.flush()
         return task
 

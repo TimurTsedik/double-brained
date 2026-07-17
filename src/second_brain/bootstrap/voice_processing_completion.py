@@ -1,9 +1,12 @@
+from dataclasses import replace
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from second_brain.bootstrap.task_capture_in_transaction import (
     build_task_capture,
+    record_output_type,
+    record_project_kind,
     send_reminder_confirmations,
 )
 from second_brain.slices.capture.adapters.persistence.repository import (
@@ -24,7 +27,6 @@ from second_brain.slices.projects.adapters.persistence.repository import (
 from second_brain.slices.projects.application.contracts import (
     InheritCaptureProjectLinksCommand,
 )
-from second_brain.slices.projects.domain.entities import ProjectContentKind
 from second_brain.slices.reminders.application.contracts import ReminderDeliveryPort
 from second_brain.slices.retrieval.adapters.persistence.repository import (
     PostgresSemanticIndexWriter,
@@ -96,13 +98,22 @@ class VoiceTranscriptionCompletionInTransaction:
                         source_capture_event_id=target.capture_event_id,
                         created_at=command.completed_at,
                         trace_id=target.trace_id,
+                        # Маршрутизируем по времени, ТОЛЬКО если тип был дефолтным
+                        # (кнопку не нажимали). Явно выбранная «Заметка» → останется
+                        # заметкой даже со временем (кнопка главнее).
+                        route_default_by_time=target.route_default_by_time,
                     )
                 )
+                # Индексация, проектная связь и метка уведомления идут за
+                # ФАКТИЧЕСКИ созданной записью: замороженный на capture тип мог
+                # быть NOTE, а текст со временем маршрутизирован в задачу. Прогон
+                # менять нельзя (append-only) — реальный тип несём в уведомление.
+                actual_output_type = record_output_type(record)
                 await PostgresSemanticIndexWriter(session).register_target(
                     RegisterIndexingTargetCommand(
                         access_context=command.access_context,
                         processing_run_id=target.run_id,
-                        record_kind=SearchRecordType(target.output_type.value),
+                        record_kind=SearchRecordType(actual_output_type.value),
                         record_id=record.id,
                         created_at=command.completed_at,
                         trace_id=target.trace_id,
@@ -112,13 +123,15 @@ class VoiceTranscriptionCompletionInTransaction:
                     InheritCaptureProjectLinksCommand(
                         access_context=command.access_context,
                         source_capture_event_id=target.capture_event_id,
-                        content_kind=ProjectContentKind(target.output_type.value),
+                        content_kind=record_project_kind(record),
                         content_id=record.id,
                         created_at=command.completed_at,
                         trace_id=target.trace_id,
                     )
                 )
-                await processing.complete_voice_transcription(command)
+                await processing.complete_voice_transcription(
+                    replace(command, resolved_output_type=actual_output_type)
+                )
         # После коммита: голосовая задача со временем иначе молчала бы —
         # владелец не знал бы, что будильник заведён. Осознанный lean-край: сбой
         # между коммитом и отправкой теряет/дублирует ТОЛЬКО подтверждение.

@@ -125,7 +125,7 @@ def consume_command(source_capture_event_id: UUID) -> ConsumePendingTaskTextComm
 
 
 @pytest.mark.asyncio
-async def test_missing_pending_selection_defaults_to_note(
+async def test_missing_pending_selection_is_no_explicit_choice(
     engine: AsyncEngine,
 ) -> None:
     repository = PostgresPendingCaptureSelectionRepository(
@@ -136,7 +136,8 @@ async def test_missing_pending_selection_defaults_to_note(
         consume_command(UUID("00000000-0000-0000-0000-000000000101"))
     )
 
-    assert selection is PendingCaptureType.NOTE
+    # Кнопку не нажимали → явного выбора нет (None = дефолт), не «Заметка».
+    assert selection is None
 
 
 @pytest.mark.asyncio

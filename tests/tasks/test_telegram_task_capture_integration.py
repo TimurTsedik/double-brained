@@ -177,7 +177,8 @@ async def test_button_then_text_atomically_creates_source_task_and_provenance(
     assert task is not None
     assert source is not None
     assert provenance is not None
-    assert mode is not None
+    # Явный выбор ПОТРЕБЛЁН удалением строки — «нажал кнопку» больше не висит.
+    assert mode is None
     assert run is not None
     assert len(steps) == 2
     assert task.title == "  Купить молоко  "
@@ -186,7 +187,6 @@ async def test_button_then_text_atomically_creates_source_task_and_provenance(
     assert task.source_capture_event_id == source.id
     assert source.id == provenance.source_capture_event_id
     assert provenance.task_id == task.id
-    assert mode.selection is PendingCaptureType.NOTE
     assert run.capture_event_id == source.id
     assert run.output_type is TranscriptionOutputType.TASK
     assert run.trace_id == source.trace_id
@@ -392,12 +392,12 @@ async def test_failed_mode_callback_rolls_back_and_retry_applies_exactly_once(
     )
     async with create_session_factory(schema_engine)() as session:
         mode_after_retry = await session.scalar(select(PendingCaptureSelectionModel))
-    assert mode_after_retry is not None
-    assert mode_after_retry.selection is (
-        PendingCaptureType.TASK
-        if callback_data == "task:await_text"
-        else PendingCaptureType.NOTE
-    )
+    if callback_data == "task:await_text":
+        assert mode_after_retry is not None
+        assert mode_after_retry.selection is PendingCaptureType.TASK
+    else:
+        # Отмена ПОТРЕБЛЯЕТ явный выбор удалением строки → пусто (не сброс в NOTE).
+        assert mode_after_retry is None
     assert await count(schema_engine, TelegramUpdateReceipt) == (
         1 if callback_data == "task:await_text" else 2
     )

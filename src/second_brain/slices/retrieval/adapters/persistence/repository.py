@@ -645,24 +645,26 @@ def _digest_sources() -> tuple[_DigestSource, ...]:
 
 
 def _digest_task_filters(source: _DigestSource) -> tuple[ColumnElement[bool], ...]:
-    """Доп. условия ветки сводки: у задач скрываем завершённые будильники.
+    """Доп. условия ветки сводки: из задач скрываем ВСЕ будильники — задачу с
+    напоминанием любого статуса (и активную, и завершённую).
 
-    Один и тот же предикат `_completed_alarm_task()` подставляется и в
-    счётчики, и в страницу — расхождение между ними исключено по построению.
-    Остальные типы записей условий не добавляют.
+    Сводка — «чистый список записей за период»; будильник там операционный
+    шум независимо от того, сработал он или нет. Обычная задача без
+    напоминания в сводке остаётся. Предикат `_alarm_task()` один и тот же в
+    счётчиках и в странице — расхождение между ними исключено по построению.
+    (Поиск и выдача памяти скрывают лишь ЗАВЕРШЁННЫЕ будильники — активный там
+    нужно находить; см. `_completed_alarm_task()`.)
     """
     if source.record_type is SearchRecordType.TASK:
-        return (~_completed_alarm_task(),)
+        return (~_alarm_task(),)
     return ()
 
 
-def _completed_alarm_task() -> ColumnElement[bool]:
-    """Завершённая «задача-будильник» («позвонить Ави в 11:53»): задача
-    COMPLETED, и на неё есть напоминание (любого статуса) — после выполнения
-    это шум: точный поиск, выдача памяти и сводка её скрывают. Единое правило
-    для всех путей (FTS, вектор, сводка); предикат по user_space_id внутри
-    EXISTS повторяет RLS-границу."""
-    reminder_exists = (
+def _alarm_task() -> ColumnElement[bool]:
+    """«Задача-будильник» («позвонить Ави в 11:53»): на задачу есть
+    напоминание любого статуса. Предикат по user_space_id внутри EXISTS
+    повторяет RLS-границу."""
+    return (
         select(literal(1))
         .where(
             ReminderModel.source_task_id == TaskModel.id,
@@ -670,7 +672,13 @@ def _completed_alarm_task() -> ColumnElement[bool]:
         )
         .exists()
     )
-    return and_(TaskModel.status == TaskStatus.COMPLETED, reminder_exists)
+
+
+def _completed_alarm_task() -> ColumnElement[bool]:
+    """ЗАВЕРШЁННАЯ задача-будильник: после выполнения это шум — точный поиск и
+    выдача памяти её скрывают (в отличие от сводки, где скрыт будильник любого
+    статуса). Активный будильник в поиске/памяти остаётся находимым."""
+    return and_(TaskModel.status == TaskStatus.COMPLETED, _alarm_task())
 
 
 def _search_branch(

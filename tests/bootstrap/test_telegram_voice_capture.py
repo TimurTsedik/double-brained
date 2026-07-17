@@ -65,7 +65,6 @@ from second_brain.slices.retrieval.application.contracts import SearchPanelResul
 from second_brain.slices.tasks.adapters.persistence.models import (
     PendingCaptureSelectionModel,
 )
-from second_brain.slices.tasks.domain.entities import PendingCaptureType
 from tests.identity.conftest import IsolatedDatabase
 from tests.identity.locale_fakes import FakeLocaleResolver
 
@@ -388,7 +387,7 @@ async def test_fresh_voice_atomically_creates_source_attachment_run_steps_and_re
 
 
 @pytest.mark.asyncio
-async def test_voice_freezes_selected_type_and_resets_selection_to_note(
+async def test_voice_freezes_selected_type_and_consumes_selection(
     voice_database: None,
     engine: AsyncEngine,
     schema_engine: AsyncEngine,
@@ -412,9 +411,11 @@ async def test_voice_freezes_selected_type_and_resets_selection_to_note(
         run = await session.scalar(select(ProcessingRunModel))
         pending = await session.scalar(select(PendingCaptureSelectionModel))
     assert run is not None
-    assert pending is not None
     assert run.output_type is TranscriptionOutputType.TASK
-    assert pending.selection is PendingCaptureType.NOTE
+    # Явно выбранный тип ПОТРЕБЛЁН удалением строки (не сброс в NOTE) — и
+    # заморожен как НЕ дефолтный: голосом «Задача» время не переигрывает.
+    assert pending is None
+    assert run.route_default_by_time is False
 
 
 @pytest.mark.asyncio

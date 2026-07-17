@@ -133,6 +133,9 @@ async def test_default_note_fragments_do_not_create_more_notes() -> None:
 
 @pytest.mark.asyncio
 async def test_invalid_candidate_does_not_block_valid_sibling() -> None:
+    # Валидный сосед — ОТДЕЛЬНЫЙ под-пункт (частичная цитата), а не весь текст:
+    # только под-пункты материализуются, целое сообщение уже захвачено базовой
+    # записью.
     model = model_with(
         candidate(
             CandidateType.TASK,
@@ -148,7 +151,7 @@ async def test_invalid_candidate_does_not_block_valid_sibling() -> None:
 
     outcome = await ClassifySource(model).execute(
         ClassificationSource(
-            text="Использовать Qdrant?",
+            text="Обдумать хранилище. Использовать Qdrant?",
             base_type=CandidateType.NOTE,
         )
     )
@@ -161,6 +164,57 @@ async def test_invalid_candidate_does_not_block_valid_sibling() -> None:
         CandidateValidationCode.QUOTE_NOT_FOUND,
         CandidateValidationCode.VALID,
     ]
+
+
+@pytest.mark.asyncio
+async def test_whole_text_reclassified_to_another_type_is_not_duplicated() -> None:
+    # Кнопка не нажата → базовая запись = заметка на ВЕСЬ текст. ИИ считает, что
+    # весь текст — задача. Это НЕ вторая сущность, а дубль той же записи: не
+    # материализуем (иначе «заметка + задача» из одного сообщения).
+    source = "Позвонить Сергею завтра"
+    model = model_with(
+        candidate(
+            CandidateType.TASK,
+            source,
+            CandidateModality.COMMITMENT,
+        )
+    )
+
+    outcome = await ClassifySource(model).execute(
+        ClassificationSource(text=source, base_type=CandidateType.NOTE)
+    )
+
+    assert outcome.candidates[0].disposition is CandidateDisposition.ALREADY_CAPTURED
+    assert (
+        outcome.candidates[0].validation_code
+        is CandidateValidationCode.ALREADY_CAPTURED
+    )
+
+
+@pytest.mark.asyncio
+async def test_trailing_punctuation_whole_text_is_not_duplicated() -> None:
+    # LLM цитирует сообщение без финальной точки — это всё ещё «весь текст», а
+    # не отдельный под-пункт: не дублируем.
+    model = model_with(
+        candidate(
+            CandidateType.TASK,
+            "Позвонить Ави завтра в 10:00",
+            CandidateModality.COMMITMENT,
+        )
+    )
+
+    outcome = await ClassifySource(model).execute(
+        ClassificationSource(
+            text="Позвонить Ави завтра в 10:00.",
+            base_type=CandidateType.NOTE,
+        )
+    )
+
+    assert outcome.candidates[0].disposition is CandidateDisposition.ALREADY_CAPTURED
+    assert (
+        outcome.candidates[0].validation_code
+        is CandidateValidationCode.ALREADY_CAPTURED
+    )
 
 
 @pytest.mark.asyncio

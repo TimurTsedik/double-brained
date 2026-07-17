@@ -40,9 +40,13 @@ from second_brain.slices.identity.application.contracts import (
     AccessContext,
     TelegramRecipient,
 )
-from second_brain.slices.knowledge.adapters.persistence.models import IdeaModel
+from second_brain.slices.knowledge.adapters.persistence.models import (
+    IdeaModel,
+    NoteModel,
+)
 from second_brain.slices.processing.adapters.persistence.models import (
     ProcessingNoticeModel,
+    ProcessingRunModel,
     ProcessingStepModel,
     TranscriptModel,
 )
@@ -69,6 +73,7 @@ from second_brain.slices.processing.domain.entities import (
     TranscriptWord,
 )
 from second_brain.slices.reminders.adapters.persistence.models import ReminderModel
+from second_brain.slices.tasks.adapters.persistence.models import TaskModel
 from tests.identity.conftest import IsolatedDatabase
 
 NOW = datetime(2026, 7, 14, 14, 0, tzinfo=UTC)
@@ -180,6 +185,7 @@ async def _create_claimed_transcription(
     engine: AsyncEngine,
     schema_engine: AsyncEngine,
     output_type: TranscriptionOutputType = TranscriptionOutputType.IDEA,
+    route_default_by_time: bool = False,
 ) -> tuple[PostgresProcessingRepository, UUID, UUID]:
     capture_id = uuid4()
     async with schema_engine.begin() as connection:
@@ -225,6 +231,7 @@ async def _create_claimed_transcription(
             access_context=ACCESS,
             capture_event_id=capture_id,
             output_type=output_type,
+            route_default_by_time=route_default_by_time,
             created_at=NOW,
             trace_id=TRACE_ID,
         )
@@ -329,6 +336,88 @@ async def test_completion_atomically_creates_transcript_frozen_type_and_notice(
     assert notice.kind is ProcessingNoticeKind.SUCCESS
     assert notice.status is ProcessingNoticeStatus.PENDING
     assert step_status == ProcessingStepStatus.SUCCEEDED.value
+
+
+@pytest.mark.asyncio
+async def test_voice_default_note_with_time_becomes_a_reminder_task(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # Голос БЕЗ кнопки (route_default_by_time=True) замораживает дефолтный NOTE;
+    # в расшифровке есть время → одна запись-задача с напоминанием (не «заметка +
+    # задача»). Прогон менять нельзя (append-only), поэтому фактический тип несём
+    # в УВЕДОМЛЕНИЕ, чтобы метка «сохранено: …» честно сказала «Задача».
+    _, run_id, step_id = await _create_claimed_transcription(
+        engine,
+        schema_engine,
+        output_type=TranscriptionOutputType.NOTE,
+        route_default_by_time=True,
+    )
+    spy = SpyConfirmationDelivery()
+
+    await _transcription_completion(engine, spy).complete(
+        CompleteVoiceTranscriptionCommand(
+            access_context=ACCESS,
+            step_id=step_id,
+            draft=_draft(text="позвонить в банк завтра в 10:00"),
+            completed_at=NOW + timedelta(seconds=2),
+        )
+    )
+
+    async with schema_engine.connect() as connection:
+        tasks = await connection.scalar(select(func.count()).select_from(TaskModel))
+        notes = await connection.scalar(select(func.count()).select_from(NoteModel))
+        reminders = await connection.scalar(
+            select(func.count()).select_from(ReminderModel)
+        )
+        run_output_type = await connection.scalar(
+            select(ProcessingRunModel.output_type).where(
+                ProcessingRunModel.id == run_id
+            )
+        )
+        notice_output_type = await connection.scalar(
+            select(ProcessingNoticeModel.output_type).where(
+                ProcessingNoticeModel.processing_run_id == run_id
+            )
+        )
+    assert (tasks, notes, reminders) == (1, 0, 1)
+    # Прогон append-only — остаётся замороженным NOTE…
+    assert run_output_type is TranscriptionOutputType.NOTE
+    # …а уведомление несёт ФАКТ: метка скажет «✅ Задача».
+    assert notice_output_type is TranscriptionOutputType.TASK
+    assert spy.sent == [("⏰ Напомню 15.07.2026 10:00", 42)]
+
+
+@pytest.mark.asyncio
+async def test_voice_explicit_note_keeps_note_even_with_a_time(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # «Кнопка главнее»: явно нажал «Заметка» перед диктовкой (route_default_by_time
+    # =False) → остаётся заметкой даже со временем, без задачи и напоминания.
+    _, _, step_id = await _create_claimed_transcription(
+        engine,
+        schema_engine,
+        output_type=TranscriptionOutputType.NOTE,
+        route_default_by_time=False,
+    )
+    spy = SpyConfirmationDelivery()
+
+    await _transcription_completion(engine, spy).complete(
+        CompleteVoiceTranscriptionCommand(
+            access_context=ACCESS,
+            step_id=step_id,
+            draft=_draft(text="позвонить в банк завтра в 10:00"),
+            completed_at=NOW + timedelta(seconds=2),
+        )
+    )
+
+    async with schema_engine.connect() as connection:
+        notes = await connection.scalar(select(func.count()).select_from(NoteModel))
+        tasks = await connection.scalar(select(func.count()).select_from(TaskModel))
+        reminders = await connection.scalar(
+            select(func.count()).select_from(ReminderModel)
+        )
+    assert (notes, tasks, reminders) == (1, 0, 0)
+    assert spy.sent == []
 
 
 @pytest.mark.asyncio

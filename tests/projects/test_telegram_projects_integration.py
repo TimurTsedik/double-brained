@@ -44,7 +44,6 @@ from second_brain.slices.tasks.adapters.persistence.models import (
     PendingCaptureSelectionModel,
     TaskModel,
 )
-from second_brain.slices.tasks.domain.entities import PendingCaptureType
 from tests.projects.conftest import ACCESS_A, NOW
 
 
@@ -229,8 +228,9 @@ async def test_project_creation_mode_is_mutually_exclusive_with_search_and_captu
     assert await count(schema_engine, CaptureEventModel) == 0
     async with create_session_factory(schema_engine)() as session:
         selection = await session.scalar(select(PendingCaptureSelectionModel))
-    assert selection is not None
-    assert selection.selection is PendingCaptureType.NOTE
+    # Режим создания проекта взаимоисключающий → незакрытый выбор «Идея»
+    # ОЧИЩЕН удалением строки (нет висящего явного выбора).
+    assert selection is None
 
     await app.process(callback(304, "projects:create"))
     await app.process(callback(305, "capture:task"))

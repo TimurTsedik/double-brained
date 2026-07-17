@@ -52,6 +52,15 @@ class TimeExtractor(Protocol):
 
     def extract_due(self, text: str, now: datetime, tz: str) -> datetime | None: ...
 
+    def might_contain_due(self, text: str) -> bool:
+        """Копеечный tz-независимый прескрин: МОЖЕТ ли в тексте быть время-суток.
+
+        Позволяет вызывающему пропустить резолв часового пояса (поход в базу)
+        для обычной заметки без времени. ``True`` не гарантирует напоминание —
+        только что стоит запускать полный разбор.
+        """
+        ...
+
 
 class SpaceTimezoneReader(Protocol):
     async def resolve_timezone(self, access_context: AccessContext) -> str: ...

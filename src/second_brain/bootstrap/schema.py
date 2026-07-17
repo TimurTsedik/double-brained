@@ -44,7 +44,10 @@ from second_brain.slices.processing.adapters.persistence.models import (
     ProcessingStepModel,
     TranscriptModel,
 )
-from second_brain.slices.processing.domain.entities import ProcessingNoticeKind
+from second_brain.slices.processing.domain.entities import (
+    ProcessingNoticeKind,
+    TranscriptionOutputType,
+)
 from second_brain.slices.projects.adapters.persistence.models import (
     ProjectCaptureEventLinkModel,
     ProjectContextModel,
@@ -197,6 +200,7 @@ async def _initialize_processing_schema(engine: AsyncEngine, schema_name: str) -
     async with engine.begin() as connection:
         await connection.run_sync(_create_processing_tables)
         await _reconcile_notice_kind_check(connection, schema_name)
+        await _reconcile_processing_columns(connection, schema_name)
         for table_name in (
             "processing_runs",
             "processing_steps",
@@ -231,6 +235,40 @@ def _notice_kind_check_expression() -> str:
     # CHECK: сами значения ProcessingNoticeKind.
     kinds = ", ".join(f"'{kind.value}'" for kind in ProcessingNoticeKind)
     return f"kind IN ({kinds})"
+
+
+async def _reconcile_processing_columns(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    # create_all(checkfirst=True) пропускает СУЩЕСТВУЮЩИЕ таблицы, поэтому на
+    # живой БД новые колонки сами не появятся. Доращиваем идемпотентно: на свежей
+    # БД — no-op (колонка уже создана), на живой — ремонт. Оба поля — про
+    # маршрутизацию «дефолт со временем → задача» для голоса.
+    runs = f"{_quote_identifier(schema_name)}.processing_runs"
+    notices = f"{_quote_identifier(schema_name)}.processing_notices"
+    await connection.execute(
+        text(
+            f"ALTER TABLE {runs} ADD COLUMN IF NOT EXISTS "
+            "route_default_by_time boolean NOT NULL DEFAULT false"
+        )
+    )
+    await connection.execute(
+        text(f"ALTER TABLE {notices} ADD COLUMN IF NOT EXISTS output_type varchar")
+    )
+    # CHECK для не-нативного Enum на новой колонке (то же имя, что генерирует ORM
+    # на свежей БД): NULL проходит (IN даёт NULL, а не false) — так и надо для
+    # сбойных/пустых уведомлений.
+    values = ", ".join(f"'{item.value}'" for item in TranscriptionOutputType)
+    check = _quote_identifier("processing_notice_output_type")
+    await connection.execute(
+        text(f"ALTER TABLE {notices} DROP CONSTRAINT IF EXISTS {check}")
+    )
+    await connection.execute(
+        text(
+            f"ALTER TABLE {notices} ADD CONSTRAINT {check} "
+            f"CHECK (output_type IN ({values}))"
+        )
+    )
 
 
 async def _drop_processing_schema(engine: AsyncEngine) -> None:
@@ -524,6 +562,15 @@ async def _grant_task_privileges(connection: AsyncConnection, schema_name: str) 
             "GRANT UPDATE ON TABLE "
             f"{quoted_schema}.tasks, {quoted_schema}.pending_capture_selections "
             f"TO {APPLICATION_ROLE}"
+        )
+    )
+    # pending_capture_selections — транзиентное UI-состояние (одна строка на
+    # пространство): явный выбор ПОТРЕБЛЯЕТСЯ удалением строки, чтобы «нажал
+    # кнопку» отличалось от «не нажимал». Не append-only, поэтому DELETE уместен.
+    await connection.execute(
+        text(
+            "GRANT DELETE ON TABLE "
+            f"{quoted_schema}.pending_capture_selections TO {APPLICATION_ROLE}"
         )
     )
 

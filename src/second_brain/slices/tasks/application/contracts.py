@@ -27,6 +27,10 @@ class CreateTypedCaptureCommand:
     source_capture_event_id: UUID
     created_at: datetime
     trace_id: str
+    # Интерактивный ввод (текст/голос): дефолтная заметка с явным будущим
+    # временем сама становится напоминанием-задачей. Классификатор его НЕ ставит
+    # (под-пункты сохраняют выбранный ИИ тип).
+    route_default_by_time: bool = False
 
 
 @dataclass(frozen=True)

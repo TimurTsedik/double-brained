@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -73,6 +74,13 @@ class ProcessingRunModel(Base):
             values_callable=lambda values: [value.value for value in values],
         ),
         nullable=False,
+    )
+    # Голос замораживает output_type на capture (текста ещё нет). Если тип был
+    # ДЕФОЛТНЫМ (кнопку не нажимали), при расшифровке со временем он
+    # маршрутизируется в задачу; явно выбранный тип — нет. Флаг неизменяем
+    # (ставится на INSERT, прогон append-only).
+    route_default_by_time: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -230,6 +238,20 @@ class ProcessingNoticeModel(Base):
             values_callable=lambda values: [value.value for value in values],
         ),
         nullable=False,
+    )
+    # Фактический тип созданной записи для метки «сохранено: …». Голос
+    # замораживает тип прогона на capture (append-only, менять нельзя); если
+    # текст со временем стал задачей — реальный тип снимаем сюда. NULL у
+    # сбойных/пустых уведомлений (тип там не показывается).
+    output_type: Mapped[TranscriptionOutputType | None] = mapped_column(
+        Enum(
+            TranscriptionOutputType,
+            name="processing_notice_output_type",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda values: [value.value for value in values],
+        ),
+        nullable=True,
     )
     attempt_count: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

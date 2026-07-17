@@ -89,6 +89,7 @@ class ProcessingCompletionTarget:
     output_type: TranscriptionOutputType
     version: int
     trace_id: str
+    route_default_by_time: bool = False
 
 
 @dataclass(frozen=True)

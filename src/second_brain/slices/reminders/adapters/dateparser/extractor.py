@@ -81,12 +81,16 @@ _SETTINGS_LANGUAGES = ["ru", "en"]
 class DateparserTimeExtractor:
     """TimeExtractor over ``dateparser``. Deterministic given ``now`` + ``tz``."""
 
-    def extract_due(self, text: str, now: datetime, tz: str) -> datetime | None:
+    def might_contain_due(self, text: str) -> bool:
         # Прескрин: слишком длинно, либо нет ни цифр, ни словесной относительной
-        # формы («через минуту») → времени быть не может.
-        if len(text) > _MAX_TEXT_LENGTH:
-            return None
-        if not any(ch.isdigit() for ch in text) and not _WORDY_RELATIVE.search(text):
+        # формы («через минуту») → времени быть не может. tz-независим, поэтому
+        # вызывающий может им отсечь резолв пояса для заметок без времени.
+        return len(text) <= _MAX_TEXT_LENGTH and (
+            any(ch.isdigit() for ch in text) or bool(_WORDY_RELATIVE.search(text))
+        )
+
+    def extract_due(self, text: str, now: datetime, tz: str) -> datetime | None:
+        if not self.might_contain_due(text):
             return None
 
         text = _normalize_dash_clock(text)

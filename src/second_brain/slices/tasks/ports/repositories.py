@@ -35,7 +35,7 @@ class PendingCaptureSelectionStore(Protocol):
 
     async def consume_selection(
         self, command: ConsumePendingCaptureSelectionCommand
-    ) -> PendingCaptureType: ...
+    ) -> PendingCaptureType | None: ...
 
     async def consume_awaiting_task(
         self, command: ConsumePendingTaskTextCommand

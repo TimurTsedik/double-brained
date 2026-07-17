@@ -247,6 +247,23 @@ docker compose -f docker-compose.prod.yml up -d worker
 too only when the change touches what polling reads — for additive worker-side
 tables (e.g. `reminders`) that is not needed.
 
+If a release changes the MEANING of transient state, clear it once (forward-only
+— that table only holds an in-flight, not-yet-consumed button tap). The
+button-authority release does: an explicit type button is now consumed by
+DELETING its `pending_capture_selections` row, so a leftover `'note'` row from an
+older build would read as an explicit "Note" (suppressing the time→reminder
+default) until the owner's next message clears it. Reset it once right after
+`init-db`, using the schema-owner DSN from `.env` and `psql` inside the
+`postgres` service (same way `scripts/deploy_prod.sh` reaches the DB):
+
+```bash
+set -a; . ./.env; set +a
+docker compose -f docker-compose.prod.yml run --rm -T postgres \
+  psql "${SCHEMA_DATABASE_URL/+asyncpg/}" -c "DELETE FROM pending_capture_selections;"
+```
+
+(Skip it and the glitch self-heals after one message per space.)
+
 ## Automated checks
 
 ```bash

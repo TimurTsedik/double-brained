@@ -33,6 +33,7 @@ from second_brain.slices.processing.domain.entities import (
     ProcessingStepClaim,
     ProcessingStepStatus,
     ProcessingStepType,
+    TranscriptionOutputType,
 )
 
 MAX_ATTEMPTS = 3
@@ -194,6 +195,7 @@ class PostgresProcessingWriter:
             user_space_id=command.access_context.user_space_id,
             capture_event_id=command.capture_event_id,
             output_type=command.output_type,
+            route_default_by_time=command.route_default_by_time,
             version=1,
             created_at=command.created_at,
             updated_at=command.created_at,
@@ -405,6 +407,7 @@ class PostgresProcessingWriter:
             output_type=run.output_type,
             version=run.version,
             trace_id=run.trace_id,
+            route_default_by_time=run.route_default_by_time,
         )
 
     async def lock_classification_target(
@@ -475,6 +478,9 @@ class PostgresProcessingWriter:
             ProcessingNoticeKind.SUCCESS,
             command.completed_at,
             run.trace_id,
+            # Метка «сохранено: …» — по ФАКТУ материализации (голос со временем
+            # мог стать задачей); прогон менять нельзя (append-only).
+            output_type=command.resolved_output_type or run.output_type,
         )
         result = await self._succeed_locked_step(step, command.completed_at)
         await self._session.flush()
@@ -583,7 +589,9 @@ class PostgresProcessingWriter:
             notice_id=notice.id,
             run_id=run.id,
             kind=notice.kind,
-            output_type=run.output_type,
+            # Успех несёт фактический тип на самом уведомлении; у сбойных/пустых
+            # он NULL — там тип не показывается, берём замороженный из прогона.
+            output_type=notice.output_type or run.output_type,
             trace_id=notice.trace_id,
             attempt_count=notice.attempt_count,
         )
@@ -711,6 +719,7 @@ class PostgresProcessingWriter:
         kind: ProcessingNoticeKind,
         created_at: datetime,
         trace_id: str,
+        output_type: TranscriptionOutputType | None = None,
     ) -> None:
         await _set_user_space_scope(self._session, access_context)
         await self._session.execute(
@@ -721,6 +730,7 @@ class PostgresProcessingWriter:
                 processing_run_id=run_id,
                 kind=kind,
                 status=ProcessingNoticeStatus.PENDING,
+                output_type=output_type,
                 attempt_count=0,
                 next_attempt_at=created_at,
                 sent_at=None,

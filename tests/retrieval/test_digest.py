@@ -289,7 +289,7 @@ async def test_counters_match_the_listed_records_including_completed_tasks(
 
 
 @pytest.mark.asyncio
-async def test_completed_alarm_tasks_are_hidden_from_counters_and_list(
+async def test_alarm_tasks_are_hidden_from_the_digest_regardless_of_status(
     engine: AsyncEngine, schema_engine: AsyncEngine
 ) -> None:
     capture = await add_capture(schema_engine, ACCESS_A)
@@ -315,7 +315,7 @@ async def test_completed_alarm_tasks_are_hidden_from_counters_and_list(
         in_week - timedelta(minutes=1),
         status=TaskStatus.COMPLETED,
     )
-    # Незавершённая С напоминанием — остаётся видимой.
+    # Незавершённая С напоминанием — тоже будильник, тоже скрыта из сводки.
     alarm_pending = await add_record(
         schema_engine,
         ACCESS_A,
@@ -337,13 +337,15 @@ async def test_completed_alarm_tasks_are_hidden_from_counters_and_list(
     page = await read_digest(engine, ACCESS_A, DigestPeriod.WEEK, 0, AS_OF)
 
     assert page.counters == DigestCounters(
-        notes=1, tasks=2, tasks_completed=1, ideas=0, decisions=0, questions=0
+        notes=1, tasks=1, tasks_completed=1, ideas=0, decisions=0, questions=0
     )
     listed = {item.id for item in page.items}
+    # Оба будильника скрыты — и завершённый, и активный.
     assert alarm_done not in listed
-    assert listed == {plain_done, alarm_pending, note_id}
+    assert alarm_pending not in listed
+    assert listed == {plain_done, note_id}
     # Счётчики и список — один снимок: total сходится с фактической страницей.
-    assert page.total == len(page.items) == 3
+    assert page.total == len(page.items) == 2
 
 
 @pytest.mark.asyncio

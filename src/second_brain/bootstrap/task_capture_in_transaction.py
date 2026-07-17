@@ -126,7 +126,7 @@ class TaskCaptureInTransaction(
                 InheritCaptureProjectLinksCommand(
                     access_context=command.access_context,
                     source_capture_event_id=source.id,
-                    content_kind=_record_project_kind(record),
+                    content_kind=record_project_kind(record),
                     content_id=record.id,
                     created_at=command.received_at,
                     trace_id=command.trace_id,
@@ -136,7 +136,7 @@ class TaskCaptureInTransaction(
                 CreateTextProcessingRunCommand(
                     access_context=command.access_context,
                     capture_event_id=source.id,
-                    output_type=_record_output_type(record),
+                    output_type=record_output_type(record),
                     created_at=command.received_at,
                     trace_id=command.trace_id,
                 )
@@ -145,7 +145,7 @@ class TaskCaptureInTransaction(
                 RegisterIndexingTargetCommand(
                     access_context=command.access_context,
                     processing_run_id=run.id,
-                    record_kind=SearchRecordType(_record_output_type(record).value),
+                    record_kind=SearchRecordType(record_output_type(record).value),
                     record_id=record.id,
                     created_at=command.received_at,
                     trace_id=command.trace_id,
@@ -316,9 +316,12 @@ def _typed_task_capture(session: AsyncSession) -> TaskCapture:
     return build_task_capture(session)
 
 
-def _record_output_type(
+def record_output_type(
     record: Task | Note | Idea | Decision | Question,
 ) -> TranscriptionOutputType:
+    """Тип обработки по ФАКТИЧЕСКИ созданной записи (для голоса, где текст со
+    временем мог быть маршрутизирован NOTE→TASK — индексация и метка
+    уведомления идут за фактом, а не за замороженным типом)."""
     if isinstance(record, Task):
         return TranscriptionOutputType.TASK
     if isinstance(record, Note):
@@ -330,9 +333,11 @@ def _record_output_type(
     return TranscriptionOutputType.QUESTION
 
 
-def _record_project_kind(
+def record_project_kind(
     record: Task | Note | Idea | Decision | Question,
 ) -> ProjectContentKind:
+    """Вид записи для проектных связей — по ФАКТИЧЕСКОЙ записи (см.
+    ``record_output_type``)."""
     if isinstance(record, Task):
         return ProjectContentKind.TASK
     if isinstance(record, Note):

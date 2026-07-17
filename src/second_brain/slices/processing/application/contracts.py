@@ -27,6 +27,9 @@ class CreateVoiceProcessingRunCommand:
     output_type: TranscriptionOutputType
     created_at: datetime
     trace_id: str
+    # Тип заморожен ДЕФОЛТНО (кнопку не нажимали) → при расшифровке со временем
+    # маршрутизируется в задачу. Явно выбранный тип — False.
+    route_default_by_time: bool = False
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,9 @@ class CreateTextProcessingRunCommand:
     output_type: TranscriptionOutputType
     created_at: datetime
     trace_id: str
+    # Текст материализуется синхронно по факту → тип уже финальный, доп.
+    # маршрутизация на завершении не нужна.
+    route_default_by_time: bool = False
 
 
 @dataclass(frozen=True)
@@ -121,6 +127,10 @@ class CompleteVoiceTranscriptionCommand:
     step_id: UUID
     draft: TranscriptionDraft = field(repr=False)
     completed_at: datetime
+    # Фактический тип записи после материализации (голос со временем мог стать
+    # задачей). Проставляет bootstrap ПОСЛЕ create_for_selection; идёт в метку
+    # уведомления. None → метку берём из замороженного типа прогона.
+    resolved_output_type: TranscriptionOutputType | None = None
 
 
 @dataclass(frozen=True)
