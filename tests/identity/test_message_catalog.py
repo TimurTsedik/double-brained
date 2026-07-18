@@ -10,6 +10,7 @@ from aiogram import Bot
 
 import second_brain.slices.identity.adapters.telegram.gateway as gateway_module
 import second_brain.slices.identity.adapters.telegram.poller as poller_module
+import second_brain.slices.identity.adapters.telegram.presenter as presenter_module
 from second_brain.shared.i18n import Locale
 from second_brain.slices.identity.adapters.telegram import messages
 from second_brain.slices.identity.adapters.telegram.dto import TelegramUpdate
@@ -131,7 +132,7 @@ def test_placeholder_sets_match_across_locales() -> None:
 
 
 # ---------------------------------------------------------------------------
-# (б) anti-hardcode scan of gateway.py and poller.py
+# (б) anti-hardcode scan of gateway.py, poller.py and presenter.py
 #
 # Граница «пользовательский текст vs формат»: литерал в text= считается
 # пользовательским тогда и только тогда, когда содержит АЛФАВИТНЫЙ символ
@@ -196,6 +197,11 @@ def test_gateway_has_no_hardcoded_user_text() -> None:
 
 def test_poller_has_no_hardcoded_user_text() -> None:
     path = Path(cast(str, poller_module.__file__))
+    assert _hardcoded_user_text(path) == []
+
+
+def test_presenter_has_no_hardcoded_user_text() -> None:
+    path = Path(cast(str, presenter_module.__file__))
     assert _hardcoded_user_text(path) == []
 
 
