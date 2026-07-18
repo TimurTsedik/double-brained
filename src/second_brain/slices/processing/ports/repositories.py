@@ -4,8 +4,10 @@ from uuid import UUID
 
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.processing.application.contracts import (
+    CompleteImageDownloadCommand,
     CompleteVoiceDownloadCommand,
     CompleteVoiceTranscriptionCommand,
+    CreateImageProcessingRunCommand,
     CreateTextProcessingRunCommand,
     CreateVoiceProcessingRunCommand,
     FailProcessingStepCommand,
@@ -32,6 +34,10 @@ class ProcessingRepository(Protocol):
         self, command: CreateTextProcessingRunCommand
     ) -> ProcessingRun: ...
 
+    async def create_image_run(
+        self, command: CreateImageProcessingRunCommand
+    ) -> ProcessingRun: ...
+
     async def claim_due_step(
         self,
         access_context: AccessContext,
@@ -56,6 +62,10 @@ class ProcessingRepository(Protocol):
 
     async def complete_voice_download(
         self, command: CompleteVoiceDownloadCommand
+    ) -> ProcessingStep: ...
+
+    async def complete_image_download(
+        self, command: CompleteImageDownloadCommand
     ) -> ProcessingStep: ...
 
     async def lock_transcription_target(

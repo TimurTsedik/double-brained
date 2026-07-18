@@ -1,6 +1,6 @@
 from typing import cast
 
-from sqlalchemy import text
+from sqlalchemy import CheckConstraint, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.sql.schema import Table
@@ -9,6 +9,7 @@ from second_brain.slices.capture.adapters.persistence.models import (
     CaptureEventModel,
     TelegramAttachmentModel,
 )
+from second_brain.slices.capture.domain.entities import CaptureSourceKind
 from second_brain.slices.classification.adapters.persistence.models import (
     ClassificationResultModel,
 )
@@ -46,6 +47,7 @@ from second_brain.slices.processing.adapters.persistence.models import (
 )
 from second_brain.slices.processing.domain.entities import (
     ProcessingNoticeKind,
+    ProcessingStepType,
     TranscriptionOutputType,
 )
 from second_brain.slices.projects.adapters.persistence.models import (
@@ -197,9 +199,83 @@ async def reset_prototype_schema(
 async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_create_capture_tables)
+        await _reconcile_capture_image_columns(connection, schema_name)
         for table_name in ("capture_events", "telegram_attachments"):
             await _configure_user_space_rls(connection, schema_name, table_name)
         await _grant_capture_privileges(connection, schema_name)
+
+
+async def _reconcile_capture_image_columns(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    # create_all(checkfirst=True) пропускает СУЩЕСТВУЮЩИЕ таблицы, поэтому живая
+    # прод-БД (голос/текст) сама не получит ни source_kind='image', ни колонок
+    # фото. Доращиваем идемпотентно: на свежей БД — no-op/повтор того же
+    # предиката, на живой — ремонт. Новые наборы — строгие супермножества
+    # старых, ни одна существующая строка их не нарушает.
+    events = f"{_quote_identifier(schema_name)}.capture_events"
+    attachments = f"{_quote_identifier(schema_name)}.telegram_attachments"
+    # 1) enum-CHECK source_kind: + 'image' (имя генерирует не-нативный Enum).
+    kinds = ", ".join(f"'{kind.value}'" for kind in CaptureSourceKind)
+    await _reapply_named_check(
+        connection, events, "capture_source_kind", f"source_kind IN ({kinds})"
+    )
+    # 2) содержимое по виду: image допускает raw_text NULL ИЛИ непустой caption.
+    await _reapply_model_check(
+        connection, events, CaptureEventModel, "ck_capture_events_kind_content"
+    )
+    # 3) attachment'ы: фото-колонки + послабление NOT NULL длительности.
+    await connection.execute(
+        text(f"ALTER TABLE {attachments} ADD COLUMN IF NOT EXISTS width integer")
+    )
+    await connection.execute(
+        text(f"ALTER TABLE {attachments} ADD COLUMN IF NOT EXISTS height integer")
+    )
+    await connection.execute(
+        text(f"ALTER TABLE {attachments} ALTER COLUMN duration_seconds DROP NOT NULL")
+    )
+    await _reapply_named_check(
+        connection, attachments, "telegram_attachment_kind", f"kind IN ({kinds})"
+    )
+    for check_name in (
+        "ck_telegram_attachments_kind",
+        "ck_telegram_attachments_duration",
+        "ck_telegram_attachments_kind_fields",
+        "ck_telegram_attachments_dimensions",
+    ):
+        await _reapply_model_check(
+            connection, attachments, TelegramAttachmentModel, check_name
+        )
+
+
+async def _reapply_named_check(
+    connection: AsyncConnection, table: str, check_name: str, expression: str
+) -> None:
+    quoted_name = _quote_identifier(check_name)
+    await connection.execute(
+        text(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {quoted_name}")
+    )
+    await connection.execute(
+        text(f"ALTER TABLE {table} ADD CONSTRAINT {quoted_name} CHECK ({expression})")
+    )
+
+
+async def _reapply_model_check(
+    connection: AsyncConnection, table: str, model: type[object], check_name: str
+) -> None:
+    # Единственный источник предиката — ORM-модель: реконсиляция не может
+    # разъехаться со свежесозданной схемой.
+    await _reapply_named_check(
+        connection, table, check_name, _model_check_expression(model, check_name)
+    )
+
+
+def _model_check_expression(model: type[object], check_name: str) -> str:
+    table = cast(Table, model.__table__)  # type: ignore[attr-defined]
+    for constraint in table.constraints:
+        if isinstance(constraint, CheckConstraint) and constraint.name == check_name:
+            return str(constraint.sqltext)
+    raise RuntimeError(f"CHECK constraint {check_name} is missing from the ORM model")
 
 
 async def _drop_capture_schema(engine: AsyncEngine) -> None:
@@ -279,6 +355,30 @@ async def _reconcile_processing_columns(
             f"ALTER TABLE {notices} ADD CONSTRAINT {check} "
             f"CHECK (output_type IN ({values}))"
         )
+    )
+    # --- S2 «Изображения»: живая БД доращивается до image-прогонов. ---
+    steps = f"{_quote_identifier(schema_name)}.processing_steps"
+    # enum-CHECK шага: + 'image_download' (имя генерирует не-нативный Enum).
+    step_types = ", ".join(f"'{item.value}'" for item in ProcessingStepType)
+    await _reapply_named_check(
+        connection, steps, "processing_step_type", f"step_type IN ({step_types})"
+    )
+    # output_type становится NULLABLE: source-only прогоны (фото без подписи)
+    # не подставляют фиктивный тип. NULL разрешён ТОЛЬКО им — CHECK ниже.
+    await connection.execute(
+        text(f"ALTER TABLE {runs} ALTER COLUMN output_type DROP NOT NULL")
+    )
+    await connection.execute(
+        text(
+            f"ALTER TABLE {runs} ADD COLUMN IF NOT EXISTS "
+            "source_only boolean NOT NULL DEFAULT false"
+        )
+    )
+    await _reapply_model_check(
+        connection,
+        runs,
+        ProcessingRunModel,
+        "ck_processing_runs_output_type_source_only",
     )
 
 

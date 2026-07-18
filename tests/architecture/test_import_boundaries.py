@@ -321,6 +321,7 @@ def test_capture_transaction_composition_is_limited_to_bootstrap() -> None:
 
     assert set(modules_using_both_transaction_and_capture_writer) == {
         Path("bootstrap/capture_in_transaction.py"),
+        Path("bootstrap/image_capture_in_transaction.py"),
         Path("bootstrap/task_capture_in_transaction.py"),
         Path("bootstrap/voice_capture_in_transaction.py"),
     }

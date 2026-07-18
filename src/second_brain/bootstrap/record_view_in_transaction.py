@@ -1,4 +1,5 @@
 from dataclasses import replace
+from pathlib import Path, PurePosixPath
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -18,6 +19,7 @@ from second_brain.slices.retrieval.adapters.persistence.repository import (
     PostgresRecordViewReader,
 )
 from second_brain.slices.retrieval.application.contracts import (
+    RecordImageSource,
     RecordView,
     RecordViewPort,
 )
@@ -35,6 +37,11 @@ from second_brain.slices.weblinks.application.contracts import (
 
 class RecordViewInTransaction(RecordViewPort, RecordLinksPort):
     """Bootstrap-композиция показа записи целиком внутри update-транзакции."""
+
+    def __init__(self, image_storage_root: str | None = None) -> None:
+        # Корень хранилища оригиналов фото: storage_key → локальный путь для
+        # фоллбека байтами. None (тесты без фото) — байтового фоллбека нет.
+        self._image_storage_root = image_storage_root
 
     async def read_record_full(
         self,
@@ -70,6 +77,29 @@ class RecordViewInTransaction(RecordViewPort, RecordLinksPort):
             access_context, record_type, record_id
         )
 
+    async def image_source_for_record(
+        self,
+        access_context: AccessContext,
+        record_type: SearchRecordType,
+        record_id: UUID,
+        transaction: UpdateTransaction,
+    ) -> RecordImageSource | None:
+        # file_id + локальный путь к скачанному оригиналу (если download-шаг
+        # уже отработал): fast path и фоллбек байтами для показа фото.
+        session = _active_session(transaction)
+        attachment = await PostgresRecordViewReader(session).image_attachment(
+            access_context, record_type, record_id
+        )
+        if attachment is None:
+            return None
+        telegram_file_id, storage_key = attachment
+        local_path = None
+        if storage_key is not None and self._image_storage_root is not None:
+            local_path = contained_image_path(self._image_storage_root, storage_key)
+        return RecordImageSource(
+            telegram_file_id=telegram_file_id, local_path=local_path
+        )
+
     async def links_for_record(
         self,
         access_context: AccessContext,
@@ -89,3 +119,20 @@ def _active_session(transaction: UpdateTransaction) -> AsyncSession:
     if not isinstance(transaction, PostgresUpdateTransaction):
         raise TypeError("record view requires the PostgreSQL update transaction")
     return transaction.active_session
+
+
+def contained_image_path(root: str, storage_key: str) -> str | None:
+    """Локальный путь оригинала СТРОГО внутри корня хранилища, иначе None.
+
+    storage_key приходит из БД: абсолютный путь или «../» в испорченной строке
+    заставили бы show-full отправить произвольный локальный файл — такой ключ
+    отвергается (фото просто не шлётся, текстовая пометка остаётся).
+    """
+    resolved_root = Path(root).expanduser().resolve()
+    key = PurePosixPath(storage_key)
+    if key.is_absolute() or ".." in key.parts:
+        return None
+    candidate = resolved_root.joinpath(*key.parts).resolve()
+    if not candidate.is_relative_to(resolved_root):
+        return None
+    return str(candidate)

@@ -11,6 +11,9 @@ from second_brain.bootstrap.classification_source import (
     PostgresClassificationSourceReader,
 )
 from second_brain.bootstrap.classification_worker import ClassificationWorker
+from second_brain.bootstrap.image_processing_completion import (
+    ImageDownloadCompletionInTransaction,
+)
 from second_brain.bootstrap.indexing_completion import IndexingCompletionInTransaction
 from second_brain.bootstrap.indexing_source import PostgresIndexingSourceReader
 from second_brain.bootstrap.indexing_worker import IndexingWorker
@@ -37,6 +40,7 @@ from second_brain.bootstrap.voice_processing_completion import (
 )
 from second_brain.shared.clock import SystemClock
 from second_brain.slices.capture.adapters.persistence.repository import (
+    PostgresImageSourceRepository,
     PostgresVoiceSourceRepository,
 )
 from second_brain.slices.classification.adapters.openrouter.model import (
@@ -65,8 +69,14 @@ from second_brain.slices.memory.application.answer_question import AnswerMemoryQ
 from second_brain.slices.processing.adapters.persistence.repository import (
     PostgresProcessingRepository,
 )
+from second_brain.slices.processing.adapters.storage.local_image_storage import (
+    LocalImageStorage,
+)
 from second_brain.slices.processing.adapters.storage.local_voice_storage import (
     LocalVoiceStorage,
+)
+from second_brain.slices.processing.adapters.telegram.image import (
+    AiogramImageDownloader,
 )
 from second_brain.slices.processing.adapters.telegram.voice import (
     AiogramVoiceDownloader,
@@ -79,6 +89,7 @@ from second_brain.slices.processing.application.contracts import (
     MarkProcessingNoticeSentCommand,
     SendProcessingNoticeCommand,
 )
+from second_brain.slices.processing.application.image_worker import ImageWorker
 from second_brain.slices.processing.application.voice_worker import VoiceWorker
 from second_brain.slices.processing.ports.repositories import ProcessingRepository
 from second_brain.slices.processing.ports.voice import ProcessingNotifier
@@ -120,8 +131,15 @@ async def process_access_once(
     memory_worker: StepWorker | None = None,
     reminder_delivery: StepWorker | None = None,
     title_fetch: StepWorker | None = None,
+    image_worker: StepWorker | None = None,
 ) -> bool:
     worked = await worker.process_once(access_context, now)
+    # Скачивание оригиналов фото — шаг ТОГО ЖЕ цикла (нового процесса нет).
+    imaged = (
+        await image_worker.process_once(access_context, now)
+        if image_worker is not None
+        else False
+    )
     classified = await classification_worker.process_once(access_context, now)
     indexed = await indexing_worker.process_once(access_context, now)
     answered = (
@@ -143,7 +161,7 @@ async def process_access_once(
         if title_fetch is not None
         else False
     )
-    worked = worked or classified or indexed or answered or reminded or titled
+    worked = worked or imaged or classified or indexed or answered or reminded or titled
     notice = await processing_repository.claim_due_notice(access_context, now)
     if notice is None:
         return worked
@@ -193,6 +211,18 @@ async def run_local_voice_worker(settings: Settings) -> None:
             transcription_completion=VoiceTranscriptionCompletionInTransaction(
                 session_factory, reminder_send, identities
             ),
+        )
+        image_storage = LocalImageStorage(
+            settings.image_storage_root,
+            max_bytes=settings.image_max_file_size_bytes,
+        )
+        await image_storage.prepare()
+        image_worker = ImageWorker(
+            queue=processing,
+            image_source=PostgresImageSourceRepository(session_factory),
+            downloader=AiogramImageDownloader(bot),
+            storage=image_storage,
+            download_completion=ImageDownloadCompletionInTransaction(session_factory),
         )
         classification_worker = ClassificationWorker(
             queue=processing,
@@ -261,6 +291,7 @@ async def run_local_voice_worker(settings: Settings) -> None:
                         memory_worker=memory_worker,
                         reminder_delivery=reminder_delivery,
                         title_fetch=title_fetch,
+                        image_worker=image_worker,
                     )
                     worked = processed or worked
                 except Exception:

@@ -67,6 +67,8 @@ class SearchRecord:
     created_at: datetime
     task_completed: bool | None
     match_quality: MatchQuality
+    # Запись рождена из подписи к фото — списки помечают её 📷 (спека §2.2).
+    has_image_source: bool = False
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,9 @@ class RecordView:
     text: str = field(repr=False)
     created_at: datetime
     task_completed: bool | None
+    # У записи есть изображение-источник (capture_events.source_kind='image') —
+    # показ добавляет пометку «📷 …». Для списков остаётся дефолтным False.
+    has_image_source: bool = False
 
 
 class DigestPeriod(StrEnum):

@@ -26,7 +26,10 @@ class CaptureEventModel(Base):
         CheckConstraint("channel = 'telegram'", name="ck_capture_events_channel"),
         CheckConstraint(
             "(source_kind = 'text' AND raw_text IS NOT NULL AND raw_text <> '') "
-            "OR (source_kind = 'voice' AND raw_text IS NULL)",
+            "OR (source_kind = 'voice' AND raw_text IS NULL) "
+            # image: подпись хранится в raw_text как у текста, а без подписи —
+            # NULL (записи нет, но журнал и файл сохранены).
+            "OR (source_kind = 'image' AND (raw_text IS NULL OR raw_text <> ''))",
             name="ck_capture_events_kind_content",
         ),
         CheckConstraint(
@@ -94,10 +97,26 @@ class TelegramAttachmentModel(Base):
             ],
             name="fk_telegram_attachments_capture_same_space_kind",
         ),
-        CheckConstraint("kind = 'voice'", name="ck_telegram_attachments_kind"),
         CheckConstraint(
-            "duration_seconds >= 0",
+            "kind IN ('voice', 'image')", name="ck_telegram_attachments_kind"
+        ),
+        CheckConstraint(
+            "duration_seconds IS NULL OR duration_seconds >= 0",
             name="ck_telegram_attachments_duration",
+        ),
+        # Kind-условные поля: voice несёт длительность (размеров нет), image —
+        # размеры (длительности нет). Составной FK уже гарантирует
+        # kind = capture_events.source_kind.
+        CheckConstraint(
+            "(kind = 'voice' AND duration_seconds IS NOT NULL "
+            "AND width IS NULL AND height IS NULL) OR "
+            "(kind = 'image' AND width IS NOT NULL AND height IS NOT NULL "
+            "AND duration_seconds IS NULL)",
+            name="ck_telegram_attachments_kind_fields",
+        ),
+        CheckConstraint(
+            "(width IS NULL OR width >= 0) AND (height IS NULL OR height >= 0)",
+            name="ck_telegram_attachments_dimensions",
         ),
         CheckConstraint(
             "telegram_file_size IS NULL OR telegram_file_size >= 0",
@@ -142,7 +161,9 @@ class TelegramAttachmentModel(Base):
     )
     telegram_file_id: Mapped[str] = mapped_column(Text, nullable=False)
     telegram_file_unique_id: Mapped[str] = mapped_column(Text, nullable=False)
-    duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
     telegram_file_size: Mapped[int | None] = mapped_column(Integer)
     telegram_mime_type: Mapped[str | None] = mapped_column(String(255))
     storage_key: Mapped[str | None] = mapped_column(Text)

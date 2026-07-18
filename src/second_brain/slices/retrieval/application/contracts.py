@@ -105,6 +105,19 @@ class MemoryRetrievalPort(Protocol):
 
 
 @dataclass(frozen=True)
+class RecordImageSource:
+    """Изображение-источник записи для показа (спека §2.2).
+
+    file_id — только fast path (bot-локален, не вечное хранилище); источник
+    истины — скачанные байты хранилища: local_path None, пока download-шаг
+    воркера не сохранил оригинал.
+    """
+
+    telegram_file_id: str = field(repr=False)
+    local_path: str | None = field(repr=False)
+
+
+@dataclass(frozen=True)
 class RecordViewResult:
     # Полный текст записи и «похожее» — transient-payload показа: текст записей
     # не должен просочиться в repr/логи.
@@ -113,6 +126,9 @@ class RecordViewResult:
     # Sidecar-ссылки записи (label/url/title) для блока «🔗 Ссылки:» под
     # дословным текстом; тоже пользовательское содержимое — вне repr/логов.
     links: tuple[RecordLinkView, ...] = field(default=(), repr=False)
+    # Изображение-источник (file_id — PII): показ шлёт фото отдельным
+    # сообщением после текста записи.
+    image: RecordImageSource | None = field(default=None, repr=False)
 
 
 class RecordViewPort(Protocol):
@@ -133,6 +149,14 @@ class RecordViewPort(Protocol):
         record_id: UUID,
         transaction: UpdateTransaction,
     ) -> tuple[RecordView, ...]: ...
+
+    async def image_source_for_record(
+        self,
+        access_context: AccessContext,
+        record_type: SearchRecordType,
+        record_id: UUID,
+        transaction: UpdateTransaction,
+    ) -> RecordImageSource | None: ...
 
 
 @dataclass(frozen=True)

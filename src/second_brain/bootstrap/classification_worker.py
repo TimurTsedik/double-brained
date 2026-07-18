@@ -50,6 +50,10 @@ class ClassificationWorker:
         if claim is None:
             return False
         try:
+            # Source-only прогоны (output_type NULL) шага CLASSIFICATION не
+            # имеют — NULL здесь означает порчу данных, честно валим шаг.
+            if claim.output_type is None:
+                raise ValueError("classification requires a typed processing run")
             source = await self._source_reader.read(
                 ReadClassificationSourceCommand(
                     access_context=access_context,

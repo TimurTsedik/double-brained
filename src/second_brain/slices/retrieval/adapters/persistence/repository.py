@@ -25,6 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute, aliased
 from sqlalchemy.sql import Select
 
+from second_brain.slices.capture.adapters.persistence.models import (
+    CaptureEventModel,
+    TelegramAttachmentModel,
+)
+from second_brain.slices.capture.domain.entities import CaptureSourceKind
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.knowledge.adapters.persistence.models import (
     DecisionModel,
@@ -380,6 +385,22 @@ _KNOWLEDGE_MODELS: dict[
 }
 
 
+def _image_source_exists(
+    source_column: InstrumentedAttribute[UUID],
+) -> ColumnElement[bool]:
+    # «У записи есть изображение-источник»: EXISTS по capture_events того же
+    # forced-RLS сеанса (чужие пространства невидимы), корреляция по id
+    # источника записи.
+    return (
+        select(CaptureEventModel.id)
+        .where(
+            CaptureEventModel.id == source_column,
+            CaptureEventModel.source_kind == CaptureSourceKind.IMAGE,
+        )
+        .exists()
+    )
+
+
 class PostgresRecordViewReader:
     """Читает каноническую запись по (типу, uuid, пространству) под RLS и считает
     кандидатов «похожего» по чанкам ТЕКУЩИХ embedding_model+INDEX_VERSION."""
@@ -398,7 +419,12 @@ class PostgresRecordViewReader:
             task_row = (
                 await self._session.execute(
                     select(
-                        TaskModel.title, TaskModel.created_at, TaskModel.status
+                        TaskModel.title,
+                        TaskModel.created_at,
+                        TaskModel.status,
+                        _image_source_exists(TaskModel.source_capture_event_id).label(
+                            "has_image_source"
+                        ),
                     ).where(
                         TaskModel.id == record_id,
                         TaskModel.user_space_id == access_context.user_space_id,
@@ -413,11 +439,18 @@ class PostgresRecordViewReader:
                 text=task_row.title,
                 created_at=task_row.created_at,
                 task_completed=task_row.status == TaskStatus.COMPLETED,
+                has_image_source=bool(task_row.has_image_source),
             )
         model = _KNOWLEDGE_MODELS[record_kind]
         row = (
             await self._session.execute(
-                select(model.text, model.created_at).where(
+                select(
+                    model.text,
+                    model.created_at,
+                    _image_source_exists(model.source_capture_event_id).label(
+                        "has_image_source"
+                    ),
+                ).where(
                     model.id == record_id,
                     model.user_space_id == access_context.user_space_id,
                 )
@@ -431,7 +464,50 @@ class PostgresRecordViewReader:
             text=row.text,
             created_at=row.created_at,
             task_completed=None,
+            has_image_source=bool(row.has_image_source),
         )
+
+    async def image_attachment(
+        self,
+        access_context: AccessContext,
+        record_kind: SearchRecordType,
+        record_id: UUID,
+    ) -> tuple[str, str | None] | None:
+        """(telegram_file_id, storage_key) image-источника записи или None.
+
+        storage_key None — оригинал ещё не скачан download-шагом воркера
+        (fast path по file_id остаётся единственной попыткой показа).
+        """
+        await _set_user_space_scope(self._session, access_context)
+        model = (
+            TaskModel
+            if record_kind is SearchRecordType.TASK
+            else _KNOWLEDGE_MODELS[record_kind]
+        )
+        row = (
+            await self._session.execute(
+                select(
+                    TelegramAttachmentModel.telegram_file_id,
+                    TelegramAttachmentModel.storage_key,
+                )
+                .join(
+                    model,
+                    and_(
+                        model.source_capture_event_id
+                        == TelegramAttachmentModel.capture_event_id,
+                        model.user_space_id == TelegramAttachmentModel.user_space_id,
+                    ),
+                )
+                .where(
+                    model.id == record_id,
+                    model.user_space_id == access_context.user_space_id,
+                    TelegramAttachmentModel.kind == CaptureSourceKind.IMAGE,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        return row.telegram_file_id, row.storage_key
 
     async def related_candidates(
         self,
@@ -563,6 +639,8 @@ class PostgresDigestReader:
                     if source.record_type is SearchRecordType.TASK
                     else not_a_task
                 ),
+                # Метка 📷 — коррелированным EXISTS в том же union-запросе.
+                _image_source_exists(source.source_column).label("has_image_source"),
             ).where(
                 source.user_space_column == access_context.user_space_id,
                 source.created_column >= start,
@@ -590,6 +668,7 @@ class PostgresDigestReader:
                 text=row["text"],
                 created_at=row["created_at"],
                 task_completed=row["task_completed"],
+                has_image_source=bool(row["has_image_source"]),
             )
             for row in rows
         )
@@ -602,6 +681,7 @@ class _DigestSource:
     user_space_column: InstrumentedAttribute[UUID]
     content_column: InstrumentedAttribute[str]
     created_column: InstrumentedAttribute[Any]
+    source_column: InstrumentedAttribute[UUID]
 
 
 def _digest_sources() -> tuple[_DigestSource, ...]:
@@ -612,6 +692,7 @@ def _digest_sources() -> tuple[_DigestSource, ...]:
             NoteModel.user_space_id,
             NoteModel.text,
             NoteModel.created_at,
+            NoteModel.source_capture_event_id,
         ),
         _DigestSource(
             SearchRecordType.TASK,
@@ -619,6 +700,7 @@ def _digest_sources() -> tuple[_DigestSource, ...]:
             TaskModel.user_space_id,
             TaskModel.title,
             TaskModel.created_at,
+            TaskModel.source_capture_event_id,
         ),
         _DigestSource(
             SearchRecordType.IDEA,
@@ -626,6 +708,7 @@ def _digest_sources() -> tuple[_DigestSource, ...]:
             IdeaModel.user_space_id,
             IdeaModel.text,
             IdeaModel.created_at,
+            IdeaModel.source_capture_event_id,
         ),
         _DigestSource(
             SearchRecordType.DECISION,
@@ -633,6 +716,7 @@ def _digest_sources() -> tuple[_DigestSource, ...]:
             DecisionModel.user_space_id,
             DecisionModel.text,
             DecisionModel.created_at,
+            DecisionModel.source_capture_event_id,
         ),
         _DigestSource(
             SearchRecordType.QUESTION,
@@ -640,6 +724,7 @@ def _digest_sources() -> tuple[_DigestSource, ...]:
             QuestionModel.user_space_id,
             QuestionModel.text,
             QuestionModel.created_at,
+            QuestionModel.source_capture_event_id,
         ),
     )
 
@@ -712,6 +797,9 @@ def _search_branch(
         created_column.label("created_at"),
         task_completed,
         quality,
+        # Метка 📷 — коррелированным EXISTS в ТОМ ЖЕ запросе (не по запросу
+        # на строку результата).
+        _image_source_exists(source_column).label("has_image_source"),
     ).where(
         user_space_column == user_space_id,
         or_(substring_match, full_text_match),
@@ -727,6 +815,7 @@ def _to_record(row: Any) -> SearchRecord:
         created_at=row["created_at"],
         task_completed=row["task_completed"],
         match_quality=MatchQuality(row["match_quality"]),
+        has_image_source=bool(row["has_image_source"]),
     )
 
 

@@ -380,7 +380,13 @@ async def test_fresh_voice_atomically_creates_source_attachment_run_steps_and_re
     assert attachment.storage_key is None
     assert run.capture_event_id == source.id
     assert run.output_type is TranscriptionOutputType.NOTE
-    assert {step.step_type for step in steps} == set(ProcessingStepType)
+    # Явный набор шагов голоса: image_download принадлежит фото-прогонам.
+    assert {step.step_type for step in steps} == {
+        ProcessingStepType.AUDIO_DOWNLOAD,
+        ProcessingStepType.TRANSCRIPTION,
+        ProcessingStepType.CLASSIFICATION,
+        ProcessingStepType.INDEXING,
+    }
     assert {step.status for step in steps} == {ProcessingStepStatus.PENDING.value}
     assert receipt.result_kind == AcknowledgementKind.VOICE_QUEUED.value
     assert receipt.trace_id == source.trace_id == attachment.trace_id == run.trace_id

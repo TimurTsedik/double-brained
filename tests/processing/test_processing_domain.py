@@ -33,6 +33,7 @@ def test_overall_status_is_lowest_numeric_step_status() -> None:
 def test_processing_enums_are_fixed() -> None:
     assert [step.value for step in ProcessingStepType] == [
         "audio_download",
+        "image_download",
         "transcription",
         "classification",
         "indexing",

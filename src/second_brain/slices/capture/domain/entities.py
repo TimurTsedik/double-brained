@@ -8,6 +8,7 @@ from uuid import UUID
 class CaptureSourceKind(StrEnum):
     TEXT = "text"
     VOICE = "voice"
+    IMAGE = "image"
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,10 @@ class TelegramAttachment:
     kind: CaptureSourceKind
     telegram_file_id: str = field(repr=False)
     telegram_file_unique_id: str = field(repr=False)
-    duration_seconds: int
+    # Голос несёт длительность (image → NULL); фото — размеры (voice → NULL).
+    duration_seconds: int | None
+    width: int | None
+    height: int | None
     telegram_file_size: int | None
     telegram_mime_type: str | None
     storage_key: str | None = field(repr=False)

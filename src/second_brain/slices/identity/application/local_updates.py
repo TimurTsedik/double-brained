@@ -10,6 +10,8 @@ from second_brain.shared.clock import Clock
 from second_brain.shared.i18n import is_language_chosen
 from second_brain.shared.trace import TraceContext
 from second_brain.slices.capture.application.contracts import (
+    CaptureImageCommand,
+    CaptureImagePort,
     CaptureTextCommand,
     CaptureTextPort,
     CaptureVoiceCommand,
@@ -122,6 +124,9 @@ class AcknowledgementKind(StrEnum):
     LANGUAGE_PROMPT_SHOWN = "language_prompt_shown"
     LANGUAGE_SELECTED = "language_selected"
     VOICE_QUEUED = "voice_queued"
+    # Фото без подписи: журнал+файл сохранены, typed-запись НЕ создана —
+    # честный ack вместо записи-пустышки.
+    IMAGE_SAVED = "image_saved"
     INVITE_CREATED = "invite_created"
     INVITE_FORBIDDEN = "invite_forbidden"
     CONTACT_SAVED = "contact_saved"
@@ -180,6 +185,7 @@ class LocalUpdateProcessor:
         task_panel_port: TaskPanelPort | None = None,
         exact_search_port: ExactSearchPort | None = None,
         capture_voice_port: CaptureVoicePort | None = None,
+        capture_image_port: CaptureImagePort | None = None,
         project_panel_port: ProjectPanelPort | None = None,
         memory_ask_port: MemoryQuestionPort | None = None,
         bot_username: str | None = None,
@@ -199,6 +205,7 @@ class LocalUpdateProcessor:
         self._task_panel_port = task_panel_port
         self._exact_search_port = exact_search_port
         self._capture_voice_port = capture_voice_port
+        self._capture_image_port = capture_image_port
         self._project_panel_port = project_panel_port
         self._memory_ask_port = memory_ask_port
         self._reminder_ack_port = reminder_ack_port
@@ -340,6 +347,52 @@ class LocalUpdateProcessor:
                 transaction,
             )
             return AcknowledgementKind.VOICE_QUEUED
+
+        if update.photo is not None:
+            # Фото — как голос по отношению к промпт-режимам: это точно не
+            # поисковый запрос / вопрос памяти / имя проекта. Подпись же идёт
+            # обычным маршрутом типизации внутри capture (кнопка/время/дефолт).
+            if self._exact_search_port is not None:
+                await self._exact_search_port.cancel(access_context, transaction)
+            if self._memory_ask_port is not None:
+                await self._memory_ask_port.cancel(access_context, transaction)
+            if self._project_panel_port is not None:
+                await self._project_panel_port.cancel_creation(
+                    CancelProjectCreationCommand(
+                        access_context=access_context,
+                        updated_at=now,
+                        trace_id=context.trace_id,
+                    ),
+                    transaction,
+                )
+            if self._capture_image_port is None:
+                raise RuntimeError("capture image port is required for private photo")
+            image_result = await self._capture_image_port.capture(
+                CaptureImageCommand(
+                    access_context=access_context,
+                    bot_id=update.bot_id,
+                    telegram_update_id=update.update_id,
+                    telegram_message_id=update.telegram_message_id,
+                    photo=update.photo,
+                    caption=update.caption,
+                    received_at=now,
+                    trace_id=context.trace_id,
+                    links=update.links,
+                ),
+                transaction,
+            )
+            if not image_result.record_created:
+                # Журнал+файл сохранены, записи нет — честный «📷 Сохранено».
+                return AcknowledgementKind.IMAGE_SAVED
+            if self._reminder_ack_port is not None:
+                # Подпись-задача со временем → сообщаем «на когда» поставлено
+                # напоминание (как у текста).
+                payload.reminder_when = (
+                    await self._reminder_ack_port.reminder_for_capture(
+                        access_context, image_result.source.id, transaction
+                    )
+                )
+            return AcknowledgementKind.CAPTURED
 
         if update.text is None or update.text == "":
             return AcknowledgementKind.IGNORED
@@ -786,8 +839,15 @@ class LocalUpdateProcessor:
                     record_id,
                     transaction,
                 )
+            # Изображение-источник: показ шлёт само фото отдельным сообщением
+            # (file_id — fast path, байты хранилища — фоллбек), спека §2.2.
+            image = None
+            if record.has_image_source:
+                image = await self._record_view_port.image_source_for_record(
+                    access_context, record_type, record_id, transaction
+                )
             payload.record_view = RecordViewResult(
-                record=record, related=related, links=links
+                record=record, related=related, links=links, image=image
             )
             return AcknowledgementKind.RECORD_SHOWN
         if self._task_mode_port is None:

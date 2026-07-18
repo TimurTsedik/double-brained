@@ -28,6 +28,16 @@ name a project by voice — project names are typed.
 automatically and the transcript becomes the record. Telegram only ever shows you
 fixed status lines, never a copy of your content.
 
+**Photos.** Send a photo **with a caption** and the caption becomes an ordinary
+record (type button / time-in-text / default Note all work as usual); the
+original image is downloaded and stored immutably next to it. Opening the
+record in full sends the photo itself right after the text (Telegram `file_id`
+as the fast path, the stored bytes as the fallback), and search results,
+digests, and "similar" lists mark such records with 📷. Send a photo **without
+a caption** and the bot honestly replies "📷 Сохранено": the image and the
+capture journal are kept, but no record is invented on your behalf — the photo
+will become searchable when the on-device OCR layer arrives.
+
 **Links.** Hyperlinks in your message (both a word hiding a URL and a bare URL)
 are preserved alongside the record — the text itself stays exactly as you sent
 it. When you open a record in full, a "🔗 Links" block appears under the text,
@@ -184,6 +194,12 @@ brew install ffmpeg
 The defaults in `.env.example` store controlled audio below `.data/voice` and
 use the `small` Whisper model. The first transcription downloads and caches the
 model weights once. A different model can be selected with `WHISPER_MODEL`.
+
+Photo originals are downloaded by the same worker process (an `image_download`
+step of the shared processing cycle) into `IMAGE_STORAGE_ROOT`
+(default `.data/images`), keyed `{space}/{capture}/original.<ext>` with a
+sha256 checksum; the file type is sniffed from the bytes (JPEG/PNG/WebP
+whitelist) and downloads above `IMAGE_MAX_FILE_SIZE_BYTES` are refused softly.
 
 Set `OPEN_ROUTER_AI_KEY` in `.env`. Classification asks OpenRouter to try these
 strict-structured-output models in order:

@@ -58,6 +58,13 @@ class ProcessingRunModel(Base):
         ),
         CheckConstraint("version >= 1", name="ck_processing_runs_version"),
         CheckConstraint(TRACE_CHECK, name="ck_processing_runs_trace_id"),
+        # NULL-тип разрешён ТОЛЬКО source-only прогонам (фото без подписи):
+        # фиктивный тип не подставляется, но и «обычный» прогон без типа
+        # невозможен.
+        CheckConstraint(
+            "output_type IS NOT NULL OR source_only",
+            name="ck_processing_runs_output_type_source_only",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -65,7 +72,7 @@ class ProcessingRunModel(Base):
         ForeignKey("user_spaces.id"), nullable=False
     )
     capture_event_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
-    output_type: Mapped[TranscriptionOutputType] = mapped_column(
+    output_type: Mapped[TranscriptionOutputType | None] = mapped_column(
         Enum(
             TranscriptionOutputType,
             name="transcription_output_type",
@@ -73,8 +80,11 @@ class ProcessingRunModel(Base):
             create_constraint=True,
             values_callable=lambda values: [value.value for value in values],
         ),
-        nullable=False,
+        nullable=True,
     )
+    # Прогон только про сохранение источника (единственный шаг — download):
+    # записи нет, output_type NULL. Ставится на INSERT, неизменяем.
+    source_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Голос замораживает output_type на capture (текста ещё нет). Если тип был
     # ДЕФОЛТНЫМ (кнопку не нажимали), при расшифровке со временем он
     # маршрутизируется в задачу; явно выбранный тип — нет. Флаг неизменяем

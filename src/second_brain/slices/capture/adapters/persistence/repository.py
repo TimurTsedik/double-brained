@@ -8,9 +8,12 @@ from second_brain.slices.capture.adapters.persistence.models import (
     TelegramAttachmentModel,
 )
 from second_brain.slices.capture.application.contracts import (
+    CaptureImageCommand,
     CaptureTextCommand,
     CaptureVoiceCommand,
+    MarkImageStoredCommand,
     MarkVoiceStoredCommand,
+    TelegramImageSource,
     TelegramVoiceSource,
 )
 from second_brain.slices.capture.domain.entities import CaptureEvent, CaptureSourceKind
@@ -95,8 +98,54 @@ class PostgresCaptureEventWriter:
             telegram_file_id=command.voice.file_id,
             telegram_file_unique_id=command.voice.file_unique_id,
             duration_seconds=command.voice.duration_seconds,
+            width=None,
+            height=None,
             telegram_file_size=command.voice.file_size,
             telegram_mime_type=command.voice.mime_type,
+            storage_key=None,
+            sha256=None,
+            stored_size=None,
+            stored_mime_type=None,
+            stored_at=None,
+            created_at=command.received_at,
+            trace_id=command.trace_id,
+        )
+        self._session.add(model)
+        self._session.add(attachment)
+        await self._session.flush()
+        return _to_entity(model)
+
+    async def create_image(self, command: CaptureImageCommand) -> CaptureEvent:
+        # Журнал + attachment одним flush'ем: подпись (если есть) хранится в
+        # raw_text ДОСЛОВНО, оригинал фото остаётся file_id-метаданными до
+        # download-шага воркера (storage_* NULL — «file_id без байтов ≠
+        # сохранено»). Telegram у фото mime не отдаёт — sniff'ится на скачивании.
+        await _set_user_space_scope(self._session, command.access_context)
+        model = CaptureEventModel(
+            id=uuid4(),
+            user_space_id=command.access_context.user_space_id,
+            source_kind=CaptureSourceKind.IMAGE,
+            channel="telegram",
+            bot_id=command.bot_id,
+            telegram_update_id=command.telegram_update_id,
+            telegram_message_id=command.telegram_message_id,
+            raw_text=command.caption or None,
+            received_at=command.received_at,
+            created_at=command.received_at,
+            trace_id=command.trace_id,
+        )
+        attachment = TelegramAttachmentModel(
+            id=uuid4(),
+            user_space_id=command.access_context.user_space_id,
+            capture_event_id=model.id,
+            kind=CaptureSourceKind.IMAGE,
+            telegram_file_id=command.photo.file_id,
+            telegram_file_unique_id=command.photo.file_unique_id,
+            duration_seconds=None,
+            width=command.photo.width,
+            height=command.photo.height,
+            telegram_file_size=command.photo.file_size,
+            telegram_mime_type=None,
             storage_key=None,
             sha256=None,
             stored_size=None,
@@ -155,45 +204,102 @@ class PostgresVoiceAttachmentWriter:
         )
 
     async def mark_stored(self, command: MarkVoiceStoredCommand) -> None:
-        await _set_user_space_scope(self._session, command.access_context)
+        await _mark_attachment_stored(
+            self._session, CaptureSourceKind.VOICE, "voice", command
+        )
+
+
+class PostgresImageSourceRepository:
+    """Session-factory обёртка image-attachment'ов для download-шага воркера."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def get_image_source(
+        self, access_context: AccessContext, capture_event_id: UUID
+    ) -> TelegramImageSource:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresImageAttachmentWriter(session).get_image_source(
+                    access_context, capture_event_id
+                )
+
+
+class PostgresImageAttachmentWriter:
+    """Reads and updates controlled image fields in a caller-owned transaction."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_image_source(
+        self, access_context: AccessContext, capture_event_id: UUID
+    ) -> TelegramImageSource:
+        await _set_user_space_scope(self._session, access_context)
         attachment = await self._session.scalar(
-            select(TelegramAttachmentModel)
-            .where(
-                TelegramAttachmentModel.capture_event_id == command.capture_event_id,
-                TelegramAttachmentModel.user_space_id
-                == command.access_context.user_space_id,
-                TelegramAttachmentModel.kind == CaptureSourceKind.VOICE,
+            select(TelegramAttachmentModel).where(
+                TelegramAttachmentModel.capture_event_id == capture_event_id,
+                TelegramAttachmentModel.user_space_id == access_context.user_space_id,
+                TelegramAttachmentModel.kind == CaptureSourceKind.IMAGE,
             )
-            .with_for_update()
         )
         if attachment is None:
-            raise LookupError("voice attachment was not found")
-        current = (
-            attachment.storage_key,
-            attachment.sha256,
-            attachment.stored_size,
-            attachment.stored_mime_type,
-            attachment.stored_at,
+            raise LookupError("image attachment was not found")
+        return TelegramImageSource(file_id=attachment.telegram_file_id)
+
+    async def mark_stored(self, command: MarkImageStoredCommand) -> None:
+        await _mark_attachment_stored(
+            self._session, CaptureSourceKind.IMAGE, "image", command
         )
-        expected = (
-            command.storage_key,
-            command.sha256,
-            command.stored_size,
-            command.stored_mime_type,
-            command.stored_at,
+
+
+async def _mark_attachment_stored(
+    session: AsyncSession,
+    kind: CaptureSourceKind,
+    kind_label: str,
+    command: MarkVoiceStoredCommand | MarkImageStoredCommand,
+) -> None:
+    # Идемпотентный «оригинал скачан»: повтор той же выгрузки — no-op, любая
+    # попытка ПЕРЕЗАПИСАТЬ уже сохранённые байты — ошибка (оригинал неизменяем).
+    await _set_user_space_scope(session, command.access_context)
+    attachment = await session.scalar(
+        select(TelegramAttachmentModel)
+        .where(
+            TelegramAttachmentModel.capture_event_id == command.capture_event_id,
+            TelegramAttachmentModel.user_space_id
+            == command.access_context.user_space_id,
+            TelegramAttachmentModel.kind == kind,
         )
-        if current == expected:
-            return
-        if any(value is not None for value in current):
-            raise ValueError("voice attachment storage metadata is immutable")
-        (
-            attachment.storage_key,
-            attachment.sha256,
-            attachment.stored_size,
-            attachment.stored_mime_type,
-            attachment.stored_at,
-        ) = expected
-        await self._session.flush()
+        .with_for_update()
+    )
+    if attachment is None:
+        raise LookupError(f"{kind_label} attachment was not found")
+    # Идентичность выгрузки — БЕЗ stored_at: повтор той же выгрузки после
+    # истёкшего lease приходит с другим completed_at, и это всё ещё no-op
+    # (первый stored_at сохраняется), а не «перезапись».
+    current = (
+        attachment.storage_key,
+        attachment.sha256,
+        attachment.stored_size,
+        attachment.stored_mime_type,
+    )
+    expected = (
+        command.storage_key,
+        command.sha256,
+        command.stored_size,
+        command.stored_mime_type,
+    )
+    if current == expected:
+        return
+    if any(value is not None for value in current):
+        raise ValueError(f"{kind_label} attachment storage metadata is immutable")
+    (
+        attachment.storage_key,
+        attachment.sha256,
+        attachment.stored_size,
+        attachment.stored_mime_type,
+    ) = expected
+    attachment.stored_at = command.stored_at
+    await session.flush()
 
 
 async def _set_user_space_scope(

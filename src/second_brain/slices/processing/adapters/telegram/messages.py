@@ -55,6 +55,10 @@ CATALOG: dict[str, dict[Locale, str]] = {
 def notice_text(notice: ProcessingNoticeClaim, locale: Locale) -> str:
     """Собрать текст уведомления о голосе на указанном языке."""
     if notice.kind is ProcessingNoticeKind.SUCCESS:
+        # SUCCESS без типа не бывает: source-only прогоны (тип NULL) success-
+        # уведомлений не создают вовсе.
+        if notice.output_type is None:
+            raise ValueError("success notice requires an output type")
         label = SUCCESS_LABELS[notice.output_type][locale]
         return CATALOG["notice.success"][locale].format(label=label)
     if notice.kind is ProcessingNoticeKind.EMPTY_VOICE:

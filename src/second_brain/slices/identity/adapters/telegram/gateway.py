@@ -3,11 +3,17 @@ from datetime import datetime
 from typing import Any
 
 from aiogram import Bot
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from aiogram.types import (
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
 
 from second_brain.shared.i18n import DEFAULT_LOCALE, Locale
 from second_brain.slices.capture.application.contracts import (
     TelegramLink,
+    TelegramPhotoMetadata,
     TelegramVoiceMetadata,
 )
 from second_brain.slices.contacts.application.contracts import TelegramContactPayload
@@ -22,6 +28,7 @@ from second_brain.slices.projects.application.contracts import ProjectPanelResul
 from second_brain.slices.retrieval.application.contracts import (
     DigestPage,
     DigestPeriod,
+    RecordImageSource,
     RecordView,
     RecordViewResult,
     SearchPanelResult,
@@ -293,7 +300,8 @@ class AiogramGateway:
         locale = await self._resolve_locale(update)
         if result.items:
             blocks = [
-                f"{number}. {messages.search_label(item, locale)}\n"
+                f"{number}. "
+                f"{_listed_label(messages.search_label(item, locale), item)}\n"
                 f"{_search_excerpt(item.text)}"
                 for number, item in enumerate(result.items, start=1)
             ]
@@ -345,6 +353,15 @@ class AiogramGateway:
                 parts[-1] = combined
             else:
                 parts.extend(_split_outgoing_text(links_section))
+        if record.has_image_source:
+            # Пометка «📷 изображение сохранено» под текстом остаётся ВСЕГДА:
+            # это честный фоллбек, если отправка самого фото ниже не удастся.
+            image_note = messages.record_image_source_note(locale)
+            combined = f"{parts[-1]}\n\n{image_note}"
+            if len(combined) <= MAX_TELEGRAM_MESSAGE_LENGTH:
+                parts[-1] = combined
+            else:
+                parts.append(image_note)
         related_section = _related_section(result.related, locale)
         if related_section is not None:
             combined = f"{parts[-1]}\n\n{related_section}"
@@ -362,8 +379,37 @@ class AiogramGateway:
                     inline_keyboard=_show_button_rows(result.related)
                 ),
             )
+        else:
+            await self._bot.send_message(
+                chat_id=update.telegram_user_id, text=parts[-1]
+            )
+        # Само фото — ДОПОЛНИТЕЛЬНЫМ сообщением после текста записи (§2.2).
+        if result.image is not None:
+            await self._send_record_image(update.telegram_user_id, result.image, locale)
+
+    async def _send_record_image(
+        self, chat_id: int, image: RecordImageSource, locale: Locale
+    ) -> None:
+        # sendPhoto(file_id) — только fast path (file_id бот-локален и не
+        # вечен); источник истины — скачанные байты хранилища. Ошибки глотаем:
+        # поллер ретраит send_record_view ЦЕЛИКОМ, и провал фото не должен
+        # перепослать текст — честная пометка «📷 …» уже стоит под текстом.
+        caption = messages.record_image_caption(locale)
+        try:
+            await self._bot.send_photo(
+                chat_id=chat_id, photo=image.telegram_file_id, caption=caption
+            )
             return
-        await self._bot.send_message(chat_id=update.telegram_user_id, text=parts[-1])
+        except Exception:
+            pass
+        if image.local_path is None:
+            return
+        try:
+            await self._bot.send_photo(
+                chat_id=chat_id, photo=FSInputFile(image.local_path), caption=caption
+            )
+        except Exception:
+            pass
 
     async def send_digest_menu(self, update: TelegramUpdate) -> None:
         if not update.is_private or update.telegram_user_id is None:
@@ -409,7 +455,12 @@ class AiogramGateway:
         rows = [
             messages.digest_row(
                 result.offset + position,
-                messages.record_label(item.record_type, item.task_completed, locale),
+                _listed_label(
+                    messages.record_label(
+                        item.record_type, item.task_completed, locale
+                    ),
+                    item,
+                ),
                 item.created_at.strftime(RECORD_VIEW_DATE_FORMAT),
                 _search_excerpt(item.text),
                 locale,
@@ -600,6 +651,22 @@ class AiogramGateway:
                 file_size=voice.file_size,
                 mime_type=voice.mime_type,
             )
+        # message.photo — массив PhotoSize одного фото; берём КРУПНЕЙШЕЕ
+        # разрешение (не «последний элемент» — порядку не доверяем).
+        photo_sizes = getattr(message, "photo", None)
+        photo_metadata = None
+        caption = None
+        if photo_sizes:
+            largest = max(photo_sizes, key=lambda size: size.width * size.height)
+            photo_metadata = TelegramPhotoMetadata(
+                file_id=largest.file_id,
+                file_unique_id=largest.file_unique_id,
+                width=largest.width,
+                height=largest.height,
+                file_size=largest.file_size,
+            )
+            raw_caption = getattr(message, "caption", None)
+            caption = raw_caption if isinstance(raw_caption, str) else None
         contact = getattr(message, "contact", None)
         contact_payload = None
         if contact is not None:
@@ -611,6 +678,12 @@ class AiogramGateway:
                 last_name=contact.last_name,
             )
         message_text = message.text if isinstance(message.text, str) else None
+        # Ссылки: у фото они живут в caption + caption_entities (offsets — те же
+        # UTF-16 юниты), у текста — в message.entities.
+        if photo_metadata is not None:
+            links = _extract_links(caption, getattr(message, "caption_entities", None))
+        else:
+            links = _extract_links(message_text, getattr(message, "entities", None))
         return TelegramUpdate(
             bot_id=self.bot_id,
             update_id=update.update_id,
@@ -619,9 +692,10 @@ class AiogramGateway:
             text=message_text,
             telegram_message_id=message.message_id,
             voice=voice_metadata,
+            photo=photo_metadata,
+            caption=caption,
             contact=contact_payload,
-            # S1: только message.entities (caption придёт со слайсом картинок).
-            links=_extract_links(message_text, getattr(message, "entities", None)),
+            links=links,
         )
 
 
@@ -726,16 +800,22 @@ def _link_line(link: RecordLinkView) -> str:
     return " — ".join(parts)
 
 
+def _listed_label(label: str, item: SearchRecord | RecordView) -> str:
+    # Запись из подписи к фото помечается 📷 в списках (спека §2.2).
+    return f"{label} 📷" if item.has_image_source else label
+
+
 def _related_section(related: tuple[RecordView, ...], locale: Locale) -> str | None:
     # Нет вектора или соседей — секции просто нет, без объяснений.
     if not related:
         return None
-    blocks = [
-        f"{number}. "
-        f"{messages.record_label(item.record_type, item.task_completed, locale)}\n"
-        f"{_search_excerpt(item.text)}"
-        for number, item in enumerate(related, start=1)
-    ]
+    blocks: list[str] = []
+    for number, item in enumerate(related, start=1):
+        label = _listed_label(
+            messages.record_label(item.record_type, item.task_completed, locale),
+            item,
+        )
+        blocks.append(f"{number}. {label}\n{_search_excerpt(item.text)}")
     return messages.related_section_header(locale) + "\n\n" + "\n\n".join(blocks)
 
 

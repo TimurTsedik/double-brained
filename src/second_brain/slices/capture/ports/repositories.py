@@ -1,6 +1,7 @@
 from typing import Protocol
 
 from second_brain.slices.capture.application.contracts import (
+    CaptureImageCommand,
     CaptureTextCommand,
     CaptureVoiceCommand,
 )
@@ -11,3 +12,5 @@ class CaptureEventWriter(Protocol):
     async def create(self, command: CaptureTextCommand) -> CaptureEvent: ...
 
     async def create_voice(self, command: CaptureVoiceCommand) -> CaptureEvent: ...
+
+    async def create_image(self, command: CaptureImageCommand) -> CaptureEvent: ...

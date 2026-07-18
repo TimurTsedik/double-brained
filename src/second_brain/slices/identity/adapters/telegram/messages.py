@@ -60,6 +60,13 @@ CATALOG: dict[str, dict[Locale, str]] = {
         Locale.RU: "🎙️ Голос сохранён. Расшифровываю…",
         Locale.EN: "🎙️ Voice saved. Transcribing…",
     },
+    # --- фото ---
+    # Честный ack фото БЕЗ подписи: журнал+файл сохранены, запись не создана
+    # (никаких заметок-пустышек — текст спеки §2 дословно).
+    "ack.image_saved": {
+        Locale.RU: "📷 Сохранено",
+        Locale.EN: "📷 Saved",
+    },
     # --- панель задач ---
     "task_panel.header": {Locale.RU: "📋 Открытые задачи", Locale.EN: "📋 Open tasks"},
     "task_panel.empty": {
@@ -152,6 +159,17 @@ CATALOG: dict[str, dict[Locale, str]] = {
     "record_view.links_header": {
         Locale.RU: "🔗 Ссылки:",
         Locale.EN: "🔗 Links:",
+    },
+    # Пометка «у записи есть изображение-источник» под текстом (и честный
+    # фоллбек, если отправка самого фото не удалась).
+    "record_view.image_source": {
+        Locale.RU: "📷 изображение сохранено",
+        Locale.EN: "📷 image saved",
+    },
+    # Подпись фото, отправляемого при показе записи целиком.
+    "record_view.image_caption": {
+        Locale.RU: "📷 источник записи",
+        Locale.EN: "📷 record source",
     },
     # --- сводка за период ---
     # Кнопка панели видна ВСЕМ пользователям (не только админу).
@@ -316,6 +334,7 @@ USER_ACKNOWLEDGEMENT_KINDS: tuple[AcknowledgementKind, ...] = (
     AcknowledgementKind.ENROLLMENT_REJECTED,
     AcknowledgementKind.KNOWN_USER_STARTED,
     AcknowledgementKind.MEMORY_QUESTION_QUEUED,
+    AcknowledgementKind.IMAGE_SAVED,
 )
 
 _ACK_KEYS: dict[AcknowledgementKind, str] = {
@@ -323,6 +342,7 @@ _ACK_KEYS: dict[AcknowledgementKind, str] = {
     AcknowledgementKind.ENROLLMENT_REJECTED: "ack.enrollment_rejected",
     AcknowledgementKind.KNOWN_USER_STARTED: "ack.known_user_started",
     AcknowledgementKind.MEMORY_QUESTION_QUEUED: "ack.memory_question_queued",
+    AcknowledgementKind.IMAGE_SAVED: "ack.image_saved",
 }
 
 # Callback'и, для которых показывается selection-feedback.
@@ -472,6 +492,14 @@ def related_section_header(locale: Locale) -> str:
 
 def record_links_header(locale: Locale) -> str:
     return _text("record_view.links_header", locale)
+
+
+def record_image_source_note(locale: Locale) -> str:
+    return _text("record_view.image_source", locale)
+
+
+def record_image_caption(locale: Locale) -> str:
+    return _text("record_view.image_caption", locale)
 
 
 # --- сводка за период ---

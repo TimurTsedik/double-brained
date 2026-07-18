@@ -45,6 +45,25 @@ class CreateTextProcessingRunCommand:
 
 
 @dataclass(frozen=True)
+class CreateImageProcessingRunCommand:
+    """Прогон обработки фото — ОДИН на capture.
+
+    С подписью запись уже создана СИНХРОННО (тип финальный) → output_type задан,
+    шаги IMAGE_DOWNLOAD + CLASSIFICATION + INDEXING (классификация/индексация НЕ
+    гейтятся download'ом: текст подписи независим от байтов). Без подписи —
+    source-only прогон: output_type None, единственный шаг IMAGE_DOWNLOAD.
+    """
+
+    access_context: AccessContext
+    capture_event_id: UUID
+    output_type: TranscriptionOutputType | None
+    created_at: datetime
+    trace_id: str
+    # Тип у фото всегда финальный на момент создания прогона (запись синхронна).
+    route_default_by_time: bool = False
+
+
+@dataclass(frozen=True)
 class SucceedProcessingStepCommand:
     access_context: AccessContext
     step_id: UUID
@@ -113,11 +132,47 @@ class DownloadedVoice:
 
 
 @dataclass(frozen=True)
+class StoreImageCommand:
+    # Mime Telegram у фото не отдаёт: хранилище sniff'ит байты само.
+    access_context: AccessContext
+    capture_event_id: UUID
+    content: bytes = field(repr=False)
+
+
+@dataclass(frozen=True)
+class StoredImage:
+    storage_key: str = field(repr=False)
+    local_path: str = field(repr=False)
+    sha256: str
+    size: int
+    mime_type: str
+
+
+@dataclass(frozen=True)
+class DownloadImageCommand:
+    file_id: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class DownloadedImage:
+    content: bytes = field(repr=False)
+
+
+@dataclass(frozen=True)
 class CompleteVoiceDownloadCommand:
     access_context: AccessContext
     step_id: UUID
     capture_event_id: UUID
     stored_voice: StoredVoice = field(repr=False)
+    completed_at: datetime
+
+
+@dataclass(frozen=True)
+class CompleteImageDownloadCommand:
+    access_context: AccessContext
+    step_id: UUID
+    capture_event_id: UUID
+    stored_image: StoredImage = field(repr=False)
     completed_at: datetime
 
 

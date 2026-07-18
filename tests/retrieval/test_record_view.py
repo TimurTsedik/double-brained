@@ -15,6 +15,7 @@ from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from second_brain.bootstrap.schema import reset_prototype_schema
+from second_brain.slices.capture.adapters.persistence.models import CaptureEventModel
 from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
 )
@@ -165,6 +166,54 @@ async def test_read_record_full_returns_typed_text_and_completed_flag(
     assert (open_task.text, open_task.task_completed) == ("открытая задача", False)
     assert done_task is not None
     assert (done_task.text, done_task.task_completed) == ("закрытая задача", True)
+
+
+async def add_image_capture(
+    schema_engine: AsyncEngine, access: AccessContext, caption: str
+) -> UUID:
+    capture_event_id = uuid4()
+    update_id = int(capture_event_id.int % 9_000_000_000) + 1
+    async with schema_engine.begin() as connection:
+        await connection.execute(
+            insert(CaptureEventModel).values(
+                id=capture_event_id,
+                user_space_id=access.user_space_id,
+                source_kind="image",
+                channel="telegram",
+                bot_id=100,
+                telegram_update_id=update_id,
+                telegram_message_id=update_id + 10_000_000_000,
+                raw_text=caption,
+                received_at=NOW,
+                created_at=NOW,
+                trace_id=TRACE_ID,
+            )
+        )
+    return capture_event_id
+
+
+@pytest.mark.asyncio
+async def test_read_record_marks_image_sourced_records(
+    engine: AsyncEngine, schema_engine: AsyncEngine
+) -> None:
+    # Запись из подписи к фото несёт флаг изображения-источника; текстовая — нет.
+    text_capture = await add_capture(schema_engine, ACCESS_A)
+    image_capture = await add_image_capture(schema_engine, ACCESS_A, "подпись")
+    text_note = await add_note(schema_engine, ACCESS_A, text_capture, "из текста")
+    image_note = await add_note(schema_engine, ACCESS_A, image_capture, "подпись")
+    image_task = await add_task(
+        schema_engine, ACCESS_A, image_capture, "задача с фото", TaskStatus.INBOX
+    )
+
+    from_text = await read_record(engine, ACCESS_A, SearchRecordType.NOTE, text_note)
+    from_image = await read_record(engine, ACCESS_A, SearchRecordType.NOTE, image_note)
+    task_from_image = await read_record(
+        engine, ACCESS_A, SearchRecordType.TASK, image_task
+    )
+
+    assert from_text is not None and from_text.has_image_source is False
+    assert from_image is not None and from_image.has_image_source is True
+    assert task_from_image is not None and task_from_image.has_image_source is True
 
 
 @pytest.mark.asyncio

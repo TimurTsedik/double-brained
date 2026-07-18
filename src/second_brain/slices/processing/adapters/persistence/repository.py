@@ -14,8 +14,10 @@ from second_brain.slices.processing.adapters.persistence.models import (
     TranscriptModel,
 )
 from second_brain.slices.processing.application.contracts import (
+    CompleteImageDownloadCommand,
     CompleteVoiceDownloadCommand,
     CompleteVoiceTranscriptionCommand,
+    CreateImageProcessingRunCommand,
     CreateTextProcessingRunCommand,
     CreateVoiceProcessingRunCommand,
     FailProcessingStepCommand,
@@ -44,10 +46,16 @@ SECOND_RETRY_DELAY = timedelta(minutes=5)
 TERMINAL_ERROR_CODES = frozenset({"empty_transcript"})
 _STEP_ORDER = {
     ProcessingStepType.AUDIO_DOWNLOAD: 0,
+    ProcessingStepType.IMAGE_DOWNLOAD: 0,
     ProcessingStepType.TRANSCRIPTION: 1,
     ProcessingStepType.CLASSIFICATION: 2,
     ProcessingStepType.INDEXING: 3,
 }
+_CREATE_RUN_COMMAND = (
+    CreateVoiceProcessingRunCommand
+    | CreateTextProcessingRunCommand
+    | CreateImageProcessingRunCommand
+)
 
 
 class PostgresProcessingRepository:
@@ -67,6 +75,13 @@ class PostgresProcessingRepository:
         async with self._session_factory() as session:
             async with session.begin():
                 return await PostgresProcessingWriter(session).create_text_run(command)
+
+    async def create_image_run(
+        self, command: CreateImageProcessingRunCommand
+    ) -> ProcessingRun:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresProcessingWriter(session).create_image_run(command)
 
     async def claim_due_step(
         self,
@@ -123,6 +138,15 @@ class PostgresProcessingRepository:
                     command
                 )
 
+    async def complete_image_download(
+        self, command: CompleteImageDownloadCommand
+    ) -> ProcessingStep:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await PostgresProcessingWriter(session).complete_image_download(
+                    command
+                )
+
     async def lock_transcription_target(
         self, access_context: AccessContext, step_id: UUID
     ) -> ProcessingCompletionTarget:
@@ -174,7 +198,17 @@ class PostgresProcessingWriter:
     async def create_voice_run(
         self, command: CreateVoiceProcessingRunCommand
     ) -> ProcessingRun:
-        return await self._create_run(command, tuple(ProcessingStepType))
+        # Явный набор шагов голоса: НЕ tuple(ProcessingStepType) — enum вырос
+        # image_download'ом, голосовому прогону он не принадлежит.
+        return await self._create_run(
+            command,
+            (
+                ProcessingStepType.AUDIO_DOWNLOAD,
+                ProcessingStepType.TRANSCRIPTION,
+                ProcessingStepType.CLASSIFICATION,
+                ProcessingStepType.INDEXING,
+            ),
+        )
 
     async def create_text_run(
         self, command: CreateTextProcessingRunCommand
@@ -184,9 +218,26 @@ class PostgresProcessingWriter:
             (ProcessingStepType.CLASSIFICATION, ProcessingStepType.INDEXING),
         )
 
+    async def create_image_run(
+        self, command: CreateImageProcessingRunCommand
+    ) -> ProcessingRun:
+        # С подписью запись уже создана синхронно → download + classification +
+        # indexing (обе НЕ гейтятся download'ом — см. claim_due_step). Без
+        # подписи — source-only: единственный шаг IMAGE_DOWNLOAD, типа нет.
+        if command.output_type is None:
+            return await self._create_run(command, (ProcessingStepType.IMAGE_DOWNLOAD,))
+        return await self._create_run(
+            command,
+            (
+                ProcessingStepType.IMAGE_DOWNLOAD,
+                ProcessingStepType.CLASSIFICATION,
+                ProcessingStepType.INDEXING,
+            ),
+        )
+
     async def _create_run(
         self,
-        command: CreateVoiceProcessingRunCommand | CreateTextProcessingRunCommand,
+        command: _CREATE_RUN_COMMAND,
         step_types: tuple[ProcessingStepType, ...],
     ) -> ProcessingRun:
         await _set_user_space_scope(self._session, command.access_context)
@@ -195,6 +246,7 @@ class PostgresProcessingWriter:
             user_space_id=command.access_context.user_space_id,
             capture_event_id=command.capture_event_id,
             output_type=command.output_type,
+            source_only=command.output_type is None,
             route_default_by_time=command.route_default_by_time,
             version=1,
             created_at=command.created_at,
@@ -296,6 +348,10 @@ class PostgresProcessingWriter:
                 due,
                 or_(
                     ProcessingStepModel.step_type == ProcessingStepType.AUDIO_DOWNLOAD,
+                    # Скачивание оригинала фото ничем не гейтится; classification/
+                    # indexing image-прогона идут по ветке «нет TRANSCRIPTION» —
+                    # подпись независима от байтов картинки.
+                    ProcessingStepModel.step_type == ProcessingStepType.IMAGE_DOWNLOAD,
                     and_(
                         ProcessingStepModel.step_type
                         == ProcessingStepType.TRANSCRIPTION,
@@ -317,6 +373,11 @@ class PostgresProcessingWriter:
                     (
                         ProcessingStepModel.step_type
                         == ProcessingStepType.AUDIO_DOWNLOAD,
+                        0,
+                    ),
+                    (
+                        ProcessingStepModel.step_type
+                        == ProcessingStepType.IMAGE_DOWNLOAD,
                         0,
                     ),
                     (
@@ -392,6 +453,18 @@ class PostgresProcessingWriter:
             raise ValueError("download completion source does not match its run")
         return await self._succeed_locked_step(step, command.completed_at)
 
+    async def complete_image_download(
+        self, command: CompleteImageDownloadCommand
+    ) -> ProcessingStep:
+        step, run = await self._lock_step_and_run(
+            command.access_context, command.step_id
+        )
+        if step.step_type is not ProcessingStepType.IMAGE_DOWNLOAD:
+            raise ValueError("processing step is not an image download")
+        if run.capture_event_id != command.capture_event_id:
+            raise ValueError("download completion source does not match its run")
+        return await self._succeed_locked_step(step, command.completed_at)
+
     async def lock_transcription_target(
         self, access_context: AccessContext, step_id: UUID
     ) -> ProcessingCompletionTarget:
@@ -404,7 +477,7 @@ class PostgresProcessingWriter:
             step_id=step.id,
             run_id=run.id,
             capture_event_id=run.capture_event_id,
-            output_type=run.output_type,
+            output_type=_require_output_type(run),
             version=run.version,
             trace_id=run.trace_id,
             route_default_by_time=run.route_default_by_time,
@@ -422,7 +495,7 @@ class PostgresProcessingWriter:
             step_id=step.id,
             run_id=run.id,
             capture_event_id=run.capture_event_id,
-            output_type=run.output_type,
+            output_type=_require_output_type(run),
             version=run.version,
             trace_id=run.trace_id,
         )
@@ -439,7 +512,7 @@ class PostgresProcessingWriter:
             step_id=step.id,
             run_id=run.id,
             capture_event_id=run.capture_event_id,
-            output_type=run.output_type,
+            output_type=_require_output_type(run),
             version=run.version,
             trace_id=run.trace_id,
         )
@@ -835,6 +908,15 @@ class PostgresProcessingWriter:
                 )
         if exhausted:
             await self._session.flush()
+
+
+def _require_output_type(run: ProcessingRunModel) -> TranscriptionOutputType:
+    # Source-only прогоны (output_type NULL) состоят из одного download-шага —
+    # transcription/classification/indexing у них не существует, поэтому сюда
+    # такой прогон попасть не может; страховка на случай порчи данных.
+    if run.output_type is None:
+        raise ValueError("source-only processing run has no output type")
+    return run.output_type
 
 
 def _retry_delay(attempt_count: int) -> timedelta:

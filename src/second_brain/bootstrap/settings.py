@@ -2,6 +2,9 @@ import os
 from dataclasses import dataclass, field
 
 DEFAULT_VOICE_STORAGE_ROOT = ".data/voice"
+# Оригиналы фото (S2): отдельный корень и лимит скачиваемого файла.
+DEFAULT_IMAGE_STORAGE_ROOT = ".data/images"
+DEFAULT_IMAGE_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 DEFAULT_WHISPER_MODEL = "small"
 DEFAULT_PANEL_FOLLOWUP_SECONDS = 5
 # Фетч <title> страниц (S1): лимиты SSRF-контракта и модель попыток воркера.
@@ -24,6 +27,12 @@ class Settings:
         default=DEFAULT_VOICE_STORAGE_ROOT,
         repr=False,
     )
+    # Хранилище оригиналов фото и потолок размера скачиваемого файла (S2).
+    image_storage_root: str = field(
+        default=DEFAULT_IMAGE_STORAGE_ROOT,
+        repr=False,
+    )
+    image_max_file_size_bytes: int = DEFAULT_IMAGE_MAX_FILE_SIZE_BYTES
     whisper_model: str = DEFAULT_WHISPER_MODEL
     open_router_ai_key: str | None = field(default=None, repr=False)
     # Через сколько секунд после действия пользователя дослать панель с
@@ -52,6 +61,12 @@ class Settings:
         invite_token_pepper_key_id = _required_environment("INVITE_TOKEN_PEPPER_KEY_ID")
         voice_storage_root = (
             os.environ.get("VOICE_STORAGE_ROOT") or DEFAULT_VOICE_STORAGE_ROOT
+        )
+        image_storage_root = (
+            os.environ.get("IMAGE_STORAGE_ROOT") or DEFAULT_IMAGE_STORAGE_ROOT
+        )
+        image_max_file_size_bytes = _non_negative_int_environment(
+            "IMAGE_MAX_FILE_SIZE_BYTES", DEFAULT_IMAGE_MAX_FILE_SIZE_BYTES
         )
         whisper_model = os.environ.get("WHISPER_MODEL") or DEFAULT_WHISPER_MODEL
         open_router_ai_key = os.environ.get("OPEN_ROUTER_AI_KEY") or None
@@ -85,6 +100,8 @@ class Settings:
             invite_token_pepper=invite_token_pepper,
             invite_token_pepper_key_id=invite_token_pepper_key_id,
             voice_storage_root=voice_storage_root,
+            image_storage_root=image_storage_root,
+            image_max_file_size_bytes=image_max_file_size_bytes,
             whisper_model=whisper_model,
             open_router_ai_key=open_router_ai_key,
             panel_followup_seconds=panel_followup_seconds,

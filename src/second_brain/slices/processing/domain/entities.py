@@ -15,6 +15,7 @@ class ProcessingStepStatus(IntEnum):
 
 class ProcessingStepType(StrEnum):
     AUDIO_DOWNLOAD = "audio_download"
+    IMAGE_DOWNLOAD = "image_download"
     TRANSCRIPTION = "transcription"
     CLASSIFICATION = "classification"
     INDEXING = "indexing"
@@ -59,7 +60,9 @@ class ProcessingRun:
     id: UUID
     user_space_id: UUID
     capture_event_id: UUID
-    output_type: TranscriptionOutputType
+    # None — только у source-only прогонов (фото без подписи: единственный шаг
+    # IMAGE_DOWNLOAD, записи нет и фиктивный тип не подставляется).
+    output_type: TranscriptionOutputType | None
     version: int
     steps: tuple[ProcessingStep, ...]
     trace_id: str
@@ -75,7 +78,9 @@ class ProcessingStepClaim:
     run_id: UUID
     capture_event_id: UUID
     step_type: ProcessingStepType
-    output_type: TranscriptionOutputType
+    # None — у source-only прогонов (см. ProcessingRun.output_type); шаги,
+    # которым нужен тип (classification), у таких прогонов не создаются.
+    output_type: TranscriptionOutputType | None
     attempt_count: int
     lease_expires_at: datetime
     trace_id: str
@@ -97,7 +102,9 @@ class ProcessingNoticeClaim:
     notice_id: UUID
     run_id: UUID
     kind: ProcessingNoticeKind
-    output_type: TranscriptionOutputType
+    # None возможен только у failure-уведомлений source-only прогонов (провал
+    # скачивания фото без подписи) — тип там не показывается.
+    output_type: TranscriptionOutputType | None
     trace_id: str
     attempt_count: int
 
