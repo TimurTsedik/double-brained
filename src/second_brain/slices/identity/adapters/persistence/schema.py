@@ -17,6 +17,7 @@ from second_brain.slices.identity.adapters.persistence.models import (
     EnrollmentAttempt,
     EnrollmentInvite,
     TelegramIdentity,
+    TelegramUpdateInbox,
     TelegramUpdateReceipt,
     User,
     UserSpace,
@@ -29,6 +30,7 @@ IDENTITY_TABLES = (
     cast(Table, TelegramIdentity.__table__),
     cast(Table, EnrollmentInvite.__table__),
     cast(Table, TelegramUpdateReceipt.__table__),
+    cast(Table, TelegramUpdateInbox.__table__),
     cast(Table, EnrollmentAttempt.__table__),
 )
 
@@ -219,6 +221,7 @@ async def _grant_application_privileges(
     enrollment_attempts = f"{quoted_schema}.enrollment_attempts"
     enrollment_invites = f"{quoted_schema}.enrollment_invites"
     user_spaces = f"{quoted_schema}.user_spaces"
+    update_inbox = f"{quoted_schema}.telegram_update_inbox"
     await connection.execute(
         text(f"GRANT CONNECT ON DATABASE {quoted_database} TO {APPLICATION_ROLE}")
     )
@@ -242,6 +245,17 @@ async def _grant_application_privileges(
             "GRANT UPDATE ON TABLE "
             f"{enrollment_attempts}, {enrollment_invites} "
             f"TO {APPLICATION_ROLE}"
+        )
+    )
+    # Webhook-INBOX: enqueue=INSERT (роут), claim/итог шага=КОЛОНОЧНЫЙ UPDATE
+    # только по прогрессу обработки — сам апдейт (payload/bot_id/update_id/
+    # trace_id/received_at) app-роль переписать не может. Без DELETE. Широкий
+    # табличный грант живой базы снимает REVOKE ALL выше: он забирает и
+    # колоночные права, поэтому старое право не остаётся висеть.
+    await connection.execute(
+        text(
+            "GRANT UPDATE (status, attempt_count, next_attempt_at) ON TABLE "
+            f"{update_inbox} TO {APPLICATION_ROLE}"
         )
     )
     # КОЛОНОЧНЫЙ грант (решение 3): app-роль меняет только язык (и updated_at,

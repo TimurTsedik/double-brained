@@ -6,16 +6,21 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Enum,
     ForeignKey,
     Index,
     LargeBinary,
+    SmallInteger,
     String,
+    UniqueConstraint,
     Uuid,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from second_brain.persistence.base import Base
+from second_brain.slices.identity.domain.entities import TelegramInboxStatus
 
 USER_ROLE_CHECK_NAME = "ck_users_role_admin"
 ACTIVE_ADMIN_INDEX_NAME = "uq_users_active_admin"
@@ -184,6 +189,59 @@ class TelegramUpdateReceipt(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+
+class TelegramUpdateInbox(Base):
+    """Webhook-INBOX: сырой Telegram-апдейт до обработки воркером.
+
+    Технический путь ДО резолва пользователя (как telegram_update_receipts):
+    без user_space_id и без RLS — пользователя позже резолвит процессор.
+    payload — сырой апдейт целиком (PII: default-repr SQLAlchemy колонок не
+    показывает, в логи payload не попадает). Уникальность (bot_id, update_id)
+    гасит ретраи Telegram; порядок обработки — строго по update_id.
+    """
+
+    __tablename__ = "telegram_update_inbox"
+    __table_args__ = (
+        UniqueConstraint(
+            "bot_id", "update_id", name="uq_telegram_update_inbox_delivery"
+        ),
+        CheckConstraint(
+            "attempt_count >= 0", name="ck_telegram_update_inbox_attempt_count"
+        ),
+        CheckConstraint(
+            "trace_id ~ '^[0-9a-f]{32}$' AND trace_id <> repeat('0', 32)",
+            name="ck_telegram_update_inbox_trace_id",
+        ),
+        # Скан головы: pending-строки бота в порядке update_id.
+        Index(
+            "ix_telegram_update_inbox_bot_status_update",
+            "bot_id",
+            "status",
+            "update_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    bot_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    update_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    status: Mapped[TelegramInboxStatus] = mapped_column(
+        Enum(
+            TelegramInboxStatus,
+            name="telegram_inbox_status",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda statuses: [status.value for status in statuses],
+        ),
+        nullable=False,
+    )
+    attempt_count: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    trace_id: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
 class EnrollmentAttempt(Base):

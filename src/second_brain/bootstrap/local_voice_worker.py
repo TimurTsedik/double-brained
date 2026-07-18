@@ -34,6 +34,8 @@ from second_brain.bootstrap.reminder_delivery import (
     ReminderDeliveryStep,
 )
 from second_brain.bootstrap.settings import Settings
+from second_brain.bootstrap.telegram_inbox_step import TelegramInboxStep
+from second_brain.bootstrap.update_processing import build_update_processor
 from second_brain.bootstrap.voice_processing_completion import (
     VoiceDownloadCompletionInTransaction,
     VoiceTranscriptionCompletionInTransaction,
@@ -53,8 +55,11 @@ from second_brain.slices.identity.adapters.persistence.database import (
     create_session_factory,
 )
 from second_brain.slices.identity.adapters.persistence.repositories import (
+    PostgresLocaleResolver,
+    PostgresPanelContextResolver,
     PostgresWorkerIdentityRepository,
 )
+from second_brain.slices.identity.adapters.telegram.gateway import AiogramGateway
 from second_brain.slices.identity.application.contracts import (
     AccessContext,
     WorkerIdentityPort,
@@ -188,6 +193,7 @@ async def run_local_voice_worker(settings: Settings) -> None:
     classification_model = build_classification_model(settings)
     engine = create_database_engine(settings.database_url)
     bot: Bot | None = None
+    inbox_step: TelegramInboxStep | None = None
     try:
         await assert_non_privileged_application_role(engine)
         storage = LocalVoiceStorage(settings.voice_storage_root)
@@ -196,6 +202,25 @@ async def run_local_voice_worker(settings: Settings) -> None:
         transcription_model.ensure_runtime()
         bot = Bot(settings.telegram_bot_token)
         session_factory = create_session_factory(engine)
+        # Inbox-шаг (webhook-путь, B1) отвечает пользователю сам — ему нужен
+        # тот же гейтвей и тот же конвейер обработки, что у поллера.
+        # get_me() здесь — как у поллера: bot_id и username для процессора.
+        bot_user = await bot.get_me()
+        if bot_user.id is None:
+            raise RuntimeError("Telegram bot identity did not include an id")
+        inbox_step = TelegramInboxStep(
+            session_factory,
+            AiogramGateway(
+                bot,
+                bot_user.id,
+                PostgresLocaleResolver(session_factory),
+                panel_context_resolver=PostgresPanelContextResolver(session_factory),
+            ),
+            build_update_processor(session_factory, settings, bot_user.username),
+            max_attempts=settings.inbox_max_attempts,
+            retry_backoff=timedelta(seconds=settings.inbox_retry_backoff_seconds),
+            panel_followup_seconds=settings.panel_followup_seconds,
+        )
         processing = PostgresProcessingRepository(session_factory)
         identities = PostgresWorkerIdentityRepository(session_factory)
         # Один telegram-адаптер напоминаний на процесс: доставка созревших
@@ -277,6 +302,12 @@ async def run_local_voice_worker(settings: Settings) -> None:
         clock = SystemClock()
         while True:
             worked = False
+            # Inbox — ГЛОБАЛЬНЫЙ шаг (не пер-space): пользователь резолвится
+            # процессором позже. Один вызов за тик, ДО пер-space шагов.
+            try:
+                worked = await inbox_step.process_once(clock.now())
+            except Exception:
+                pass
             for access_context in await identities.list_active_access_contexts():
                 try:
                     processed = await process_access_once(
@@ -299,6 +330,8 @@ async def run_local_voice_worker(settings: Settings) -> None:
             if not worked:
                 await asyncio.sleep(1)
     finally:
+        if inbox_step is not None:
+            await inbox_step.shutdown()
         if bot is not None:
             await bot.session.close()
         await engine.dispose()

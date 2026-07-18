@@ -271,6 +271,61 @@ async def test_application_role_privileges_on_memory_tables(
 
 
 @pytest.mark.asyncio
+async def test_application_role_privileges_on_telegram_update_inbox(
+    session: AsyncSession,
+) -> None:
+    # Webhook-INBOX: роут ставит апдейт (INSERT), inbox-шаг клеймит и завершает
+    # (SELECT + КОЛОНОЧНЫЙ UPDATE). Удалять историю app-роль не может.
+    for privilege, allowed in (
+        ("SELECT", True),
+        ("INSERT", True),
+        ("UPDATE", False),
+        ("DELETE", False),
+    ):
+        actual = await session.scalar(
+            text(
+                "SELECT has_table_privilege(current_user, "
+                "'telegram_update_inbox', :privilege)"
+            ),
+            {"privilege": privilege},
+        )
+
+        assert actual is allowed, privilege
+
+    # Меняется только прогресс обработки; сам апдейт (payload/bot_id/update_id/
+    # trace_id) и время приёма app-роль переписать не может.
+    assert (
+        await session.scalar(
+            text(
+                "SELECT has_any_column_privilege(current_user, "
+                "'telegram_update_inbox', 'UPDATE')"
+            )
+        )
+        is True
+    )
+    for column, allowed in (
+        ("status", True),
+        ("attempt_count", True),
+        ("next_attempt_at", True),
+        ("payload", False),
+        ("bot_id", False),
+        ("update_id", False),
+        ("trace_id", False),
+        ("received_at", False),
+        ("id", False),
+    ):
+        actual = await session.scalar(
+            text(
+                "SELECT has_column_privilege(current_user, "
+                "'telegram_update_inbox', :column, 'UPDATE')"
+            ),
+            {"column": column},
+        )
+
+        assert actual is allowed, column
+
+
+@pytest.mark.asyncio
 async def test_application_role_lacks_update_on_immutable_identity_tables(
     session: AsyncSession,
 ) -> None:

@@ -184,6 +184,42 @@ refuses to start when a webhook is configured.
 uv run --env-file .env second-brain-local-polling
 ```
 
+### Telegram webhook + Postgres INBOX (epic API-1, slice B1)
+
+The FastAPI app also exposes `POST /telegram/webhook` (static path). The route
+validates the `X-Telegram-Bot-Api-Secret-Token` header against
+`TELEGRAM_WEBHOOK_SECRET` (empty secret → the route answers 503 and the
+webhook door stays closed), caps the request body at
+`WEBHOOK_MAX_BODY_BYTES`, and does exactly ONE thing: an idempotent INSERT of
+the raw update into the `telegram_update_inbox` table (unique per
+`bot_id + update_id`, so Telegram retries collapse into one row). No
+processing happens inside the HTTP request, and request bodies are never
+logged.
+
+The body cap holds without a `Content-Length` header too: the route reads the
+request stream chunk by chunk and answers 413 as soon as the accumulated size
+passes the cap, so a chunked upload cannot walk around the limit by filling
+memory. Being the only door facing the internet, the route also runs the same
+fail-closed database role check as local polling, the worker, and the identity
+CLI — once, while it lazily builds its runtime, before the first INSERT. A
+privileged (owner/superuser/`BYPASSRLS`) `DATABASE_URL` is a configuration
+error, not a disabled webhook: the route fails with 500 and the reason in the
+server log instead of answering the misleading "not configured" 503.
+
+Processing is an *inbox step* of the existing voice worker cycle: it claims
+its bot's inbox rows strictly in `update_id` order (one row per transaction,
+touching only that bot's pending head — never the full table), runs each
+through the same normalization → `LocalUpdateProcessor` → `TelegramPresenter`
+pipeline as polling (replies are byte-for-byte identical, including the
+best-effort callback ack and the delayed panel follow-up), and marks the row
+`done`. Failures retry with a linear backoff (`INBOX_RETRY_BACKOFF_SECONDS`)
+up to `INBOX_MAX_ATTEMPTS`, then the row becomes `failed`; a failed head does
+not block the rest of the queue, but a pending head waiting for its backoff
+does (strict order matters more than throughput because of pending modes).
+`PostgresTelegramInboxQueue.read_status` reports pending/failed depth and the
+age of the head row for monitoring. Polling remains the working door until
+the cutover (slice B3); the reverse proxy and rate limits arrive with B2.
+
 ## Local voice transcription and OpenRouter classification
 
 Voice messages are downloaded through the Telegram Bot API and transcribed on

@@ -14,6 +14,10 @@ DEFAULT_TITLE_FETCH_MAX_REDIRECTS = 3
 DEFAULT_TITLE_MAX_LENGTH = 200
 DEFAULT_TITLE_FETCH_MAX_ATTEMPTS = 5
 DEFAULT_TITLE_FETCH_RETRY_BACKOFF_SECONDS = 60
+# Webhook-INBOX (эпик API-1, B1): cap тела запроса и модель попыток шага.
+DEFAULT_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024
+DEFAULT_INBOX_MAX_ATTEMPTS = 5
+DEFAULT_INBOX_RETRY_BACKOFF_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,25 @@ class Settings:
     # max_attempts сбоев строка — failed; между попытками линейный бэкофф.
     title_fetch_max_attempts: int = DEFAULT_TITLE_FETCH_MAX_ATTEMPTS
     title_fetch_retry_backoff_seconds: int = DEFAULT_TITLE_FETCH_RETRY_BACKOFF_SECONDS
+    # Webhook (B1): секрет заголовка X-Telegram-Bot-Api-Secret-Token.
+    # None/пусто = webhook не сконфигурирован → роут отвечает 503.
+    telegram_webhook_secret: str | None = field(default=None, repr=False)
+    webhook_max_body_bytes: int = DEFAULT_WEBHOOK_MAX_BODY_BYTES
+    # Модель попыток inbox-шага (по образцу title-fetch): после max_attempts
+    # сбоев строка — failed; между попытками линейный бэкофф.
+    inbox_max_attempts: int = DEFAULT_INBOX_MAX_ATTEMPTS
+    inbox_retry_backoff_seconds: int = DEFAULT_INBOX_RETRY_BACKOFF_SECONDS
+
+    def telegram_bot_id(self) -> int:
+        """Числовой id бота из префикса токена (формат Telegram «id:hmac»).
+
+        Нужен webhook-роуту без похода в сеть: get_me() в HTTP-запросе делать
+        нельзя, а префикс токена — тот же id, что возвращает get_me().
+        """
+        prefix = self.telegram_bot_token.split(":", 1)[0]
+        if not prefix.isdigit():
+            raise RuntimeError("TELEGRAM_BOT_TOKEN must start with the numeric bot id")
+        return int(prefix)
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -93,6 +116,16 @@ class Settings:
             "TITLE_FETCH_RETRY_BACKOFF_SECONDS",
             DEFAULT_TITLE_FETCH_RETRY_BACKOFF_SECONDS,
         )
+        telegram_webhook_secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET") or None
+        webhook_max_body_bytes = _non_negative_int_environment(
+            "WEBHOOK_MAX_BODY_BYTES", DEFAULT_WEBHOOK_MAX_BODY_BYTES
+        )
+        inbox_max_attempts = _non_negative_int_environment(
+            "INBOX_MAX_ATTEMPTS", DEFAULT_INBOX_MAX_ATTEMPTS
+        )
+        inbox_retry_backoff_seconds = _non_negative_int_environment(
+            "INBOX_RETRY_BACKOFF_SECONDS", DEFAULT_INBOX_RETRY_BACKOFF_SECONDS
+        )
         return cls(
             database_url=database_url,
             schema_database_url=schema_database_url,
@@ -112,6 +145,10 @@ class Settings:
             title_max_length=title_max_length,
             title_fetch_max_attempts=title_fetch_max_attempts,
             title_fetch_retry_backoff_seconds=title_fetch_retry_backoff_seconds,
+            telegram_webhook_secret=telegram_webhook_secret,
+            webhook_max_body_bytes=webhook_max_body_bytes,
+            inbox_max_attempts=inbox_max_attempts,
+            inbox_retry_backoff_seconds=inbox_retry_backoff_seconds,
         )
 
 

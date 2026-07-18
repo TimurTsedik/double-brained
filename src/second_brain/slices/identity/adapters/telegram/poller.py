@@ -11,14 +11,14 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from second_brain.slices.identity.adapters.telegram.dto import TelegramUpdate
+from second_brain.slices.identity.adapters.telegram.followup import (
+    PanelFollowupScheduler,
+)
 from second_brain.slices.identity.adapters.telegram.presenter import (
     TelegramGateway,
     TelegramPresenter,
 )
-from second_brain.slices.identity.application.local_updates import (
-    AcknowledgementKind,
-    UpdateResult,
-)
+from second_brain.slices.identity.application.local_updates import UpdateResult
 
 __all__ = [
     "LocalPoller",
@@ -44,18 +44,6 @@ class PollerLock(Protocol):
     async def acquire(self, bot_id: int) -> bool: ...
 
 
-# После этих результатов панель досылать не надо: IGNORED — апдейт не от
-# зачисленного пользователя в привате; PANEL_SHOWN/LANGUAGE_SELECTED — ответом
-# уже была сама панель (иначе пользователь получит две панели подряд).
-_PANEL_FOLLOWUP_SKIP_KINDS = frozenset(
-    {
-        AcknowledgementKind.IGNORED,
-        AcknowledgementKind.PANEL_SHOWN,
-        AcknowledgementKind.LANGUAGE_SELECTED,
-    }
-)
-
-
 class LocalPoller:
     def __init__(
         self,
@@ -72,11 +60,9 @@ class LocalPoller:
         self._sleep = sleep
         self._started = False
         self.offset: int | None = None
-        # Досылка панели через N секунд после ПОСЛЕДНЕГО действия в чате
-        # (0 = выключено). Состояние только в памяти: упавший процесс теряет
-        # висящую досылку — принято, следующее действие перепланирует.
-        self._panel_followup_seconds = panel_followup_seconds
-        self._panel_followups: dict[int, asyncio.Task[None]] = {}
+        # Досылка панели (debounce) вынесена в PanelFollowupScheduler и
+        # разделена с inbox-шагом воркера (webhook-путь).
+        self._panel_followups = PanelFollowupScheduler(gateway, panel_followup_seconds)
 
     async def run_once(self) -> None:
         if not self._started:
@@ -115,7 +101,7 @@ class LocalPoller:
                 break
             await self._presenter.present(update, result)
             self.offset = update.update_id + 1
-            await self._reschedule_panel_followup(update, result)
+            await self._panel_followups.reschedule(update, result)
 
     async def shutdown(self) -> None:
         """Отменяет и дожидается все висящие досылки панели.
@@ -123,42 +109,4 @@ class LocalPoller:
         Обязателен перед закрытием event loop: незавершённая asyncio-задача
         при закрытии цикла даёт «Task was destroyed but it is pending!».
         """
-        while self._panel_followups:
-            _chat, pending = self._panel_followups.popitem()
-            pending.cancel()
-            try:
-                await pending
-            except asyncio.CancelledError:
-                pass
-
-    async def _reschedule_panel_followup(
-        self, update: TelegramUpdate, result: UpdateResult
-    ) -> None:
-        """Debounce по чату: новое действие отменяет прежнюю досылку панели."""
-        if self._panel_followup_seconds <= 0:
-            return
-        if not update.is_private or update.telegram_user_id is None:
-            return
-        if result.kind in _PANEL_FOLLOWUP_SKIP_KINDS:
-            return
-        chat_id = update.telegram_user_id
-        previous = self._panel_followups.pop(chat_id, None)
-        if previous is not None:
-            previous.cancel()
-            try:
-                await previous
-            except asyncio.CancelledError:
-                pass
-        self._panel_followups[chat_id] = asyncio.create_task(
-            self._send_panel_followup(chat_id, update)
-        )
-
-    async def _send_panel_followup(self, chat_id: int, update: TelegramUpdate) -> None:
-        await asyncio.sleep(self._panel_followup_seconds)
-        # Best-effort (как ack): досылка панели — не receipted-результат,
-        # и сама она — отправка бота, ничего не перепланирует.
-        try:
-            await self._gateway.send_panel(update)
-        except Exception:
-            pass
-        self._panel_followups.pop(chat_id, None)
+        await self._panel_followups.shutdown()

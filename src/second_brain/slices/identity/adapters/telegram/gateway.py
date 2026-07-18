@@ -83,7 +83,7 @@ class AiogramGateway:
             offset=offset,
             allowed_updates=allowed_updates,
         )
-        return [self._normalize(update) for update in updates]
+        return [normalize_aiogram_update(update, self.bot_id) for update in updates]
 
     async def send_acknowledgement(
         self, update: TelegramUpdate, kind: AcknowledgementKind
@@ -669,88 +669,98 @@ class AiogramGateway:
         await self._bot.answer_callback_query(update.callback_query_id)
 
     def _normalize(self, update: Update) -> TelegramUpdate:
-        callback = getattr(update, "callback_query", None)
-        if callback is not None:
-            message = getattr(callback, "message", None)
-            chat = getattr(message, "chat", None)
-            actor = callback.from_user.id if callback.from_user is not None else None
-            callback_data = callback.data if isinstance(callback.data, str) else None
-            return TelegramUpdate(
-                bot_id=self.bot_id,
-                update_id=update.update_id,
-                is_private=getattr(chat, "type", None) == "private",
-                telegram_user_id=actor,
-                text=None,
-                callback_query_id=callback.id,
-                callback_data=callback_data,
-            )
-        message = getattr(update, "message", None)
-        if message is None:
-            return TelegramUpdate(
-                bot_id=self.bot_id,
-                update_id=update.update_id,
-                is_private=False,
-                telegram_user_id=None,
-                text=None,
-            )
+        return normalize_aiogram_update(update, self.bot_id)
 
-        actor = message.from_user.id if message.from_user is not None else None
-        voice = getattr(message, "voice", None)
-        voice_metadata = None
-        if voice is not None:
-            voice_metadata = TelegramVoiceMetadata(
-                file_id=voice.file_id,
-                file_unique_id=voice.file_unique_id,
-                duration_seconds=voice.duration,
-                file_size=voice.file_size,
-                mime_type=voice.mime_type,
-            )
-        # message.photo — массив PhotoSize одного фото; берём КРУПНЕЙШЕЕ
-        # разрешение (не «последний элемент» — порядку не доверяем).
-        photo_sizes = getattr(message, "photo", None)
-        photo_metadata = None
-        caption = None
-        if photo_sizes:
-            largest = max(photo_sizes, key=lambda size: size.width * size.height)
-            photo_metadata = TelegramPhotoMetadata(
-                file_id=largest.file_id,
-                file_unique_id=largest.file_unique_id,
-                width=largest.width,
-                height=largest.height,
-                file_size=largest.file_size,
-            )
-            raw_caption = getattr(message, "caption", None)
-            caption = raw_caption if isinstance(raw_caption, str) else None
-        contact = getattr(message, "contact", None)
-        contact_payload = None
-        if contact is not None:
-            # Только payload карточки (PII, repr-hidden). contact.user_id
-            # НЕ переносим: маршрутизация всегда по отправителю (from_user).
-            contact_payload = TelegramContactPayload(
-                phone_number=contact.phone_number,
-                first_name=contact.first_name,
-                last_name=contact.last_name,
-            )
-        message_text = message.text if isinstance(message.text, str) else None
-        # Ссылки: у фото они живут в caption + caption_entities (offsets — те же
-        # UTF-16 юниты), у текста — в message.entities.
-        if photo_metadata is not None:
-            links = _extract_links(caption, getattr(message, "caption_entities", None))
-        else:
-            links = _extract_links(message_text, getattr(message, "entities", None))
+
+def normalize_aiogram_update(update: Update, bot_id: int) -> TelegramUpdate:
+    """Единая нормализация сырого aiogram-апдейта в TelegramUpdate.
+
+    Переиспользуется двумя входами с одинаковым поведением: get_updates
+    поллера и inbox-шагом воркера (webhook-путь, payload из
+    telegram_update_inbox).
+    """
+    callback = getattr(update, "callback_query", None)
+    if callback is not None:
+        message = getattr(callback, "message", None)
+        chat = getattr(message, "chat", None)
+        actor = callback.from_user.id if callback.from_user is not None else None
+        callback_data = callback.data if isinstance(callback.data, str) else None
         return TelegramUpdate(
-            bot_id=self.bot_id,
+            bot_id=bot_id,
             update_id=update.update_id,
-            is_private=message.chat.type == "private",
+            is_private=getattr(chat, "type", None) == "private",
             telegram_user_id=actor,
-            text=message_text,
-            telegram_message_id=message.message_id,
-            voice=voice_metadata,
-            photo=photo_metadata,
-            caption=caption,
-            contact=contact_payload,
-            links=links,
+            text=None,
+            callback_query_id=callback.id,
+            callback_data=callback_data,
         )
+    message = getattr(update, "message", None)
+    if message is None:
+        return TelegramUpdate(
+            bot_id=bot_id,
+            update_id=update.update_id,
+            is_private=False,
+            telegram_user_id=None,
+            text=None,
+        )
+
+    actor = message.from_user.id if message.from_user is not None else None
+    voice = getattr(message, "voice", None)
+    voice_metadata = None
+    if voice is not None:
+        voice_metadata = TelegramVoiceMetadata(
+            file_id=voice.file_id,
+            file_unique_id=voice.file_unique_id,
+            duration_seconds=voice.duration,
+            file_size=voice.file_size,
+            mime_type=voice.mime_type,
+        )
+    # message.photo — массив PhotoSize одного фото; берём КРУПНЕЙШЕЕ
+    # разрешение (не «последний элемент» — порядку не доверяем).
+    photo_sizes = getattr(message, "photo", None)
+    photo_metadata = None
+    caption = None
+    if photo_sizes:
+        largest = max(photo_sizes, key=lambda size: size.width * size.height)
+        photo_metadata = TelegramPhotoMetadata(
+            file_id=largest.file_id,
+            file_unique_id=largest.file_unique_id,
+            width=largest.width,
+            height=largest.height,
+            file_size=largest.file_size,
+        )
+        raw_caption = getattr(message, "caption", None)
+        caption = raw_caption if isinstance(raw_caption, str) else None
+    contact = getattr(message, "contact", None)
+    contact_payload = None
+    if contact is not None:
+        # Только payload карточки (PII, repr-hidden). contact.user_id
+        # НЕ переносим: маршрутизация всегда по отправителю (from_user).
+        contact_payload = TelegramContactPayload(
+            phone_number=contact.phone_number,
+            first_name=contact.first_name,
+            last_name=contact.last_name,
+        )
+    message_text = message.text if isinstance(message.text, str) else None
+    # Ссылки: у фото они живут в caption + caption_entities (offsets — те же
+    # UTF-16 юниты), у текста — в message.entities.
+    if photo_metadata is not None:
+        links = _extract_links(caption, getattr(message, "caption_entities", None))
+    else:
+        links = _extract_links(message_text, getattr(message, "entities", None))
+    return TelegramUpdate(
+        bot_id=bot_id,
+        update_id=update.update_id,
+        is_private=message.chat.type == "private",
+        telegram_user_id=actor,
+        text=message_text,
+        telegram_message_id=message.message_id,
+        voice=voice_metadata,
+        photo=photo_metadata,
+        caption=caption,
+        contact=contact_payload,
+        links=links,
+    )
 
 
 def _utf16_offset_to_index(text: str, utf16_offset: int) -> int:
