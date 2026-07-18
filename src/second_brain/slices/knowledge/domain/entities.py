@@ -1,6 +1,16 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
+
+
+class KnowledgeRecordKind(StrEnum):
+    """Вид типизированной knowledge-записи (для адресной правки текста)."""
+
+    NOTE = "note"
+    IDEA = "idea"
+    DECISION = "decision"
+    QUESTION = "question"
 
 
 @dataclass(frozen=True)

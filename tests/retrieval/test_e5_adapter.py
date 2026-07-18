@@ -156,6 +156,7 @@ async def test_index_source_collects_outcome_from_port_chunks() -> None:
         record_kind=SearchRecordType.NOTE,
         record_id=record_id,
         text="Заметка про хлеб.",
+        content_sha256="b" * 64,
         created_at=created_at,
     )
 
@@ -164,6 +165,7 @@ async def test_index_source_collects_outcome_from_port_chunks() -> None:
     assert outcome.record_kind is SearchRecordType.NOTE
     assert outcome.record_id == record_id
     assert outcome.chunks == (chunk,)
+    assert outcome.content_sha256 == "b" * 64
     assert outcome.created_at == created_at
     assert port.document_calls == ["Заметка про хлеб."]
     assert "хлеб" not in repr(source)

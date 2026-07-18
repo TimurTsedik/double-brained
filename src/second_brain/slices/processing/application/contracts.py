@@ -64,6 +64,27 @@ class CreateImageProcessingRunCommand:
 
 
 @dataclass(frozen=True)
+class CreateIndexProcessingRunCommand:
+    """Прогон пере-индексации после правки записи (S3, спека §3.3).
+
+    ЕДИНСТВЕННЫЙ шаг — INDEXING: никакой классификации и извлечения времени
+    (create_text_run завёл бы CLASSIFICATION заново → классификатор снова
+    материализовал бы кандидатов = дубли записей и повторный reminder-путь).
+    Источник текста для шага — сама правленая типизированная запись (её и
+    читает indexing-source), а не CaptureEvent. Версия прогона выделяется
+    автоматически: max(version)+1 по (пространство, capture) — уникальность
+    uq_processing_runs_source_version соблюдена без изменения старых прогонов.
+    """
+
+    access_context: AccessContext
+    capture_event_id: UUID
+    output_type: TranscriptionOutputType
+    created_at: datetime
+    trace_id: str
+    route_default_by_time: bool = False
+
+
+@dataclass(frozen=True)
 class SucceedProcessingStepCommand:
     access_context: AccessContext
     step_id: UUID

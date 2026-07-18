@@ -196,7 +196,9 @@ class PostgresExactSearchWriter:
 
 class PostgresSemanticIndexWriter:
     """Stores the semantic projection and indexing targets in a caller-owned
-    transaction. The no-rows/matched/diverged completion policy lives above."""
+    transaction. Чанки записи всегда заменяются целым набором
+    (`replace_chunks_for_record`) — правка записи (S3) переиндексирует её тем
+    же путём, что и первая индексация."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -252,66 +254,50 @@ class PostgresSemanticIndexWriter:
             capture_event_id=row.capture_event_id,
         )
 
-    async def existing_chunks(
-        self,
-        access_context: AccessContext,
-        record_kind: SearchRecordType,
-        record_id: UUID,
-        index_version: int,
-    ) -> tuple[tuple[int, str], ...]:
-        await _set_user_space_scope(self._session, access_context)
-        statement = (
-            select(
-                SemanticDocumentModel.chunk_number,
-                SemanticDocumentModel.content_sha256,
-            )
-            .where(
-                SemanticDocumentModel.user_space_id == access_context.user_space_id,
-                SemanticDocumentModel.source_kind == record_kind,
-                SemanticDocumentModel.source_record_id == record_id,
-                SemanticDocumentModel.index_version == index_version,
-            )
-            .order_by(SemanticDocumentModel.chunk_number)
-        )
-        rows = (await self._session.execute(statement)).all()
-        return tuple((row.chunk_number, row.content_sha256) for row in rows)
+    async def replace_chunks_for_record(
+        self, command: StoreSemanticChunksCommand
+    ) -> None:
+        """Атомарная замена проекции ОДНОЙ записи (спека §3.3): в транзакции
+        вызывающего удаляются прежние чанки записи (её kind/id/index_version)
+        и вставляется полный новый набор.
 
-    async def insert_chunks(self, command: StoreSemanticChunksCommand) -> None:
-        if not command.chunks:
-            # An empty batch would compile to INSERT ... DEFAULT VALUES.
-            return
+        Конкурентный поиск видит старые чанки до коммита и новые — после;
+        пустого окна и смешанных наборов нет. Первая индексация — тот же путь
+        (delete по пустому набору — no-op); ретрай шага после сбоя — тоже
+        (замена идемпотентна по содержимому).
+        """
         await _set_user_space_scope(self._session, command.access_context)
-        statement = (
-            postgresql_insert(SemanticDocumentModel)
-            .values(
-                [
-                    {
-                        "id": uuid4(),
-                        "user_space_id": command.access_context.user_space_id,
-                        "source_kind": command.record_kind,
-                        "source_record_id": command.record_id,
-                        "source_capture_event_id": command.source_capture_event_id,
-                        "chunk_number": chunk.chunk_number,
-                        "content_sha256": chunk.content_sha256,
-                        "chunk_text": chunk.text,
-                        "embedding_model": command.embedding_model,
-                        "index_version": command.index_version,
-                        "embedding": list(chunk.embedding),
-                        "created_at": command.created_at,
-                        "trace_id": command.trace_id,
-                    }
-                    for chunk in command.chunks
-                ]
+        await self._session.execute(
+            delete(SemanticDocumentModel).where(
+                SemanticDocumentModel.user_space_id
+                == command.access_context.user_space_id,
+                SemanticDocumentModel.source_kind == command.record_kind,
+                SemanticDocumentModel.source_record_id == command.record_id,
+                SemanticDocumentModel.index_version == command.index_version,
             )
-            .on_conflict_do_nothing(
-                index_elements=[
-                    SemanticDocumentModel.user_space_id,
-                    SemanticDocumentModel.source_kind,
-                    SemanticDocumentModel.source_record_id,
-                    SemanticDocumentModel.index_version,
-                    SemanticDocumentModel.chunk_number,
-                ]
-            )
+        )
+        if not command.chunks:
+            # Пустой батч скомпилировался бы в INSERT ... DEFAULT VALUES.
+            return
+        statement = postgresql_insert(SemanticDocumentModel).values(
+            [
+                {
+                    "id": uuid4(),
+                    "user_space_id": command.access_context.user_space_id,
+                    "source_kind": command.record_kind,
+                    "source_record_id": command.record_id,
+                    "source_capture_event_id": command.source_capture_event_id,
+                    "chunk_number": chunk.chunk_number,
+                    "content_sha256": chunk.content_sha256,
+                    "chunk_text": chunk.text,
+                    "embedding_model": command.embedding_model,
+                    "index_version": command.index_version,
+                    "embedding": list(chunk.embedding),
+                    "created_at": command.created_at,
+                    "trace_id": command.trace_id,
+                }
+                for chunk in command.chunks
+            ]
         )
         await self._session.execute(statement)
 
@@ -421,6 +407,7 @@ class PostgresRecordViewReader:
                     select(
                         TaskModel.title,
                         TaskModel.created_at,
+                        TaskModel.edited_at,
                         TaskModel.status,
                         _image_source_exists(TaskModel.source_capture_event_id).label(
                             "has_image_source"
@@ -440,6 +427,9 @@ class PostgresRecordViewReader:
                 created_at=task_row.created_at,
                 task_completed=task_row.status == TaskStatus.COMPLETED,
                 has_image_source=bool(task_row.has_image_source),
+                # «(изменено)» — ТОЛЬКО правка текста (edited_at ставит она);
+                # завершение задачи двигает updated_at, но пометки не даёт.
+                edited=task_row.edited_at is not None,
             )
         model = _KNOWLEDGE_MODELS[record_kind]
         row = (
@@ -447,6 +437,7 @@ class PostgresRecordViewReader:
                 select(
                     model.text,
                     model.created_at,
+                    model.edited_at,
                     _image_source_exists(model.source_capture_event_id).label(
                         "has_image_source"
                     ),
@@ -465,6 +456,7 @@ class PostgresRecordViewReader:
             created_at=row.created_at,
             task_completed=None,
             has_image_source=bool(row.has_image_source),
+            edited=row.edited_at is not None,
         )
 
     async def image_attachment(

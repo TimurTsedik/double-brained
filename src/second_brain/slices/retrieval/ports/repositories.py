@@ -40,15 +40,9 @@ class SemanticIndexStore(Protocol):
         self, access_context: AccessContext, processing_run_id: UUID
     ) -> IndexingTarget | None: ...
 
-    async def existing_chunks(
-        self,
-        access_context: AccessContext,
-        record_kind: SearchRecordType,
-        record_id: UUID,
-        index_version: int,
-    ) -> tuple[tuple[int, str], ...]: ...
-
-    async def insert_chunks(self, command: StoreSemanticChunksCommand) -> None: ...
+    async def replace_chunks_for_record(
+        self, command: StoreSemanticChunksCommand
+    ) -> None: ...
 
     async def search_similar(
         self,

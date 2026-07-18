@@ -468,8 +468,11 @@ async def test_task_tables_have_forced_row_level_security(
 async def test_app_role_can_update_only_tasks_and_cannot_delete_task_tables(
     session: AsyncSession,
 ) -> None:
+    # Грант на tasks КОЛОНОЧНЫЙ (title/status/updated_at/edited_at, S3) —
+    # табличного UPDATE нет, проверяем has_ANY_column_privilege. Точный список
+    # колонок закреплён в tests/identity/test_database_roles.py.
     task_update_allowed = await session.scalar(
-        text("SELECT has_table_privilege(current_user, 'tasks', 'UPDATE')")
+        text("SELECT has_any_column_privilege(current_user, 'tasks', 'UPDATE')")
     )
     provenance_update_allowed = await session.scalar(
         text("SELECT has_table_privilege(current_user, 'task_provenance', 'UPDATE')")

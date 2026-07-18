@@ -18,7 +18,6 @@ from second_brain.bootstrap.classification_worker import ClassificationWorker
 from second_brain.bootstrap.indexing_completion import (
     CompleteIndexingCommand,
     IndexingCompletionInTransaction,
-    StaleSemanticIndexError,
 )
 from second_brain.bootstrap.indexing_source import (
     IndexingTargetMismatchError,
@@ -830,9 +829,11 @@ async def test_completion_crash_then_retry_writes_exactly_one_chunk_set(
 
 
 @pytest.mark.asyncio
-async def test_existing_matching_chunks_succeed_without_new_rows(
+async def test_existing_matching_chunks_are_replaced_with_the_same_content(
     engine: AsyncEngine, schema_engine: AsyncEngine
 ) -> None:
+    # Замена набора идемпотентна по содержимому: повторная индексация того же
+    # текста оставляет ровно тот же набор (chunk_number, sha256), без дублей.
     capture_id = await _capture_text(engine, ACCESS, update_id=581)
     run_id = await _single_run_id(schema_engine)
     async with create_session_factory(schema_engine)() as session:
@@ -840,7 +841,7 @@ async def test_existing_matching_chunks_succeed_without_new_rows(
     chunks = await FakeEmbeddingModel().embed_document(TEXT)
     async with create_session_factory(engine)() as session:
         async with session.begin():
-            await PostgresSemanticIndexWriter(session).insert_chunks(
+            await PostgresSemanticIndexWriter(session).replace_chunks_for_record(
                 StoreSemanticChunksCommand(
                     access_context=ACCESS,
                     record_kind=SearchRecordType.NOTE,
@@ -853,14 +854,17 @@ async def test_existing_matching_chunks_succeed_without_new_rows(
                     trace_id=_trace(581),
                 )
             )
-    before = {row.id for row in await _semantic_rows(schema_engine)}
+    before = await _semantic_rows(schema_engine)
     assert len(before) == len(chunks)
 
     repository, worker = _build_worker(engine, FakeEmbeddingModel())
     assert await worker.process_once(ACCESS, NOW + timedelta(seconds=5)) is True
 
-    after = {row.id for row in await _semantic_rows(schema_engine)}
-    assert after == before
+    after = await _semantic_rows(schema_engine)
+    assert sorted((row.chunk_number, row.content_sha256) for row in after) == sorted(
+        (row.chunk_number, row.content_sha256) for row in before
+    )
+    assert len(after) == len(chunks)
     run = await _load_run(repository, ACCESS, run_id)
     assert (
         _step(run, ProcessingStepType.INDEXING).status is ProcessingStepStatus.SUCCEEDED
@@ -868,9 +872,12 @@ async def test_existing_matching_chunks_succeed_without_new_rows(
 
 
 @pytest.mark.asyncio
-async def test_diverged_preseeded_chunk_fails_stale_without_mixing(
+async def test_diverged_preseeded_chunk_is_replaced_without_mixing(
     engine: AsyncEngine, schema_engine: AsyncEngine
 ) -> None:
+    # Правка записи оставляет в индексе устаревший набор чанков — завершение
+    # шага атомарно ЗАМЕНЯЕТ его свежепосчитанным (спека §3.3): смешения
+    # старых и новых строк нет, шаг успешен.
     capture_id = await _capture_text(engine, ACCESS, update_id=591)
     run_id = await _single_run_id(schema_engine)
     async with create_session_factory(schema_engine)() as session:
@@ -883,7 +890,7 @@ async def test_diverged_preseeded_chunk_fails_stale_without_mixing(
     )
     async with create_session_factory(engine)() as session:
         async with session.begin():
-            await PostgresSemanticIndexWriter(session).insert_chunks(
+            await PostgresSemanticIndexWriter(session).replace_chunks_for_record(
                 StoreSemanticChunksCommand(
                     access_context=ACCESS,
                     record_kind=SearchRecordType.NOTE,
@@ -902,37 +909,13 @@ async def test_diverged_preseeded_chunk_fails_stale_without_mixing(
 
     run = await _load_run(repository, ACCESS, run_id)
     step = _step(run, ProcessingStepType.INDEXING)
-    assert step.status is ProcessingStepStatus.PENDING
-    assert step.safe_error_code == "stale_semantic_index"
+    assert step.status is ProcessingStepStatus.SUCCEEDED
+    expected = await FakeEmbeddingModel().embed_document(TEXT)
     rows = await _semantic_rows(schema_engine)
-    assert len(rows) == 1
-    assert rows[0].content_sha256 == divergent.content_sha256
-
-    assert step.next_attempt_at is not None
-    claim = await repository.claim_due_step(
-        ACCESS, step.next_attempt_at, LEASE, (ProcessingStepType.INDEXING,)
+    assert sorted((row.chunk_number, row.content_sha256) for row in rows) == sorted(
+        (chunk.chunk_number, chunk.content_sha256) for chunk in expected
     )
-    assert claim is not None
-    session_factory = create_session_factory(engine)
-    source = await PostgresIndexingSourceReader(session_factory).read(
-        ReadIndexingSourceCommand(access_context=ACCESS, processing_run_id=run_id)
-    )
-    outcome = await IndexSource(FakeEmbeddingModel()).execute(source)
-    completion = IndexingCompletionInTransaction(session_factory)
-    with pytest.raises(StaleSemanticIndexError) as excinfo:
-        await completion.complete(
-            CompleteIndexingCommand(
-                access_context=ACCESS,
-                step_id=claim.step_id,
-                outcome=outcome,
-                completed_at=step.next_attempt_at,
-            )
-        )
-    message = str(excinfo.value)
-    assert message == "stale_semantic_index"
-    assert "seeded divergent chunk" not in message
-    assert TEXT not in message
-    assert len(await _semantic_rows(schema_engine)) == 1
+    assert divergent.content_sha256 not in {row.content_sha256 for row in rows}
 
 
 @pytest.mark.asyncio
@@ -997,6 +980,7 @@ def test_indexing_commands_and_errors_leak_no_content_or_ids() -> None:
                     embedding=(0.5,),
                 ),
             ),
+            content_sha256="b" * 64,
             created_at=NOW,
         ),
         completed_at=NOW,
@@ -1005,4 +989,3 @@ def test_indexing_commands_and_errors_leak_no_content_or_ids() -> None:
         assert "very private text" not in value
         assert UUID_PATTERN.search(value) is None
     assert str(IndexingTargetMismatchError()) == "indexing_target_mismatch"
-    assert str(StaleSemanticIndexError()) == "stale_semantic_index"

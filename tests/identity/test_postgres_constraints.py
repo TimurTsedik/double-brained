@@ -40,6 +40,7 @@ EXPECTED_PROTOTYPE_TABLES = {
     "memory_run_evidence",
     "page_titles",
     "pending_capture_selections",
+    "pending_edit_modes",
     "pending_memory_questions",
     "pending_search_modes",
     "processing_notices",

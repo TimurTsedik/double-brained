@@ -614,7 +614,9 @@ async def _store_chunks(
     )
     async with create_session_factory(engine)() as session:
         async with session.begin():
-            await PostgresSemanticIndexWriter(session).insert_chunks(command)
+            await PostgresSemanticIndexWriter(session).replace_chunks_for_record(
+                command
+            )
 
 
 async def question_vector(question: str) -> tuple[float, ...]:

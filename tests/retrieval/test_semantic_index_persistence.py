@@ -223,7 +223,9 @@ async def store_chunks(
 ) -> None:
     async with create_session_factory(engine)() as session:
         async with session.begin():
-            await PostgresSemanticIndexWriter(session).insert_chunks(command)
+            await PostgresSemanticIndexWriter(session).replace_chunks_for_record(
+                command
+            )
 
 
 async def register_target(
@@ -244,18 +246,31 @@ async def read_target(
             )
 
 
-async def existing_chunks(
+async def chunk_pairs(
     engine: AsyncEngine,
     access: AccessContext,
-    record_kind: SearchRecordType,
     record_id: UUID,
     index_version: int,
 ) -> tuple[tuple[int, str], ...]:
+    """(chunk_number, sha256) записи в СВОЁМ пространстве и версии индекса."""
     async with create_session_factory(engine)() as session:
         async with session.begin():
-            return await PostgresSemanticIndexWriter(session).existing_chunks(
-                access, record_kind, record_id, index_version
-            )
+            await scope_to(session, access)
+            rows = (
+                await session.execute(
+                    select(
+                        SemanticDocumentModel.chunk_number,
+                        SemanticDocumentModel.content_sha256,
+                    )
+                    .where(
+                        SemanticDocumentModel.user_space_id == access.user_space_id,
+                        SemanticDocumentModel.source_record_id == record_id,
+                        SemanticDocumentModel.index_version == index_version,
+                    )
+                    .order_by(SemanticDocumentModel.chunk_number)
+                )
+            ).all()
+            return tuple((row.chunk_number, row.content_sha256) for row in rows)
 
 
 async def search_similar(
@@ -279,7 +294,7 @@ async def scope_to(session: AsyncSession, access: AccessContext) -> None:
 
 
 @pytest.mark.asyncio
-async def test_chunk_batch_round_trips_vectors_and_repeat_insert_is_a_noop(
+async def test_chunk_batch_round_trips_vectors_and_repeat_replace_keeps_one_set(
     engine: AsyncEngine, schema_engine: AsyncEngine, session: AsyncSession
 ) -> None:
     capture_event_id = await add_capture(schema_engine, ACCESS_A)
@@ -326,16 +341,26 @@ async def test_chunk_batch_round_trips_vectors_and_repeat_insert_is_a_noop(
 
 
 @pytest.mark.asyncio
-async def test_insert_chunks_with_empty_batch_is_a_silent_noop(
+async def test_replace_with_empty_batch_clears_the_record_projection(
     engine: AsyncEngine, schema_engine: AsyncEngine, session: AsyncSession
 ) -> None:
     capture_event_id = await add_capture(schema_engine, ACCESS_A)
+    record_id = uuid4()
+    await store_chunks(
+        engine,
+        chunks_command(
+            ACCESS_A,
+            record_id=record_id,
+            capture_event_id=capture_event_id,
+            chunks=(make_chunk(0, "will be cleared", vector_of(1.0)),),
+        ),
+    )
 
     await store_chunks(
         engine,
         chunks_command(
             ACCESS_A,
-            record_id=uuid4(),
+            record_id=record_id,
             capture_event_id=capture_event_id,
             chunks=(),
         ),
@@ -349,25 +374,28 @@ async def test_insert_chunks_with_empty_batch_is_a_silent_noop(
 
 
 @pytest.mark.asyncio
-async def test_existing_chunks_returns_own_space_pairs_for_one_index_version(
+async def test_replace_touches_only_its_own_space_record_and_index_version(
     engine: AsyncEngine, schema_engine: AsyncEngine
 ) -> None:
+    # Замена набора записи A (правка, S3) обязана НЕ трогать: тот же id в
+    # чужом пространстве, чужую версию индекса и другую запись рядом.
     record_id = uuid4()
+    neighbour_record_id = uuid4()
     capture_a = await add_capture(schema_engine, ACCESS_A)
     capture_b = await add_capture(schema_engine, ACCESS_B)
-    chunks_a = (
-        make_chunk(0, "a zero", vector_of(1.0)),
-        make_chunk(1, "a one", vector_of(0.5)),
-    )
     chunk_b = make_chunk(0, "b zero", vector_of(-1.0))
     stale_chunk = make_chunk(0, "a stale version", vector_of(0.25))
+    neighbour_chunk = make_chunk(0, "a neighbour", vector_of(0.75))
     await store_chunks(
         engine,
         chunks_command(
             ACCESS_A,
             record_id=record_id,
             capture_event_id=capture_a,
-            chunks=chunks_a,
+            chunks=(
+                make_chunk(0, "a zero", vector_of(1.0)),
+                make_chunk(1, "a one", vector_of(0.5)),
+            ),
         ),
     )
     await store_chunks(
@@ -389,19 +417,39 @@ async def test_existing_chunks_returns_own_space_pairs_for_one_index_version(
             index_version=INDEX_VERSION + 1,
         ),
     )
+    await store_chunks(
+        engine,
+        chunks_command(
+            ACCESS_A,
+            record_id=neighbour_record_id,
+            capture_event_id=capture_a,
+            chunks=(neighbour_chunk,),
+        ),
+    )
 
-    pairs_a = await existing_chunks(
-        engine, ACCESS_A, SearchRecordType.NOTE, record_id, INDEX_VERSION
-    )
-    pairs_b = await existing_chunks(
-        engine, ACCESS_B, SearchRecordType.NOTE, record_id, INDEX_VERSION
+    replacement = make_chunk(0, "a edited", vector_of(0.1))
+    await store_chunks(
+        engine,
+        chunks_command(
+            ACCESS_A,
+            record_id=record_id,
+            capture_event_id=capture_a,
+            chunks=(replacement,),
+        ),
     )
 
-    assert pairs_a == (
-        (0, chunks_a[0].content_sha256),
-        (1, chunks_a[1].content_sha256),
+    assert await chunk_pairs(engine, ACCESS_A, record_id, INDEX_VERSION) == (
+        (0, replacement.content_sha256),
     )
-    assert pairs_b == ((0, chunk_b.content_sha256),)
+    assert await chunk_pairs(engine, ACCESS_B, record_id, INDEX_VERSION) == (
+        (0, chunk_b.content_sha256),
+    )
+    assert await chunk_pairs(engine, ACCESS_A, record_id, INDEX_VERSION + 1) == (
+        (0, stale_chunk.content_sha256),
+    )
+    assert await chunk_pairs(engine, ACCESS_A, neighbour_record_id, INDEX_VERSION) == (
+        (0, neighbour_chunk.content_sha256),
+    )
 
 
 @pytest.mark.asyncio

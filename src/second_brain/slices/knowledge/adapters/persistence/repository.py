@@ -1,6 +1,6 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from second_brain.slices.identity.application.contracts import AccessContext
@@ -19,13 +19,25 @@ from second_brain.slices.knowledge.application.contracts import (
     CreateIdeaCommand,
     CreateNoteCommand,
     CreateQuestionCommand,
+    UpdateKnowledgeTextCommand,
 )
 from second_brain.slices.knowledge.domain.entities import (
     Decision,
     Idea,
+    KnowledgeRecordKind,
     Note,
     Question,
 )
+
+_KNOWLEDGE_MODELS: dict[
+    KnowledgeRecordKind,
+    type[NoteModel] | type[IdeaModel] | type[DecisionModel] | type[QuestionModel],
+] = {
+    KnowledgeRecordKind.NOTE: NoteModel,
+    KnowledgeRecordKind.IDEA: IdeaModel,
+    KnowledgeRecordKind.DECISION: DecisionModel,
+    KnowledgeRecordKind.QUESTION: QuestionModel,
+}
 
 
 class PostgresNoteRepository:
@@ -204,6 +216,31 @@ class PostgresKnowledgeWriter:
             created_at=model.created_at,
             updated_at=model.updated_at,
             trace_id=model.trace_id,
+        )
+
+    async def update_text(self, command: UpdateKnowledgeTextCommand) -> UUID | None:
+        """Правка (S3): заменить text + бампнуть updated_at и edited_at строго
+        в СВОЁМ пространстве (owner-предикат в WHERE поверх forced RLS).
+        edited_at ставится ТОЛЬКО здесь — по нему показ метит «(изменено)».
+
+        Возвращает source_capture_event_id правленой записи (нужен
+        пере-индексации) или None, если записи нет / она чужая — вызывающий
+        трактует это как несостоявшуюся правку.
+        """
+        await _set_user_space_scope(self._session, command.access_context)
+        model = _KNOWLEDGE_MODELS[command.record_kind]
+        return await self._session.scalar(
+            update(model)
+            .where(
+                model.id == command.record_id,
+                model.user_space_id == command.access_context.user_space_id,
+            )
+            .values(
+                text=command.text,
+                updated_at=command.updated_at,
+                edited_at=command.updated_at,
+            )
+            .returning(model.source_capture_event_id)
         )
 
 

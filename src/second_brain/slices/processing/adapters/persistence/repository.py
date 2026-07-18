@@ -18,6 +18,7 @@ from second_brain.slices.processing.application.contracts import (
     CompleteVoiceDownloadCommand,
     CompleteVoiceTranscriptionCommand,
     CreateImageProcessingRunCommand,
+    CreateIndexProcessingRunCommand,
     CreateTextProcessingRunCommand,
     CreateVoiceProcessingRunCommand,
     FailProcessingStepCommand,
@@ -55,6 +56,7 @@ _CREATE_RUN_COMMAND = (
     CreateVoiceProcessingRunCommand
     | CreateTextProcessingRunCommand
     | CreateImageProcessingRunCommand
+    | CreateIndexProcessingRunCommand
 )
 
 
@@ -235,10 +237,29 @@ class PostgresProcessingWriter:
             ),
         )
 
+    async def create_index_run(
+        self, command: CreateIndexProcessingRunCommand
+    ) -> ProcessingRun:
+        # Правка записи (S3): ТОЛЬКО пере-индексация — единственный шаг
+        # INDEXING, без классификации и извлечения времени. Версия = max+1 по
+        # (пространство, capture): прежние прогоны append-only и не трогаются.
+        await _set_user_space_scope(self._session, command.access_context)
+        next_version = await self._session.scalar(
+            select(func.coalesce(func.max(ProcessingRunModel.version), 0) + 1).where(
+                ProcessingRunModel.user_space_id
+                == command.access_context.user_space_id,
+                ProcessingRunModel.capture_event_id == command.capture_event_id,
+            )
+        )
+        return await self._create_run(
+            command, (ProcessingStepType.INDEXING,), version=int(next_version or 1)
+        )
+
     async def _create_run(
         self,
         command: _CREATE_RUN_COMMAND,
         step_types: tuple[ProcessingStepType, ...],
+        version: int = 1,
     ) -> ProcessingRun:
         await _set_user_space_scope(self._session, command.access_context)
         run = ProcessingRunModel(
@@ -248,7 +269,7 @@ class PostgresProcessingWriter:
             output_type=command.output_type,
             source_only=command.output_type is None,
             route_default_by_time=command.route_default_by_time,
-            version=1,
+            version=version,
             created_at=command.created_at,
             updated_at=command.created_at,
             trace_id=command.trace_id,

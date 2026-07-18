@@ -159,6 +159,7 @@ class TelegramUpdateReceipt(Base):
             "'task_mode_cancelled', 'tasks_listed', 'task_completed', "
             "'search_mode_set', 'search_mode_cancelled', "
             "'search_query_required', 'search_completed', 'record_shown', "
+            "'edit_mode_set', 'edit_mode_cancelled', 'record_edited', "
             "'voice_queued', 'image_saved', "
             "'projects_listed', 'project_name_mode_set', "
             "'project_name_required', 'project_created', "

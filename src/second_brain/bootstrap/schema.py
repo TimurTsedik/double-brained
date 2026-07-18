@@ -14,6 +14,9 @@ from second_brain.slices.classification.adapters.persistence.models import (
     ClassificationResultModel,
 )
 from second_brain.slices.contacts.adapters.persistence.models import ContactModel
+from second_brain.slices.editing.adapters.persistence.models import (
+    PendingEditModeModel,
+)
 from second_brain.slices.identity.adapters.persistence.schema import (
     APPLICATION_ROLE,
     initialize_identity_schema,
@@ -132,6 +135,7 @@ WEBLINK_TABLES = (
     cast(Table, RecordUrlModel.__table__),
     cast(Table, PageTitleModel.__table__),
 )
+EDITING_TABLES = (cast(Table, PendingEditModeModel.__table__),)
 MEMORY_TABLE_NAMES = (
     "pending_memory_questions",
     "memory_questions",
@@ -162,6 +166,7 @@ async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") ->
     await _initialize_reminder_schema(engine, schema_name)
     await _initialize_contact_schema(engine, schema_name)
     await _initialize_weblink_schema(engine, schema_name)
+    await _initialize_editing_schema(engine, schema_name)
 
 
 async def reset_prototype_schema(
@@ -171,6 +176,7 @@ async def reset_prototype_schema(
         await reset_identity_prototype_schema(engine, confirm, schema_name)
         return
     await _ensure_vector_extension(engine)
+    await _drop_editing_schema(engine)
     await _drop_weblink_schema(engine)
     await _drop_contact_schema(engine)
     await _drop_reminder_schema(engine)
@@ -194,6 +200,7 @@ async def reset_prototype_schema(
     await _initialize_reminder_schema(engine, schema_name)
     await _initialize_contact_schema(engine, schema_name)
     await _initialize_weblink_schema(engine, schema_name)
+    await _initialize_editing_schema(engine, schema_name)
 
 
 async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> None:
@@ -406,6 +413,7 @@ async def _drop_classification_schema(engine: AsyncEngine) -> None:
 async def _initialize_task_schema(engine: AsyncEngine, schema_name: str) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_create_task_tables)
+        await _reconcile_record_edited_at(connection, schema_name, ("tasks",))
         for table_name in (
             "tasks",
             "task_provenance",
@@ -423,6 +431,9 @@ async def _drop_task_schema(engine: AsyncEngine) -> None:
 async def _initialize_knowledge_schema(engine: AsyncEngine, schema_name: str) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_create_knowledge_tables)
+        await _reconcile_record_edited_at(
+            connection, schema_name, ("notes", "ideas", "decisions", "questions")
+        )
         for table_name in (
             "notes",
             "note_provenance",
@@ -435,6 +446,23 @@ async def _initialize_knowledge_schema(engine: AsyncEngine, schema_name: str) ->
         ):
             await _configure_user_space_rls(connection, schema_name, table_name)
         await _grant_knowledge_privileges(connection, schema_name)
+
+
+async def _reconcile_record_edited_at(
+    connection: AsyncConnection, schema_name: str, table_names: tuple[str, ...]
+) -> None:
+    # create_all(checkfirst=True) пропускает СУЩЕСТВУЮЩИЕ таблицы, поэтому
+    # живая прод-БД (до S3) сама не получит edited_at. Доращиваем идемпотентно:
+    # на свежей БД — no-op, на живой — ремонт. Существующие строки остаются
+    # NULL («текст не правился») — ADD forward-only.
+    schema = _quote_identifier(schema_name)
+    for table_name in table_names:
+        await connection.execute(
+            text(
+                f"ALTER TABLE {schema}.{_quote_identifier(table_name)} "
+                "ADD COLUMN IF NOT EXISTS edited_at timestamptz"
+            )
+        )
 
 
 async def _drop_knowledge_schema(engine: AsyncEngine) -> None:
@@ -544,6 +572,18 @@ async def _initialize_weblink_schema(engine: AsyncEngine, schema_name: str) -> N
 async def _drop_weblink_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(_drop_weblink_tables)
+
+
+async def _initialize_editing_schema(engine: AsyncEngine, schema_name: str) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_create_editing_tables)
+        await _configure_user_space_rls(connection, schema_name, "pending_edit_modes")
+        await _grant_editing_privileges(connection, schema_name)
+
+
+async def _drop_editing_schema(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_drop_editing_tables)
 
 
 def _create_capture_tables(connection: Connection) -> None:
@@ -656,6 +696,16 @@ def _drop_weblink_tables(connection: Connection) -> None:
         table.drop(connection, checkfirst=True)
 
 
+def _create_editing_tables(connection: Connection) -> None:
+    for table in EDITING_TABLES:
+        table.create(connection, checkfirst=True)
+
+
+def _drop_editing_tables(connection: Connection) -> None:
+    for table in reversed(EDITING_TABLES):
+        table.drop(connection, checkfirst=True)
+
+
 async def _configure_user_space_rls(
     connection: AsyncConnection, schema_name: str, table_name: str
 ) -> None:
@@ -691,11 +741,20 @@ async def _grant_task_privileges(connection: AsyncConnection, schema_name: str) 
     await connection.execute(
         text(f"GRANT SELECT, INSERT ON TABLE {task_tables} TO {APPLICATION_ROLE}")
     )
+    # tasks — КОЛОНОЧНЫЙ UPDATE: complete двигает status+updated_at, правка
+    # (S3) — title+updated_at+edited_at. Происхождение (created_at/trace_id/
+    # source_capture_event_id/user_space_id) и description app-роль переписать
+    # не может.
+    await connection.execute(
+        text(
+            "GRANT UPDATE (title, status, updated_at, edited_at) ON TABLE "
+            f"{quoted_schema}.tasks TO {APPLICATION_ROLE}"
+        )
+    )
     await connection.execute(
         text(
             "GRANT UPDATE ON TABLE "
-            f"{quoted_schema}.tasks, {quoted_schema}.pending_capture_selections "
-            f"TO {APPLICATION_ROLE}"
+            f"{quoted_schema}.pending_capture_selections TO {APPLICATION_ROLE}"
         )
     )
     # pending_capture_selections — транзиентное UI-состояние (одна строка на
@@ -795,6 +854,21 @@ async def _grant_knowledge_privileges(
     await connection.execute(
         text(f"GRANT SELECT, INSERT ON TABLE {knowledge_tables} TO {APPLICATION_ROLE}")
     )
+    # Правка записи (S3): КОЛОНОЧНЫЙ UPDATE только text+updated_at+edited_at —
+    # роль приложения не может переписать происхождение (created_at/trace_id/
+    # source_capture_event_id/user_space_id). DELETE по-прежнему нет.
+    # Гранты переприменяются каждым init-db (REVOKE+GRANT выше), поэтому
+    # живой прод-БД отдельный reconcile не нужен.
+    record_tables = ", ".join(
+        f"{quoted_schema}.{table_name}"
+        for table_name in ("notes", "ideas", "decisions", "questions")
+    )
+    await connection.execute(
+        text(
+            "GRANT UPDATE (text, updated_at, edited_at) ON TABLE "
+            f"{record_tables} TO {APPLICATION_ROLE}"
+        )
+    )
 
 
 async def _grant_retrieval_privileges(
@@ -818,6 +892,15 @@ async def _grant_retrieval_privileges(
     await connection.execute(
         text(
             f"GRANT SELECT, INSERT ON TABLE {append_only_tables} TO {APPLICATION_ROLE}"
+        )
+    )
+    # Правка записи (S3): семантический индекс обязан отражать НОВЫЙ текст —
+    # чанки записи заменяются атомарно (delete+insert в одной транзакции шага).
+    # DELETE ТОЛЬКО на semantic_documents (RLS остаётся): indexing_targets —
+    # append-only журнал целей, ему DELETE не нужен.
+    await connection.execute(
+        text(
+            f'GRANT DELETE ON TABLE {schema}."semantic_documents" TO {APPLICATION_ROLE}'
         )
     )
 
@@ -898,15 +981,36 @@ async def _grant_weblink_privileges(
             f"FROM {APPLICATION_ROLE}"
         )
     )
-    # record_urls — append-only sidecar записи: без UPDATE/DELETE.
+    # record_urls — sidecar записи: без UPDATE. DELETE — только ради правки
+    # записи (S3): ссылки пересобираются целиком под НОВЫЙ текст
+    # (replace_links), точечных мутаций строк нет.
     await connection.execute(
-        text(f"GRANT SELECT, INSERT ON TABLE {record_urls} TO {APPLICATION_ROLE}")
+        text(
+            f"GRANT SELECT, INSERT, DELETE ON TABLE {record_urls} TO {APPLICATION_ROLE}"
+        )
     )
     # page_titles: enqueue=INSERT (ON CONFLICT DO NOTHING), claim/итог
     # воркера=UPDATE. Без DELETE.
     await connection.execute(
         text(
             f"GRANT SELECT, INSERT, UPDATE ON TABLE {page_titles} TO {APPLICATION_ROLE}"
+        )
+    )
+
+
+async def _grant_editing_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    table = f'{_quote_identifier(schema_name)}."pending_edit_modes"'
+    await connection.execute(
+        text(f"REVOKE ALL PRIVILEGES ON TABLE {table} FROM {APPLICATION_ROLE}")
+    )
+    # Транзиентное UI-состояние (одна строка на пространство), как
+    # pending_search_modes: установка=INSERT/UPDATE, потребление/отмена=DELETE.
+    await connection.execute(
+        text(
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table} "
+            f"TO {APPLICATION_ROLE}"
         )
     )
 

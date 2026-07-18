@@ -148,6 +148,56 @@ async def test_initialize_reconciles_record_shown_on_existing_db(
 
 
 @pytest.mark.asyncio
+async def test_initialize_reconciles_edit_kinds_on_existing_db(
+    isolated_database: IsolatedDatabase, schema_engine: AsyncEngine
+) -> None:
+    schema = isolated_database.schema
+    table = f'"{schema}".telegram_update_receipts'
+
+    # Живая база до слайса «правка записи» (S3): CHECK без edit_*/record_edited.
+    async with schema_engine.begin() as connection:
+        await connection.execute(text(f"DELETE FROM {table}"))
+        await connection.execute(
+            text(
+                f"ALTER TABLE {table} "
+                "DROP CONSTRAINT ck_telegram_update_receipts_result_kind"
+            )
+        )
+        await connection.execute(
+            text(
+                f"ALTER TABLE {table} "
+                "ADD CONSTRAINT ck_telegram_update_receipts_result_kind "
+                "CHECK (result_kind IN ('captured', 'ignored'))"
+            )
+        )
+
+    await initialize_identity_schema(schema_engine, schema)
+
+    async with schema_engine.begin() as connection:
+        for update_id, kind in (
+            (40, "edit_mode_set"),
+            (41, "edit_mode_cancelled"),
+            (42, "record_edited"),
+        ):
+            await connection.execute(
+                text(
+                    f"INSERT INTO {table} "
+                    "(bot_id, update_id, result_kind, trace_id, created_at) "
+                    "VALUES (:bot, :upd, :kind, :trace, :ts)"
+                ),
+                {"bot": 1, "upd": update_id, "kind": kind, "trace": "e" * 32, "ts": TS},
+            )
+        stored = await connection.scalars(
+            text(f"SELECT result_kind FROM {table} ORDER BY update_id")
+        )
+    assert set(stored.all()) == {
+        "edit_mode_set",
+        "edit_mode_cancelled",
+        "record_edited",
+    }
+
+
+@pytest.mark.asyncio
 async def test_initialize_reconciles_digest_kinds_on_existing_db(
     isolated_database: IsolatedDatabase, schema_engine: AsyncEngine
 ) -> None:

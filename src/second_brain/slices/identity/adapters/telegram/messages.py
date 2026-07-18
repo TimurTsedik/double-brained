@@ -171,6 +171,37 @@ CATALOG: dict[str, dict[Locale, str]] = {
         Locale.RU: "📷 источник записи",
         Locale.EN: "📷 record source",
     },
+    # --- правка записи (S3) ---
+    # Кнопка под показом записи целиком.
+    "record_view.edit_btn": {Locale.RU: "✏️ Править", Locale.EN: "✏️ Edit"},
+    # Пометка правленой записи в заголовке показа (updated_at > created_at).
+    "record_view.edited_mark": {Locale.RU: "(изменено)", Locale.EN: "(edited)"},
+    "edit_prompt.intro": {
+        Locale.RU: (
+            "✏️ Отправьте новый текст.\n\n"
+            "Следующее сообщение заменит текст записи, а не создаст новую."
+        ),
+        Locale.EN: (
+            "✏️ Send the new text.\n\n"
+            "Your next message replaces the record text instead of creating "
+            "a new entry."
+        ),
+    },
+    "edit_prompt.cancel_btn": {Locale.RU: "✖️ Отмена", Locale.EN: "✖️ Cancel"},
+    "edit_cancelled": {
+        Locale.RU: "✖️ Правка отменена.",
+        Locale.EN: "✖️ Edit cancelled.",
+    },
+    "record_edited.confirm": {
+        Locale.RU: "✏️ Запись обновлена.",
+        Locale.EN: "✏️ Record updated.",
+    },
+    # Дешёвое дополнение (решение владельца §6.2): будильник правкой не
+    # сдвигается — одна строка снимает удивление.
+    "record_edited.reminder_kept": {
+        Locale.RU: "⏰ напоминание осталось на {when}",
+        Locale.EN: "⏰ the reminder stays set for {when}",
+    },
     # --- сводка за период ---
     # Кнопка панели видна ВСЕМ пользователям (не только админу).
     "panel.btn.digest": {Locale.RU: "📊 Сводка", Locale.EN: "📊 Digest"},
@@ -500,6 +531,39 @@ def record_image_source_note(locale: Locale) -> str:
 
 def record_image_caption(locale: Locale) -> str:
     return _text("record_view.image_caption", locale)
+
+
+# --- правка записи (S3) ---
+
+
+def record_edit_button(locale: Locale) -> str:
+    return _text("record_view.edit_btn", locale)
+
+
+def record_edited_mark(locale: Locale) -> str:
+    return _text("record_view.edited_mark", locale)
+
+
+def edit_prompt_text(locale: Locale) -> str:
+    return _text("edit_prompt.intro", locale)
+
+
+def edit_prompt_cancel_button(locale: Locale) -> str:
+    return _text("edit_prompt.cancel_btn", locale)
+
+
+def edit_cancelled_text(locale: Locale) -> str:
+    return _text("edit_cancelled", locale)
+
+
+def record_edited_text(reminder_when: str | None, locale: Locale) -> str:
+    """Подтверждение правки; для задачи с живым напоминанием — строка
+    «⏰ напоминание осталось на …» (момент уже отформатирован вызывающим)."""
+    confirmation = _text("record_edited.confirm", locale)
+    if reminder_when is None:
+        return confirmation
+    kept = _text("record_edited.reminder_kept", locale).format(when=reminder_when)
+    return f"{confirmation}\n{kept}"
 
 
 # --- сводка за период ---

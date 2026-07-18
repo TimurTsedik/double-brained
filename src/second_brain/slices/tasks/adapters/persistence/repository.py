@@ -1,5 +1,5 @@
 from datetime import datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -16,6 +16,7 @@ from second_brain.slices.tasks.application.contracts import (
     ConsumePendingCaptureSelectionCommand,
     ConsumePendingTaskTextCommand,
     CreateTaskCommand,
+    RenameTaskCommand,
     SetAwaitingTaskCommand,
     SetPendingCaptureSelectionCommand,
 )
@@ -68,6 +69,29 @@ class PostgresTaskWriter:
         )
         await self._session.flush()
         return _to_entity(model)
+
+    async def rename(self, command: RenameTaskCommand) -> UUID | None:
+        """Правка (S3): заменить title + бампнуть updated_at и edited_at
+        строго в СВОЁМ пространстве. Статус и напоминание не трогаются;
+        edited_at ставится ТОЛЬКО здесь — по нему показ метит «(изменено)».
+
+        Возвращает source_capture_event_id правленой задачи (нужен
+        пере-индексации) или None, если задачи нет / она чужая.
+        """
+        await _set_user_space_scope(self._session, command.access_context)
+        return await self._session.scalar(
+            update(TaskModel)
+            .where(
+                TaskModel.id == command.task_id,
+                TaskModel.user_space_id == command.access_context.user_space_id,
+            )
+            .values(
+                title=command.title,
+                updated_at=command.updated_at,
+                edited_at=command.updated_at,
+            )
+            .returning(TaskModel.source_capture_event_id)
+        )
 
 
 class PostgresTaskPanelRepository:

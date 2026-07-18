@@ -54,6 +54,20 @@ class CompleteTaskCommand:
 
 
 @dataclass(frozen=True)
+class RenameTaskCommand:
+    """Правка (S3): заменить title задачи + бампнуть updated_at.
+
+    Статус, напоминание и происхождение задачи правкой НЕ трогаются
+    (решение владельца §6.2: время не пере-извлекаем, будильник стоит).
+    """
+
+    access_context: AccessContext
+    task_id: UUID = field(repr=False)
+    title: str = field(repr=False)
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
 class SetAwaitingTaskCommand:
     access_context: AccessContext
     updated_at: datetime

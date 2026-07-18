@@ -37,23 +37,13 @@ async def test_application_role_has_no_delete_privilege(
 
 
 @pytest.mark.asyncio
-async def test_application_role_can_mutate_only_pending_search_state(
+async def test_application_role_can_fully_mutate_pending_mode_state(
     session: AsyncSession,
 ) -> None:
-    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
-        assert (
-            await session.scalar(
-                text(
-                    "SELECT has_table_privilege(current_user, "
-                    "'pending_search_modes', :privilege)"
-                ),
-                {"privilege": privilege},
-            )
-            is True
-        )
-
-    for table_name in ("notes", "ideas", "decisions", "questions"):
-        for privilege in ("UPDATE", "DELETE"):
+    # Транзиентные UI-режимы (поиск / правка): полный CRUD — установка,
+    # потребление и отмена удаляют/переписывают строку.
+    for table_name in ("pending_search_modes", "pending_edit_modes"):
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
             assert (
                 await session.scalar(
                     text(
@@ -62,18 +52,155 @@ async def test_application_role_can_mutate_only_pending_search_state(
                     ),
                     {"table_name": table_name, "privilege": privilege},
                 )
-                is False
-            )
+                is True
+            ), (table_name, privilege)
 
 
 @pytest.mark.asyncio
-async def test_application_role_can_only_read_and_append_semantic_index_tables(
+async def test_application_role_updates_only_text_columns_of_knowledge_records(
     session: AsyncSession,
 ) -> None:
-    expected = {"SELECT": True, "INSERT": True, "UPDATE": False, "DELETE": False}
+    # Правка (S3): КОЛОНОЧНЫЙ UPDATE text+updated_at; происхождение записи
+    # (created_at/trace_id/source/space) app-роль переписать не может. DELETE
+    # по-прежнему нет.
+    for table_name in ("notes", "ideas", "decisions", "questions"):
+        # Грант колоночный: has_ANY_column_privilege (табличного UPDATE нет).
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT has_any_column_privilege(current_user, :table_name, "
+                    "'UPDATE')"
+                ),
+                {"table_name": table_name},
+            )
+            is True
+        ), table_name
+        for column, allowed in (
+            ("text", True),
+            ("updated_at", True),
+            ("edited_at", True),
+            ("created_at", False),
+            ("trace_id", False),
+            ("source_capture_event_id", False),
+            ("user_space_id", False),
+            ("id", False),
+        ):
+            actual = await session.scalar(
+                text(
+                    "SELECT has_column_privilege(current_user, :table_name, "
+                    ":column, 'UPDATE')"
+                ),
+                {"table_name": table_name, "column": column},
+            )
+            assert actual is allowed, (table_name, column)
+        assert (
+            await session.scalar(
+                text("SELECT has_table_privilege(current_user, :table_name, 'DELETE')"),
+                {"table_name": table_name},
+            )
+            is False
+        ), table_name
 
-    for table_name in ("semantic_documents", "indexing_targets"):
-        for privilege, allowed in expected.items():
+
+@pytest.mark.asyncio
+async def test_application_role_updates_only_mutable_task_columns(
+    session: AsyncSession,
+) -> None:
+    # tasks: КОЛОНОЧНЫЙ UPDATE (title, status, updated_at, edited_at) —
+    # complete двигает status+updated_at, правка — title+updated_at+edited_at.
+    # Происхождение (created_at/trace_id/source/space) и description app-роль
+    # переписать не может; DELETE нет.
+    assert (
+        await session.scalar(
+            text("SELECT has_any_column_privilege(current_user, 'tasks', 'UPDATE')")
+        )
+        is True
+    )
+    for column, allowed in (
+        ("title", True),
+        ("status", True),
+        ("updated_at", True),
+        ("edited_at", True),
+        ("description", False),
+        ("created_at", False),
+        ("trace_id", False),
+        ("source_capture_event_id", False),
+        ("user_space_id", False),
+        ("id", False),
+    ):
+        actual = await session.scalar(
+            text(
+                "SELECT has_column_privilege(current_user, 'tasks', :column, 'UPDATE')"
+            ),
+            {"column": column},
+        )
+        assert actual is allowed, column
+    assert (
+        await session.scalar(
+            text("SELECT has_table_privilege(current_user, 'tasks', 'DELETE')")
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_application_role_privileges_on_semantic_index_tables(
+    session: AsyncSession,
+) -> None:
+    # semantic_documents: DELETE есть — правка (S3) атомарно заменяет чанки
+    # записи (delete+insert одной транзакцией шага). indexing_targets —
+    # append-only журнал целей: без UPDATE/DELETE.
+    expected = {
+        "semantic_documents": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": False,
+            "DELETE": True,
+        },
+        "indexing_targets": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": False,
+            "DELETE": False,
+        },
+    }
+
+    for table_name, privileges in expected.items():
+        for privilege, allowed in privileges.items():
+            actual = await session.scalar(
+                text(
+                    "SELECT has_table_privilege(current_user, :table_name, :privilege)"
+                ),
+                {"table_name": table_name, "privilege": privilege},
+            )
+
+            assert actual is allowed, (table_name, privilege)
+
+
+@pytest.mark.asyncio
+async def test_application_role_privileges_on_weblink_tables(
+    session: AsyncSession,
+) -> None:
+    # record_urls: DELETE только ради правки (S3) — набор ссылок записи
+    # пересобирается целиком; UPDATE нет. page_titles: очередь/кэш титулов —
+    # INSERT+UPDATE, без DELETE.
+    expected = {
+        "record_urls": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": False,
+            "DELETE": True,
+        },
+        "page_titles": {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": True,
+            "DELETE": False,
+        },
+    }
+
+    for table_name, privileges in expected.items():
+        for privilege, allowed in privileges.items():
             actual = await session.scalar(
                 text(
                     "SELECT has_table_privilege(current_user, :table_name, :privilege)"

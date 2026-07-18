@@ -32,6 +32,10 @@ class IndexingSource:
     record_kind: SearchRecordType
     record_id: UUID = field(repr=False)
     text: str = field(repr=False)
+    # sha256 ПРОЧИТАННОГО текста записи: completion сверит его с ТЕКУЩИМ
+    # текстом — поздний результат по уже правленой записи не пишется (гонка
+    # «первичная индексация против правки», спека §3.3).
+    content_sha256: str
     # created_at of the source record itself, not of any processing step:
     # the semantic projection must carry the record's date.
     created_at: datetime
@@ -42,6 +46,8 @@ class IndexingOutcome:
     record_kind: SearchRecordType
     record_id: UUID = field(repr=False)
     chunks: tuple[IndexedChunk, ...] = field(repr=False)
+    # Copied from IndexingSource.content_sha256: чей текст заэмбежен.
+    content_sha256: str
     # Copied from IndexingSource.created_at: the record's own date.
     created_at: datetime
 

@@ -25,8 +25,9 @@ from second_brain.slices.weblinks.domain.entities import (
 
 
 class RecordUrlModel(Base):
-    """Упорядоченные пары «слово → адрес» записи. Append-only sidecar:
-    текст записи не трогается, у роли нет UPDATE/DELETE на эту таблицу."""
+    """Упорядоченные пары «слово → адрес» записи. Sidecar: текст записи не
+    трогается. У роли нет UPDATE; DELETE есть только ради правки записи (S3) —
+    набор пар пересобирается целиком под новый текст (replace_links)."""
 
     __tablename__ = "record_urls"
     __table_args__ = (

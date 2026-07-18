@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from hashlib import sha256
 from typing import Final
 from uuid import UUID
 
@@ -37,7 +38,7 @@ class ReadIndexingSourceCommand:
     processing_run_id: UUID = field(repr=False)
 
 
-_SOURCE_COLUMNS: Final[
+SOURCE_COLUMNS: Final[
     dict[
         SearchRecordType,
         tuple[
@@ -103,7 +104,7 @@ class PostgresIndexingSourceReader:
                 if target is None:
                     raise LookupError("indexing target was not found")
                 id_column, space_column, source_column, text_column, created_column = (
-                    _SOURCE_COLUMNS[target.record_kind]
+                    SOURCE_COLUMNS[target.record_kind]
                 )
                 row = (
                     await session.execute(
@@ -123,5 +124,14 @@ class PostgresIndexingSourceReader:
                     record_kind=target.record_kind,
                     record_id=target.record_id,
                     text=record_text,
+                    # Отпечаток прочитанного текста: completion сверит его с
+                    # текущим текстом записи (защита от поздней индексации
+                    # поверх правки).
+                    content_sha256=record_text_sha256(record_text),
                     created_at=record_created_at,
                 )
+
+
+def record_text_sha256(text: str) -> str:
+    """Единый отпечаток текста записи для source→completion сверки."""
+    return sha256(text.encode("utf-8")).hexdigest()

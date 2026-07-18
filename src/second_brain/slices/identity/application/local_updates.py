@@ -21,6 +21,11 @@ from second_brain.slices.contacts.application.contracts import (
     ContactIntakePort,
     SaveContactCommand,
 )
+from second_brain.slices.editing.application.contracts import (
+    BeginRecordEditCommand,
+    ConsumeRecordEditCommand,
+    RecordEditPort,
+)
 from second_brain.slices.identity.application.access_context import ResolveAccessContext
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
@@ -83,6 +88,16 @@ _SHOW_CALLBACK_PATTERN = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
 )
 
+# Строгий парс callback'а «✏️ Править» — та же форма, что у show; плюс
+# отдельная кнопка отмены режима. Любой иной edit:* гасится до любой другой
+# обработки (максимальная форма «edit:decision:<uuid>» — 50 байт, в лимит
+# Telegram влезает).
+EDIT_CANCEL_CALLBACK = "edit:cancel"
+_EDIT_CALLBACK_PATTERN = re.compile(
+    r"edit:(note|task|idea|decision|question):"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+)
+
 # Строгий парс callback'ов сводки. Периоды — закрытый enum; offset — только
 # беззнаковое десятичное без ведущих нулей ограниченной длины; as_of — только
 # unix-секунды (1-10 цифр, без нуля и ведущих нулей). Любой иной digest:*
@@ -111,6 +126,10 @@ class AcknowledgementKind(StrEnum):
     SEARCH_MODE_SET = "search_mode_set"
     SEARCH_QUERY_REQUIRED = "search_query_required"
     RECORD_SHOWN = "record_shown"
+    # Правка записи (S3): режим поставлен / отменён / правка применена.
+    EDIT_MODE_SET = "edit_mode_set"
+    EDIT_MODE_CANCELLED = "edit_mode_cancelled"
+    RECORD_EDITED = "record_edited"
     PROJECTS_LISTED = "projects_listed"
     PROJECT_NAME_MODE_SET = "project_name_mode_set"
     PROJECT_NAME_REQUIRED = "project_name_required"
@@ -194,6 +213,7 @@ class LocalUpdateProcessor:
         record_view_port: RecordViewPort | None = None,
         digest_port: DigestPort | None = None,
         record_links_port: RecordLinksPort | None = None,
+        record_edit_port: RecordEditPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -213,6 +233,7 @@ class LocalUpdateProcessor:
         self._record_view_port = record_view_port
         self._digest_port = digest_port
         self._record_links_port = record_links_port
+        self._record_edit_port = record_edit_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -279,6 +300,11 @@ class LocalUpdateProcessor:
                 transaction, update, context, now, start_token
             )
         if _is_command(update.text):
+            # /команда — точно не новый текст правки: гасим pending-режим,
+            # иначе СЛЕДУЮЩЕЕ сообщение неожиданно перезаписало бы запись.
+            # Остальные режимы (поиск/память/проект) команду переживают —
+            # они лишь съедят следующий текст, а не перепишут данные.
+            await self._cancel_pending_edit_for_actor(transaction, update)
             return AcknowledgementKind.IGNORED
 
         access_context = await ResolveAccessContext(transaction).execute(
@@ -323,6 +349,9 @@ class LocalUpdateProcessor:
                 await self._exact_search_port.cancel(access_context, transaction)
             if self._memory_ask_port is not None:
                 await self._memory_ask_port.cancel(access_context, transaction)
+            if self._record_edit_port is not None:
+                # Голос — точно не новый текст правки: режим гасим, как поиск.
+                await self._record_edit_port.cancel(access_context, transaction)
             if self._project_panel_port is not None:
                 await self._project_panel_port.cancel_creation(
                     CancelProjectCreationCommand(
@@ -356,6 +385,9 @@ class LocalUpdateProcessor:
                 await self._exact_search_port.cancel(access_context, transaction)
             if self._memory_ask_port is not None:
                 await self._memory_ask_port.cancel(access_context, transaction)
+            if self._record_edit_port is not None:
+                # Фото — точно не новый текст правки: режим гасим, как поиск.
+                await self._record_edit_port.cancel(access_context, transaction)
             if self._project_panel_port is not None:
                 await self._project_panel_port.cancel_creation(
                     CancelProjectCreationCommand(
@@ -444,6 +476,35 @@ class LocalUpdateProcessor:
                     return AcknowledgementKind.SEARCH_QUERY_REQUIRED
                 return AcknowledgementKind.SEARCH_COMPLETED
 
+        if self._record_edit_port is not None:
+            # Pending-режим правки: ЭТОТ текст — новый текст записи, а не
+            # новая запись. Время не пере-извлекается, классификатор не
+            # перезапускается — единственное следствие ниже порта:
+            # UPDATE + пере-индексация + пересбор ссылок (спека §3.3).
+            edit_result = await self._record_edit_port.consume_new_text(
+                ConsumeRecordEditCommand(
+                    access_context=access_context,
+                    text=update.text,
+                    links=update.links,
+                    received_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            if edit_result is not None:
+                if edit_result.text_required:
+                    # Пробельный «новый текст»: правка не применена, режим
+                    # остался — повторяем тот же промпт режима.
+                    return AcknowledgementKind.EDIT_MODE_SET
+                if edit_result.record_missing:
+                    # Повторная проверка владения/существования не прошла:
+                    # режим потреблён, снаружи — неотличимо от мусора.
+                    return AcknowledgementKind.IGNORED
+                # Живое напоминание правленой задачи не сдвинулось — ack
+                # добавит строку «⏰ напоминание осталось на …».
+                payload.reminder_when = edit_result.reminder_when
+                return AcknowledgementKind.RECORD_EDITED
+
         if self._capture_text_port is None:
             raise RuntimeError("capture text port is required for private text")
         source = await self._capture_text_port.capture(
@@ -487,6 +548,20 @@ class LocalUpdateProcessor:
             update.callback_data is not None
             and update.callback_data.startswith("show:")
             and show_match is None
+        ):
+            return AcknowledgementKind.IGNORED
+        # edit:* принимается ТОЛЬКО в строгой форме edit:(тип):(uuid) или как
+        # edit:cancel; любой иной edit:* — IGNORED до любой другой обработки.
+        edit_match = (
+            _EDIT_CALLBACK_PATTERN.fullmatch(update.callback_data)
+            if update.callback_data is not None
+            else None
+        )
+        if (
+            update.callback_data is not None
+            and update.callback_data.startswith("edit:")
+            and update.callback_data != EDIT_CANCEL_CALLBACK
+            and edit_match is None
         ):
             return AcknowledgementKind.IGNORED
         # digest:* принимается ТОЛЬКО в трёх строгих формах (menu / период /
@@ -546,10 +621,12 @@ class LocalUpdateProcessor:
                 "lang:ru",
                 "lang:en",
                 "invite:create",
+                EDIT_CANCEL_CALLBACK,
             }
             and not is_task_completion
             and not is_project_selection
             and show_match is None
+            and edit_match is None
             and not is_digest
         ):
             return AcknowledgementKind.IGNORED
@@ -609,6 +686,8 @@ class LocalUpdateProcessor:
                     ),
                     transaction,
                 )
+            if self._record_edit_port is not None:
+                await self._record_edit_port.cancel(access_context, transaction)
             await self._memory_ask_port.set_awaiting(
                 SetAwaitingMemoryCommand(
                     access_context=access_context,
@@ -651,6 +730,8 @@ class LocalUpdateProcessor:
                 )
             if self._exact_search_port is not None:
                 await self._exact_search_port.cancel(access_context, transaction)
+            if self._record_edit_port is not None:
+                await self._record_edit_port.cancel(access_context, transaction)
             await self._project_panel_port.begin_creation(
                 BeginProjectCreationCommand(
                     access_context=access_context,
@@ -726,6 +807,8 @@ class LocalUpdateProcessor:
                     ),
                     transaction,
                 )
+            if self._record_edit_port is not None:
+                await self._record_edit_port.cancel(access_context, transaction)
             await self._exact_search_port.set_awaiting(
                 SetAwaitingSearchCommand(
                     access_context=access_context,
@@ -850,10 +933,58 @@ class LocalUpdateProcessor:
                 record=record, related=related, links=links, image=image
             )
             return AcknowledgementKind.RECORD_SHOWN
+        if edit_match is not None:
+            if self._record_edit_port is None:
+                return AcknowledgementKind.IGNORED
+            # Владение и существование проверяются ПРИ УСТАНОВКЕ режима
+            # (owner-предикат + RLS в порте): чужой/несуществующий uuid →
+            # IGNORED, режим НЕ ставится — неотличимо от мусорного callback'а.
+            began = await self._record_edit_port.begin(
+                BeginRecordEditCommand(
+                    access_context=access_context,
+                    record_kind=SearchRecordType(edit_match.group(1)),
+                    record_id=UUID(edit_match.group(2)),
+                    updated_at=now,
+                    trace_id=context.trace_id,
+                ),
+                transaction,
+            )
+            if not began:
+                return AcknowledgementKind.IGNORED
+            # Матрица взаимоисключений: правка гасит режимы задачи/поиска/
+            # проекта (память уже погашена общим правилом выше).
+            if self._task_mode_port is not None:
+                await self._task_mode_port.cancel(
+                    CancelPendingTaskCommand(
+                        access_context=access_context,
+                        updated_at=now,
+                        trace_id=context.trace_id,
+                    ),
+                    transaction,
+                )
+            if self._exact_search_port is not None:
+                await self._exact_search_port.cancel(access_context, transaction)
+            if self._project_panel_port is not None:
+                await self._project_panel_port.cancel_creation(
+                    CancelProjectCreationCommand(
+                        access_context=access_context,
+                        updated_at=now,
+                        trace_id=context.trace_id,
+                    ),
+                    transaction,
+                )
+            return AcknowledgementKind.EDIT_MODE_SET
+        if update.callback_data == EDIT_CANCEL_CALLBACK:
+            if self._record_edit_port is None:
+                return AcknowledgementKind.IGNORED
+            await self._record_edit_port.cancel(access_context, transaction)
+            return AcknowledgementKind.EDIT_MODE_CANCELLED
         if self._task_mode_port is None:
             return AcknowledgementKind.IGNORED
         if self._exact_search_port is not None:
             await self._exact_search_port.cancel(access_context, transaction)
+        if self._record_edit_port is not None:
+            await self._record_edit_port.cancel(access_context, transaction)
         if self._project_panel_port is not None:
             await self._project_panel_port.cancel_creation(
                 CancelProjectCreationCommand(
@@ -944,6 +1075,20 @@ class LocalUpdateProcessor:
             return AcknowledgementKind.LANGUAGE_SELECTED
         return AcknowledgementKind.IGNORED
 
+    async def _cancel_pending_edit_for_actor(
+        self, transaction: UpdateTransaction, update: TelegramUpdate
+    ) -> None:
+        """Погасить pending-режим правки для отправителя /команды (если он
+        зачислен): команда не должна стать новым текстом записи."""
+        if self._record_edit_port is None or update.telegram_user_id is None:
+            return
+        access_context = await ResolveAccessContext(transaction).execute(
+            update.telegram_user_id
+        )
+        if access_context is None:
+            return
+        await self._record_edit_port.cancel(access_context, transaction)
+
     async def _cancel_awaiting_modes(
         self,
         transaction: UpdateTransaction,
@@ -973,6 +1118,8 @@ class LocalUpdateProcessor:
             )
         if self._memory_ask_port is not None:
             await self._memory_ask_port.cancel(access_context, transaction)
+        if self._record_edit_port is not None:
+            await self._record_edit_port.cancel(access_context, transaction)
 
     async def _process_start(
         self,
@@ -989,6 +1136,10 @@ class LocalUpdateProcessor:
             update.telegram_user_id
         )
         if access_context is not None:
+            # /start — команда, а не новый текст правки: режим гасится (см.
+            # ветку _is_command), запись не перезаписывается.
+            if self._record_edit_port is not None:
+                await self._record_edit_port.cancel(access_context, transaction)
             if start_token is not None:
                 # Уже подключённый повторно открыл invite: приветствуем «С
                 # возвращением», invite НЕ потребляем — он должен остаться pending

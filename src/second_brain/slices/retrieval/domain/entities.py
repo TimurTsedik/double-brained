@@ -83,6 +83,10 @@ class RecordView:
     # У записи есть изображение-источник (capture_events.source_kind='image') —
     # показ добавляет пометку «📷 …». Для списков остаётся дефолтным False.
     has_image_source: bool = False
+    # Текст записи правился (edited_at IS NOT NULL — метку ставит ТОЛЬКО
+    # правка) — показ целиком помечает заголовок «(изменено)». Для списков —
+    # дефолтный False.
+    edited: bool = False
 
 
 class DigestPeriod(StrEnum):

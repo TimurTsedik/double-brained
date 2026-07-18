@@ -42,6 +42,10 @@ class NoteModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    # Ставится ТОЛЬКО правкой текста (S3): NULL = текст никогда не правился.
+    # Пометка «(изменено)» = edited_at IS NOT NULL (updated_at двигают и
+    # другие события, напр. завершение задачи — по нему судить нельзя).
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     trace_id: Mapped[str] = mapped_column(Text, nullable=False)
 
 
@@ -102,6 +106,8 @@ class IdeaModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    # NULL = текст не правился; см. комментарий у NoteModel.edited_at.
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     trace_id: Mapped[str] = mapped_column(Text, nullable=False)
 
 
@@ -162,6 +168,8 @@ class DecisionModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    # NULL = текст не правился; см. комментарий у NoteModel.edited_at.
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     trace_id: Mapped[str] = mapped_column(Text, nullable=False)
 
 
@@ -222,6 +230,8 @@ class QuestionModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    # NULL = текст не правился; см. комментарий у NoteModel.edited_at.
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     trace_id: Mapped[str] = mapped_column(Text, nullable=False)
 
 

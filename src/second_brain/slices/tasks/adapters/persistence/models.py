@@ -55,6 +55,10 @@ class TaskModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    # Ставится ТОЛЬКО правкой title (S3): NULL = текст не правился. Пометка
+    # «(изменено)» = edited_at IS NOT NULL — updated_at двигает и завершение
+    # задачи, по нему судить нельзя.
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     trace_id: Mapped[str] = mapped_column(Text, nullable=False)
 
 

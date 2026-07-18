@@ -345,6 +345,9 @@ class AiogramGateway:
             record.created_at.strftime(RECORD_VIEW_DATE_FORMAT),
             locale,
         )
+        if record.edited:
+            # Правленая запись помечается прямо в заголовке (спека §3.1).
+            header = f"{header} {messages.record_edited_mark(locale)}"
         parts = _split_outgoing_text(f"{header}\n\n{record.text}")
         links_section = _links_section(result.links, locale)
         if links_section is not None:
@@ -371,18 +374,22 @@ class AiogramGateway:
                 parts.append(related_section)
         for part in parts[:-1]:
             await self._bot.send_message(chat_id=update.telegram_user_id, text=part)
-        if result.related:
-            await self._bot.send_message(
-                chat_id=update.telegram_user_id,
-                text=parts[-1],
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=_show_button_rows(result.related)
-                ),
-            )
-        else:
-            await self._bot.send_message(
-                chat_id=update.telegram_user_id, text=parts[-1]
-            )
+        # Кнопки последней части: «похожее» (если есть) + «✏️ Править» (S3) —
+        # правка доступна из показа ЛЮБОЙ записи.
+        keyboard_rows = _show_button_rows(result.related) if result.related else []
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=messages.record_edit_button(locale),
+                    callback_data=f"edit:{record.record_type.value}:{record.id}",
+                )
+            ]
+        )
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=parts[-1],
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+        )
         # Само фото — ДОПОЛНИТЕЛЬНЫМ сообщением после текста записи (§2.2).
         if result.image is not None:
             await self._send_record_image(update.telegram_user_id, result.image, locale)
@@ -410,6 +417,53 @@ class AiogramGateway:
             )
         except Exception:
             pass
+
+    async def send_edit_prompt(self, update: TelegramUpdate) -> None:
+        # Режим правки поставлен: следующее сообщение станет новым текстом.
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=messages.edit_prompt_text(locale),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=messages.edit_prompt_cancel_button(locale),
+                            callback_data="edit:cancel",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    async def send_edit_cancelled(self, update: TelegramUpdate) -> None:
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=messages.edit_cancelled_text(locale),
+        )
+
+    async def send_record_edited(
+        self, update: TelegramUpdate, reminder_when: datetime | None
+    ) -> None:
+        # Подтверждение правки; `reminder_when` уже в tz пространства — для
+        # задачи с живым напоминанием добавляется строка «⏰ … осталось».
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        formatted = (
+            reminder_when.strftime(REMINDER_WHEN_FORMAT)
+            if reminder_when is not None
+            else None
+        )
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=messages.record_edited_text(formatted, locale),
+        )
 
     async def send_digest_menu(self, update: TelegramUpdate) -> None:
         if not update.is_private or update.telegram_user_id is None:

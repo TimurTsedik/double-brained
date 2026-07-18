@@ -44,6 +44,15 @@ it. When you open a record in full, a "🔗 Links" block appears under the text,
 and bare URLs gain the page's title once the bot has quietly fetched it in the
 background.
 
+**Editing.** Open a record in full and press "✏️ Править" — your next message
+replaces the record's text (a note's text, a task's title). The capture journal
+keeps the original forever; the record's header gains "(изменено)". The new
+text is re-indexed for search and its links block is rebuilt, but nothing else
+is re-run: the type is not re-classified and no time is extracted from the new
+text — an existing reminder stays exactly where it was (the confirmation says
+"⏰ напоминание осталось на …" for a task with a live reminder). Want a new
+time — create a new task.
+
 **Reminders.** Type the time right inside a task — nothing special to press. If
 the task text names an explicit clock time in the future, the bot confirms
 "⏰ Напомню …" and messages you "⏰ Напоминание: …" at that moment (in your

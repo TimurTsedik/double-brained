@@ -4,7 +4,7 @@ claimed-work очередь титулов (по образцу reminder-deliver
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import delete, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,6 +82,22 @@ class PostgresWeblinkWriter:
                 )
             )
         await self._session.flush()
+
+    async def replace_links(self, command: SaveRecordLinksCommand) -> None:
+        # Правка записи (S3): ссылки отражают ТЕКУЩИЙ текст — прежний набор
+        # пар записи снимается целиком, новый пишется тем же save_links (в т.ч.
+        # пустой: текст без ссылок → блока ссылок больше нет). Кэш/очередь
+        # page_titles не чистим: титул страницы валиден независимо от того,
+        # какая запись на неё ссылается.
+        await _set_user_space_scope(self._session, command.access_context)
+        await self._session.execute(
+            delete(RecordUrlModel).where(
+                RecordUrlModel.user_space_id == command.access_context.user_space_id,
+                RecordUrlModel.record_kind == command.record_kind,
+                RecordUrlModel.record_id == command.record_id,
+            )
+        )
+        await self.save_links(command)
 
     async def links_for_record(
         self,

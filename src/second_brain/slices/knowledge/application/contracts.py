@@ -10,6 +10,9 @@ from second_brain.slices.knowledge.domain.entities import (
     Note,
     Question,
 )
+from second_brain.slices.knowledge.domain.entities import (
+    KnowledgeRecordKind as KnowledgeRecordKind,
+)
 
 KnowledgeRecord = Note | Idea | Decision | Question
 
@@ -48,6 +51,21 @@ class CreateQuestionCommand:
     source_capture_event_id: UUID
     created_at: datetime
     trace_id: str
+
+
+@dataclass(frozen=True)
+class UpdateKnowledgeTextCommand:
+    """Заменить текст записи (правка, S3): text + updated_at, больше ничего.
+
+    created_at/trace_id/источник записи неизменяемы — история происхождения
+    остаётся историей создания; идентификатор правки живёт в receipt-журнале.
+    """
+
+    access_context: AccessContext
+    record_kind: KnowledgeRecordKind
+    record_id: UUID = field(repr=False)
+    text: str = field(repr=False)
+    updated_at: datetime
 
 
 class KnowledgeCapturePort(Protocol):

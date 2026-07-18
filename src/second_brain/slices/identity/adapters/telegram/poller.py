@@ -87,6 +87,14 @@ class TelegramGateway(Protocol):
         result: RecordViewResult,
     ) -> None: ...
 
+    async def send_edit_prompt(self, update: TelegramUpdate) -> None: ...
+
+    async def send_edit_cancelled(self, update: TelegramUpdate) -> None: ...
+
+    async def send_record_edited(
+        self, update: TelegramUpdate, reminder_when: datetime | None
+    ) -> None: ...
+
     async def send_digest_menu(self, update: TelegramUpdate) -> None: ...
 
     async def send_digest(
@@ -329,6 +337,38 @@ class LocalPoller:
                         await self._sleep(1.0)
                         continue
                     break
+            if result.kind is AcknowledgementKind.EDIT_MODE_SET and getattr(
+                result, "fresh", True
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_edit_prompt(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            if result.kind is AcknowledgementKind.EDIT_MODE_CANCELLED and getattr(
+                result, "fresh", True
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_edit_cancelled(update)
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
+            if result.kind is AcknowledgementKind.RECORD_EDITED and getattr(
+                result, "fresh", True
+            ):
+                while True:
+                    try:
+                        await self._gateway.send_record_edited(
+                            update, getattr(result, "reminder_when", None)
+                        )
+                    except Exception:
+                        await self._sleep(1.0)
+                        continue
+                    break
             if result.kind is AcknowledgementKind.DIGEST_MENU_SHOWN and getattr(
                 result, "fresh", True
             ):
@@ -455,6 +495,9 @@ class LocalPoller:
                 AcknowledgementKind.SEARCH_QUERY_REQUIRED,
                 AcknowledgementKind.SEARCH_COMPLETED,
                 AcknowledgementKind.RECORD_SHOWN,
+                AcknowledgementKind.EDIT_MODE_SET,
+                AcknowledgementKind.EDIT_MODE_CANCELLED,
+                AcknowledgementKind.RECORD_EDITED,
                 AcknowledgementKind.PROJECTS_LISTED,
                 AcknowledgementKind.PROJECT_NAME_MODE_SET,
                 AcknowledgementKind.PROJECT_NAME_REQUIRED,

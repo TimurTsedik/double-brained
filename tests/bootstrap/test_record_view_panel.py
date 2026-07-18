@@ -85,6 +85,7 @@ def record_view(
     text: str,
     record_type: SearchRecordType = SearchRecordType.NOTE,
     task_completed: bool | None = None,
+    edited: bool = False,
 ) -> RecordView:
     return RecordView(
         id=UUID(int=number),
@@ -92,7 +93,16 @@ def record_view(
         text=text,
         created_at=NOW,
         task_completed=task_completed,
+        edited=edited,
     )
+
+
+def edit_button_rows(markup: object) -> list[list[tuple[str, str]]]:
+    """Все ряды клавиатуры как (text, callback_data) — для точных сверок."""
+    return [
+        [(button.text, button.callback_data) for button in row]
+        for row in markup.inline_keyboard  # type: ignore[attr-defined]
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -175,17 +185,18 @@ async def test_record_view_sends_header_full_text_and_related_with_buttons() -> 
     )
     assert "1. 📝 Заметка\nпохожая заметка" in message["text"]
     assert "2. ☑️ Завершённая задача\nсделанная задача" in message["text"]
-    markup = message["reply_markup"]
-    buttons = [button for row in markup.inline_keyboard for button in row]
-    assert [button.text for button in buttons] == ["1", "2"]
-    assert [button.callback_data for button in buttons] == [
-        f"show:note:{UUID(int=2)}",
-        f"show:task:{UUID(int=3)}",
+    # Ряды: номерные кнопки «похожего» + отдельный ряд «✏️ Править» (S3).
+    assert edit_button_rows(message["reply_markup"]) == [
+        [
+            ("1", f"show:note:{UUID(int=2)}"),
+            ("2", f"show:task:{UUID(int=3)}"),
+        ],
+        [("✏️ Править", f"edit:note:{UUID(int=1)}")],
     ]
 
 
 @pytest.mark.asyncio
-async def test_record_view_without_related_has_no_section_and_no_buttons() -> None:
+async def test_record_view_without_related_keeps_only_the_edit_button() -> None:
     bot, gateway = gateway_with_bot()
     result = RecordViewResult(record=record_view(1, "просто текст"), related=())
 
@@ -194,7 +205,9 @@ async def test_record_view_without_related_has_no_section_and_no_buttons() -> No
     assert len(bot.sent_messages) == 1
     message = bot.sent_messages[0]
     assert message["text"] == "📝 Заметка · 15.07.2026\n\nпросто текст"
-    assert "reply_markup" not in message
+    assert edit_button_rows(message["reply_markup"]) == [
+        [("✏️ Править", f"edit:note:{UUID(int=1)}")]
+    ]
 
 
 @pytest.mark.asyncio
@@ -210,6 +223,34 @@ async def test_record_view_header_is_localized_in_english() -> None:
     assert text.startswith("📝 Note · 15.07.2026\n\nfull text")
     assert messages.CATALOG["record_view.related_header"][Locale.EN] in text
     assert "Похожее" not in text
+
+
+@pytest.mark.asyncio
+async def test_record_view_header_marks_an_edited_record() -> None:
+    bot, gateway = gateway_with_bot()
+    result = RecordViewResult(
+        record=record_view(1, "правленый текст", edited=True), related=()
+    )
+
+    await gateway.send_record_view(callback(709, f"show:note:{UUID(int=1)}"), result)
+
+    assert bot.sent_messages[0]["text"] == (
+        "📝 Заметка · 15.07.2026 (изменено)\n\nправленый текст"
+    )
+
+
+@pytest.mark.asyncio
+async def test_record_view_edited_mark_is_localized_in_english() -> None:
+    bot, gateway = gateway_with_bot(Locale.EN)
+    result = RecordViewResult(
+        record=record_view(1, "edited text", edited=True), related=()
+    )
+
+    await gateway.send_record_view(callback(719, f"show:note:{UUID(int=1)}"), result)
+
+    text = bot.sent_messages[0]["text"]
+    assert text.startswith("📝 Note · 15.07.2026 (edited)")
+    assert "изменено" not in text
 
 
 @pytest.mark.asyncio
@@ -263,7 +304,7 @@ async def test_long_record_splits_without_midword_cuts_and_related_only_last() -
     last_markup = bot.sent_messages[-1]["reply_markup"]
     assert [
         button.callback_data for row in last_markup.inline_keyboard for button in row
-    ] == [f"show:idea:{UUID(int=2)}"]
+    ] == [f"show:idea:{UUID(int=2)}", f"edit:note:{UUID(int=1)}"]
 
 
 @pytest.mark.asyncio
@@ -339,7 +380,9 @@ async def test_record_view_renders_the_links_block_under_the_verbatim_text() -> 
         "статья — Заголовок статьи — https://c.example/y\n"
         "Голый с титулом — https://d.example/z"
     )
-    assert "reply_markup" not in bot.sent_messages[0]
+    assert edit_button_rows(bot.sent_messages[0]["reply_markup"]) == [
+        [("✏️ Править", f"edit:note:{UUID(int=1)}")]
+    ]
 
 
 @pytest.mark.asyncio

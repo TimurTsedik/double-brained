@@ -15,5 +15,6 @@ class IndexSource:
             record_kind=source.record_kind,
             record_id=source.record_id,
             chunks=chunks,
+            content_sha256=source.content_sha256,
             created_at=source.created_at,
         )
