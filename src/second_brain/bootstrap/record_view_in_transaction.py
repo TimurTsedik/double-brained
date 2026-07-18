@@ -23,9 +23,17 @@ from second_brain.slices.retrieval.application.contracts import (
 )
 from second_brain.slices.retrieval.application.record_view import ShowRecord
 from second_brain.slices.retrieval.domain.entities import SearchRecordType
+from second_brain.slices.weblinks.adapters.persistence.repository import (
+    PostgresWeblinkWriter,
+)
+from second_brain.slices.weblinks.application.contracts import (
+    RecordLinksPort,
+    RecordLinkView,
+    WeblinkRecordKind,
+)
 
 
-class RecordViewInTransaction(RecordViewPort):
+class RecordViewInTransaction(RecordViewPort, RecordLinksPort):
     """Bootstrap-композиция показа записи целиком внутри update-транзакции."""
 
     async def read_record_full(
@@ -60,6 +68,20 @@ class RecordViewInTransaction(RecordViewPort):
         session = _active_session(transaction)
         return await ShowRecord(PostgresRecordViewReader(session)).related_records(
             access_context, record_type, record_id
+        )
+
+    async def links_for_record(
+        self,
+        access_context: AccessContext,
+        record_kind: WeblinkRecordKind,
+        record_id: UUID,
+        transaction: UpdateTransaction,
+    ) -> tuple[RecordLinkView, ...]:
+        # Sidecar-ссылки записи (label/url/title) — той же update-транзакцией
+        # и под тем же RLS, что и сама запись.
+        session = _active_session(transaction)
+        return await PostgresWeblinkWriter(session).links_for_record(
+            access_context, record_kind, record_id
         )
 
 

@@ -64,6 +64,11 @@ from second_brain.slices.tasks.application.contracts import (
     TaskPanelPort,
     TaskPanelResult,
 )
+from second_brain.slices.weblinks.application.contracts import (
+    RecordLinksPort,
+    RecordLinkView,
+    WeblinkRecordKind,
+)
 
 MAX_ENROLLMENT_ATTEMPTS = 5
 ENROLLMENT_ATTEMPT_WINDOW = timedelta(minutes=15)
@@ -182,6 +187,7 @@ class LocalUpdateProcessor:
         contact_port: ContactIntakePort | None = None,
         record_view_port: RecordViewPort | None = None,
         digest_port: DigestPort | None = None,
+        record_links_port: RecordLinksPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -199,6 +205,7 @@ class LocalUpdateProcessor:
         self._contact_port = contact_port
         self._record_view_port = record_view_port
         self._digest_port = digest_port
+        self._record_links_port = record_links_port
 
     async def process(self, update: TelegramUpdate) -> UpdateResult:
         now = self._clock.now()
@@ -395,6 +402,7 @@ class LocalUpdateProcessor:
                 raw_text=update.text,
                 received_at=now,
                 trace_id=context.trace_id,
+                links=update.links,
             ),
             transaction,
         )
@@ -768,7 +776,19 @@ class LocalUpdateProcessor:
             related = await self._record_view_port.related_records(
                 access_context, record_type, record_id, transaction
             )
-            payload.record_view = RecordViewResult(record=record, related=related)
+            # Sidecar-ссылки записи (label/url/title) — в тот же transient-
+            # payload: блок «🔗 Ссылки:» рендерится под дословным текстом.
+            links: tuple[RecordLinkView, ...] = ()
+            if self._record_links_port is not None:
+                links = await self._record_links_port.links_for_record(
+                    access_context,
+                    WeblinkRecordKind(record_type.value),
+                    record_id,
+                    transaction,
+                )
+            payload.record_view = RecordViewResult(
+                record=record, related=related, links=links
+            )
             return AcknowledgementKind.RECORD_SHOWN
         if self._task_mode_port is None:
             return AcknowledgementKind.IGNORED

@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from aiogram import Bot
@@ -25,6 +25,7 @@ from second_brain.bootstrap.memory_retrieval_completion import (
     MemoryRetrievalCompletionInTransaction,
 )
 from second_brain.bootstrap.memory_worker import MemoryWorker
+from second_brain.bootstrap.page_title_fetch import PageTitleFetchStep
 from second_brain.bootstrap.reminder_delivery import (
     AiogramReminderDelivery,
     ReminderDeliveryStep,
@@ -83,6 +84,7 @@ from second_brain.slices.processing.ports.repositories import ProcessingReposito
 from second_brain.slices.processing.ports.voice import ProcessingNotifier
 from second_brain.slices.retrieval.adapters.embedding.e5 import E5EmbeddingModel
 from second_brain.slices.retrieval.application.indexing import IndexSource
+from second_brain.slices.weblinks.adapters.http.title_fetcher import UrlTitleFetcher
 
 
 class StepWorker(Protocol):
@@ -117,6 +119,7 @@ async def process_access_once(
     notifier: ProcessingNotifier,
     memory_worker: StepWorker | None = None,
     reminder_delivery: StepWorker | None = None,
+    title_fetch: StepWorker | None = None,
 ) -> bool:
     worked = await worker.process_once(access_context, now)
     classified = await classification_worker.process_once(access_context, now)
@@ -133,7 +136,14 @@ async def process_access_once(
         if reminder_delivery is not None
         else False
     )
-    worked = worked or classified or indexed or answered or reminded
+    # Фетч <title> для сохранённых ссылок — тоже шаг этого цикла: claim строки
+    # своей транзакцией, HTTP строго вне её, см. PageTitleFetchStep.
+    titled = (
+        await title_fetch.process_once(access_context, now)
+        if title_fetch is not None
+        else False
+    )
+    worked = worked or classified or indexed or answered or reminded or titled
     notice = await processing_repository.claim_due_notice(access_context, now)
     if notice is None:
         return worked
@@ -222,6 +232,18 @@ async def run_local_voice_worker(settings: Settings) -> None:
         reminder_delivery = ReminderDeliveryStep(
             session_factory, reminder_send, identities
         )
+        title_fetch = PageTitleFetchStep(
+            session_factory,
+            UrlTitleFetcher(
+                timeout_seconds=settings.title_fetch_timeout_seconds,
+                max_bytes=settings.title_fetch_max_bytes,
+                max_redirects=settings.title_fetch_max_redirects,
+                max_title_length=settings.title_max_length,
+            ),
+            enabled=settings.title_fetch_enabled,
+            max_attempts=settings.title_fetch_max_attempts,
+            retry_backoff=timedelta(seconds=settings.title_fetch_retry_backoff_seconds),
+        )
         clock = SystemClock()
         while True:
             worked = False
@@ -238,6 +260,7 @@ async def run_local_voice_worker(settings: Settings) -> None:
                         notifier=notifier,
                         memory_worker=memory_worker,
                         reminder_delivery=reminder_delivery,
+                        title_fetch=title_fetch,
                     )
                     worked = processed or worked
                 except Exception:

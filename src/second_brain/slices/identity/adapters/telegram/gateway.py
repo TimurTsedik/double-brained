@@ -1,11 +1,15 @@
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 from second_brain.shared.i18n import DEFAULT_LOCALE, Locale
-from second_brain.slices.capture.application.contracts import TelegramVoiceMetadata
+from second_brain.slices.capture.application.contracts import (
+    TelegramLink,
+    TelegramVoiceMetadata,
+)
 from second_brain.slices.contacts.application.contracts import TelegramContactPayload
 from second_brain.slices.identity.adapters.telegram import messages
 from second_brain.slices.identity.application.contracts import (
@@ -24,6 +28,7 @@ from second_brain.slices.retrieval.application.contracts import (
     SearchRecord,
 )
 from second_brain.slices.tasks.application.contracts import TaskPanelResult
+from second_brain.slices.weblinks.application.contracts import RecordLinkView
 
 MAX_TASK_TITLE_LENGTH = 160
 MAX_SEARCH_EXCERPT_LENGTH = 240
@@ -320,8 +325,9 @@ class AiogramGateway:
         self, update: TelegramUpdate, result: RecordViewResult
     ) -> None:
         # Полный текст записи уходит лично вызывающему и нигде не логируется.
-        # Сплит считает весь исходящий текст против лимита; секция «похожего»
-        # и её кнопки — только на последней части.
+        # Сплит считает весь исходящий текст против лимита; блок ссылок — ПОД
+        # текстом (текст выше — дословный), секция «похожего» и её кнопки —
+        # только на последней части.
         if not update.is_private or update.telegram_user_id is None:
             return
         locale = await self._resolve_locale(update)
@@ -332,6 +338,13 @@ class AiogramGateway:
             locale,
         )
         parts = _split_outgoing_text(f"{header}\n\n{record.text}")
+        links_section = _links_section(result.links, locale)
+        if links_section is not None:
+            combined = f"{parts[-1]}\n\n{links_section}"
+            if len(combined) <= MAX_TELEGRAM_MESSAGE_LENGTH:
+                parts[-1] = combined
+            else:
+                parts.extend(_split_outgoing_text(links_section))
         related_section = _related_section(result.related, locale)
         if related_section is not None:
             combined = f"{parts[-1]}\n\n{related_section}"
@@ -597,16 +610,69 @@ class AiogramGateway:
                 first_name=contact.first_name,
                 last_name=contact.last_name,
             )
+        message_text = message.text if isinstance(message.text, str) else None
         return TelegramUpdate(
             bot_id=self.bot_id,
             update_id=update.update_id,
             is_private=message.chat.type == "private",
             telegram_user_id=actor,
-            text=message.text if isinstance(message.text, str) else None,
+            text=message_text,
             telegram_message_id=message.message_id,
             voice=voice_metadata,
             contact=contact_payload,
+            # S1: только message.entities (caption придёт со слайсом картинок).
+            links=_extract_links(message_text, getattr(message, "entities", None)),
         )
+
+
+def _utf16_offset_to_index(text: str, utf16_offset: int) -> int:
+    """Перевод UTF-16 code-unit смещения Telegram в индекс Python-строки.
+
+    Offsets/length у Telegram-entities считаются в UTF-16 юнитах: символ вне
+    BMP (эмодзи) занимает ДВА юнита, но ОДИН символ Python-строки. Прямое
+    индексирование уводило бы label влево на каждом эмодзи перед ссылкой.
+    """
+    units = 0
+    for index, char in enumerate(text):
+        if units >= utf16_offset:
+            return index
+        units += 1 if ord(char) < 0x10000 else 2
+    return len(text)
+
+
+def _utf16_slice(text: str, offset: int, length: int) -> str:
+    start = _utf16_offset_to_index(text, offset)
+    end = _utf16_offset_to_index(text, offset + length)
+    return text[start:end]
+
+
+def _extract_links(
+    text: str | None, entities: Sequence[Any] | None
+) -> tuple[TelegramLink, ...]:
+    """Ссылки из message.entities в порядке появления.
+
+    text_link: url спрятан в entity.url, label — накрытая подстрока текста;
+    url: голый адрес, label = сам url (= подстрока). Остальные entity-типы
+    ссылок не несут и пропускаются.
+    """
+    if text is None or not entities:
+        return ()
+    links: list[TelegramLink] = []
+    for entity in entities:
+        entity_type = getattr(entity, "type", None)
+        if entity_type == "text_link":
+            url = getattr(entity, "url", None)
+            if isinstance(url, str) and url:
+                links.append(
+                    TelegramLink(
+                        label=_utf16_slice(text, entity.offset, entity.length),
+                        url=url,
+                    )
+                )
+        elif entity_type == "url":
+            bare_url = _utf16_slice(text, entity.offset, entity.length)
+            links.append(TelegramLink(label=bare_url, url=bare_url))
+    return tuple(links)
 
 
 def _truncate_title(title: str) -> str:
@@ -637,6 +703,27 @@ def _show_button_rows(
         buttons[start : start + SHOW_BUTTONS_PER_ROW]
         for start in range(0, len(buttons), SHOW_BUTTONS_PER_ROW)
     ]
+
+
+def _links_section(links: tuple[RecordLinkView, ...], locale: Locale) -> str | None:
+    # Sidecar-блок ссылок под дословным текстом: plain text БЕЗ parse_mode,
+    # как весь рендер. Нет ссылок — блока просто нет.
+    if not links:
+        return None
+    lines = [_link_line(link) for link in links]
+    return messages.record_links_header(locale) + "\n" + "\n".join(lines)
+
+
+def _link_line(link: RecordLinkView) -> str:
+    # label==url (голый url) не дублируется; title вставляется, когда страница
+    # уже fetched: «label — title — url» / «title — url» / «label — url» / «url».
+    parts = []
+    if link.label != link.url:
+        parts.append(link.label)
+    if link.title is not None:
+        parts.append(link.title)
+    parts.append(link.url)
+    return " — ".join(parts)
 
 
 def _related_section(related: tuple[RecordView, ...], locale: Locale) -> str | None:

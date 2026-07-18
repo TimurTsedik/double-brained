@@ -28,6 +28,12 @@ name a project by voice — project names are typed.
 automatically and the transcript becomes the record. Telegram only ever shows you
 fixed status lines, never a copy of your content.
 
+**Links.** Hyperlinks in your message (both a word hiding a URL and a bare URL)
+are preserved alongside the record — the text itself stays exactly as you sent
+it. When you open a record in full, a "🔗 Links" block appears under the text,
+and bare URLs gain the page's title once the bot has quietly fetched it in the
+background.
+
 **Reminders.** Type the time right inside a task — nothing special to press. If
 the task text names an explicit clock time in the future, the bot confirms
 "⏰ Напомню …" and messages you "⏰ Напоминание: …" at that moment (in your

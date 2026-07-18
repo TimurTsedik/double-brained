@@ -20,6 +20,7 @@ from second_brain.slices.retrieval.domain.entities import SearchRecord as Search
 from second_brain.slices.retrieval.domain.entities import (
     SearchRecordType as SearchRecordType,
 )
+from second_brain.slices.weblinks.application.contracts import RecordLinkView
 
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 EMBEDDING_DIMENSIONS = 768
@@ -109,6 +110,9 @@ class RecordViewResult:
     # не должен просочиться в repr/логи.
     record: RecordView = field(repr=False)
     related: tuple[RecordView, ...] = field(repr=False)
+    # Sidecar-ссылки записи (label/url/title) для блока «🔗 Ссылки:» под
+    # дословным текстом; тоже пользовательское содержимое — вне repr/логов.
+    links: tuple[RecordLinkView, ...] = field(default=(), repr=False)
 
 
 class RecordViewPort(Protocol):

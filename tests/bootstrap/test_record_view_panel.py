@@ -31,6 +31,7 @@ from second_brain.slices.retrieval.domain.entities import (
     SearchRecord,
     SearchRecordType,
 )
+from second_brain.slices.weblinks.application.contracts import RecordLinkView
 from tests.identity.locale_fakes import FakeLocaleResolver
 
 NOW = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
@@ -300,6 +301,98 @@ async def test_related_section_moves_to_its_own_final_part_when_it_does_not_fit(
     assert second["reply_markup"].inline_keyboard[0][0].callback_data == (
         f"show:note:{UUID(int=2)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# send_record_view: sidecar-блок ссылок под текстом (S1)
+# ---------------------------------------------------------------------------
+
+
+def record_link(label: str, url: str, title: str | None = None) -> RecordLinkView:
+    return RecordLinkView(label=label, url=url, title=title)
+
+
+@pytest.mark.asyncio
+async def test_record_view_renders_the_links_block_under_the_verbatim_text() -> None:
+    bot, gateway = gateway_with_bot()
+    result = RecordViewResult(
+        record=record_view(1, "текст записи дословный"),
+        related=(),
+        links=(
+            record_link("тут", "https://a.example/talk"),
+            record_link("https://b.example/x", "https://b.example/x"),
+            record_link("статья", "https://c.example/y", title="Заголовок статьи"),
+            record_link(
+                "https://d.example/z", "https://d.example/z", title="Голый с титулом"
+            ),
+        ),
+    )
+
+    await gateway.send_record_view(callback(720, f"show:note:{UUID(int=1)}"), result)
+
+    assert len(bot.sent_messages) == 1
+    assert bot.sent_messages[0]["text"] == (
+        "📝 Заметка · 15.07.2026\n\nтекст записи дословный\n\n"
+        "🔗 Ссылки:\n"
+        "тут — https://a.example/talk\n"
+        "https://b.example/x\n"
+        "статья — Заголовок статьи — https://c.example/y\n"
+        "Голый с титулом — https://d.example/z"
+    )
+    assert "reply_markup" not in bot.sent_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_links_block_comes_before_the_related_section() -> None:
+    bot, gateway = gateway_with_bot()
+    result = RecordViewResult(
+        record=record_view(1, "текст"),
+        related=(record_view(2, "похожая"),),
+        links=(record_link("тут", "https://a.example"),),
+    )
+
+    await gateway.send_record_view(callback(721, f"show:note:{UUID(int=1)}"), result)
+
+    text = bot.sent_messages[0]["text"]
+    links_header = messages.CATALOG["record_view.links_header"][Locale.RU]
+    related_header = messages.CATALOG["record_view.related_header"][Locale.RU]
+    assert text.index("текст") < text.index(links_header) < text.index(related_header)
+    markup = bot.sent_messages[0]["reply_markup"]
+    assert markup.inline_keyboard[0][0].callback_data == f"show:note:{UUID(int=2)}"
+
+
+@pytest.mark.asyncio
+async def test_links_header_is_localized_in_english() -> None:
+    bot, gateway = gateway_with_bot(Locale.EN)
+    result = RecordViewResult(
+        record=record_view(1, "text"),
+        related=(),
+        links=(record_link("here", "https://a.example"),),
+    )
+
+    await gateway.send_record_view(callback(722, f"show:note:{UUID(int=1)}"), result)
+
+    text = bot.sent_messages[0]["text"]
+    assert messages.CATALOG["record_view.links_header"][Locale.EN] in text
+    assert "Ссылки" not in text
+
+
+@pytest.mark.asyncio
+async def test_links_block_moves_to_its_own_part_when_it_does_not_fit() -> None:
+    bot, gateway = gateway_with_bot()
+    result = RecordViewResult(
+        record=record_view(1, "a" * 4000),
+        related=(),
+        links=(record_link("тут", "https://a.example/" + "b" * 200),),
+    )
+
+    await gateway.send_record_view(callback(723, f"show:note:{UUID(int=1)}"), result)
+
+    assert len(bot.sent_messages) == 2
+    first, second = (message["text"] for message in bot.sent_messages)
+    assert all(len(text) <= TELEGRAM_LIMIT for text in (first, second))
+    assert "🔗" not in first
+    assert second.startswith(messages.CATALOG["record_view.links_header"][Locale.RU])
 
 
 # ---------------------------------------------------------------------------

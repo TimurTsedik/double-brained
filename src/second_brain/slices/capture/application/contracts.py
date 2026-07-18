@@ -11,6 +11,18 @@ from second_brain.slices.identity.application.contracts import (
 
 
 @dataclass(frozen=True)
+class TelegramLink:
+    """Ссылка из Telegram-entities: пара «слово → адрес» в порядке появления.
+
+    Для text_link label — подстрока текста, для голого url label = сам url.
+    Оба поля — пользовательское содержимое (PII), вне repr/логов.
+    """
+
+    label: str = field(repr=False)
+    url: str = field(repr=False)
+
+
+@dataclass(frozen=True)
 class CaptureTextCommand:
     access_context: AccessContext
     bot_id: int
@@ -19,6 +31,9 @@ class CaptureTextCommand:
     raw_text: str = field(repr=False)
     received_at: datetime
     trace_id: str
+    # Sidecar-ссылки сообщения: текст выше остаётся дословным, пары «слово →
+    # адрес» пишутся рядом (record_urls) после создания записи.
+    links: tuple[TelegramLink, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)

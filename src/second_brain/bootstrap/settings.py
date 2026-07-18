@@ -4,6 +4,13 @@ from dataclasses import dataclass, field
 DEFAULT_VOICE_STORAGE_ROOT = ".data/voice"
 DEFAULT_WHISPER_MODEL = "small"
 DEFAULT_PANEL_FOLLOWUP_SECONDS = 5
+# Фетч <title> страниц (S1): лимиты SSRF-контракта и модель попыток воркера.
+DEFAULT_TITLE_FETCH_TIMEOUT_SECONDS = 5
+DEFAULT_TITLE_FETCH_MAX_BYTES = 262_144
+DEFAULT_TITLE_FETCH_MAX_REDIRECTS = 3
+DEFAULT_TITLE_MAX_LENGTH = 200
+DEFAULT_TITLE_FETCH_MAX_ATTEMPTS = 5
+DEFAULT_TITLE_FETCH_RETRY_BACKOFF_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -22,6 +29,17 @@ class Settings:
     # Через сколько секунд после действия пользователя дослать панель с
     # кнопками (0 = фича выключена).
     panel_followup_seconds: int = DEFAULT_PANEL_FOLLOWUP_SECONDS
+    # Фоновый фетч <title> страниц: off → шаг воркера не клеймит вовсе.
+    title_fetch_enabled: bool = True
+    title_fetch_timeout_seconds: int = DEFAULT_TITLE_FETCH_TIMEOUT_SECONDS
+    # Cap на тело ответа — и сжатое, и распакованное (SSRF-контракт §1.2).
+    title_fetch_max_bytes: int = DEFAULT_TITLE_FETCH_MAX_BYTES
+    title_fetch_max_redirects: int = DEFAULT_TITLE_FETCH_MAX_REDIRECTS
+    title_max_length: int = DEFAULT_TITLE_MAX_LENGTH
+    # Модель попыток воркера (по образцу reminder-delivery): после
+    # max_attempts сбоев строка — failed; между попытками линейный бэкофф.
+    title_fetch_max_attempts: int = DEFAULT_TITLE_FETCH_MAX_ATTEMPTS
+    title_fetch_retry_backoff_seconds: int = DEFAULT_TITLE_FETCH_RETRY_BACKOFF_SECONDS
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -40,6 +58,26 @@ class Settings:
         panel_followup_seconds = _non_negative_int_environment(
             "PANEL_FOLLOWUP_SECONDS", DEFAULT_PANEL_FOLLOWUP_SECONDS
         )
+        title_fetch_enabled = _bool_environment("TITLE_FETCH_ENABLED", True)
+        title_fetch_timeout_seconds = _non_negative_int_environment(
+            "TITLE_FETCH_TIMEOUT_SECONDS", DEFAULT_TITLE_FETCH_TIMEOUT_SECONDS
+        )
+        title_fetch_max_bytes = _non_negative_int_environment(
+            "TITLE_FETCH_MAX_BYTES", DEFAULT_TITLE_FETCH_MAX_BYTES
+        )
+        title_fetch_max_redirects = _non_negative_int_environment(
+            "TITLE_FETCH_MAX_REDIRECTS", DEFAULT_TITLE_FETCH_MAX_REDIRECTS
+        )
+        title_max_length = _non_negative_int_environment(
+            "TITLE_MAX_LENGTH", DEFAULT_TITLE_MAX_LENGTH
+        )
+        title_fetch_max_attempts = _non_negative_int_environment(
+            "TITLE_FETCH_MAX_ATTEMPTS", DEFAULT_TITLE_FETCH_MAX_ATTEMPTS
+        )
+        title_fetch_retry_backoff_seconds = _non_negative_int_environment(
+            "TITLE_FETCH_RETRY_BACKOFF_SECONDS",
+            DEFAULT_TITLE_FETCH_RETRY_BACKOFF_SECONDS,
+        )
         return cls(
             database_url=database_url,
             schema_database_url=schema_database_url,
@@ -50,6 +88,13 @@ class Settings:
             whisper_model=whisper_model,
             open_router_ai_key=open_router_ai_key,
             panel_followup_seconds=panel_followup_seconds,
+            title_fetch_enabled=title_fetch_enabled,
+            title_fetch_timeout_seconds=title_fetch_timeout_seconds,
+            title_fetch_max_bytes=title_fetch_max_bytes,
+            title_fetch_max_redirects=title_fetch_max_redirects,
+            title_max_length=title_max_length,
+            title_fetch_max_attempts=title_fetch_max_attempts,
+            title_fetch_retry_backoff_seconds=title_fetch_retry_backoff_seconds,
         )
 
 
@@ -58,6 +103,18 @@ def _required_environment(name: str) -> str:
     if not value:
         raise RuntimeError(f"{name} must be configured")
     return value
+
+
+def _bool_environment(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be a boolean (on/off)")
 
 
 def _non_negative_int_environment(name: str, default: int) -> int:

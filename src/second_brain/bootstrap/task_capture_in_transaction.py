@@ -88,6 +88,14 @@ from second_brain.slices.tasks.application.contracts import (
 from second_brain.slices.tasks.application.task_capture import TaskCapture
 from second_brain.slices.tasks.application.task_panel import TaskPanel
 from second_brain.slices.tasks.domain.entities import Task
+from second_brain.slices.weblinks.adapters.persistence.repository import (
+    PostgresWeblinkWriter,
+)
+from second_brain.slices.weblinks.application.contracts import (
+    RecordUrlEntry,
+    SaveRecordLinksCommand,
+    WeblinkRecordKind,
+)
 
 
 class TaskCaptureInTransaction(
@@ -151,6 +159,23 @@ class TaskCaptureInTransaction(
                     trace_id=command.trace_id,
                 )
             )
+            # Sidecar-ссылки — тем же коммитом, с видом/id ФАКТИЧЕСКОЙ записи
+            # (текст записи дословный, пары «слово → адрес» живут рядом).
+            # Запись не создана (не eligible) — ссылки не пишутся: ветка выше.
+            if command.links:
+                await PostgresWeblinkWriter(session).save_links(
+                    SaveRecordLinksCommand(
+                        access_context=command.access_context,
+                        record_kind=record_weblink_kind(record),
+                        record_id=record.id,
+                        entries=tuple(
+                            RecordUrlEntry(label=link.label, url=link.url)
+                            for link in command.links
+                        ),
+                        created_at=command.received_at,
+                        trace_id=command.trace_id,
+                    )
+                )
         return source
 
     async def set_awaiting_task(
@@ -347,3 +372,11 @@ def record_project_kind(
     if isinstance(record, Decision):
         return ProjectContentKind.DECISION
     return ProjectContentKind.QUESTION
+
+
+def record_weblink_kind(
+    record: Task | Note | Idea | Decision | Question,
+) -> WeblinkRecordKind:
+    """Вид записи для sidecar-ссылок — по ФАКТИЧЕСКОЙ записи (см.
+    ``record_output_type``: NOTE со временем мог стать TASK)."""
+    return WeblinkRecordKind(record_output_type(record).value)

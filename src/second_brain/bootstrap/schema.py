@@ -69,6 +69,10 @@ from second_brain.slices.tasks.adapters.persistence.models import (
     TaskModel,
     TaskProvenanceModel,
 )
+from second_brain.slices.weblinks.adapters.persistence.models import (
+    PageTitleModel,
+    RecordUrlModel,
+)
 
 CAPTURE_TABLES = (
     cast(Table, CaptureEventModel.__table__),
@@ -122,6 +126,10 @@ MEMORY_TABLES = (
 )
 REMINDER_TABLES = (cast(Table, ReminderModel.__table__),)
 CONTACT_TABLES = (cast(Table, ContactModel.__table__),)
+WEBLINK_TABLES = (
+    cast(Table, RecordUrlModel.__table__),
+    cast(Table, PageTitleModel.__table__),
+)
 MEMORY_TABLE_NAMES = (
     "pending_memory_questions",
     "memory_questions",
@@ -151,6 +159,7 @@ async def initialize_schema(engine: AsyncEngine, schema_name: str = "public") ->
     await _initialize_memory_schema(engine, schema_name)
     await _initialize_reminder_schema(engine, schema_name)
     await _initialize_contact_schema(engine, schema_name)
+    await _initialize_weblink_schema(engine, schema_name)
 
 
 async def reset_prototype_schema(
@@ -160,6 +169,7 @@ async def reset_prototype_schema(
         await reset_identity_prototype_schema(engine, confirm, schema_name)
         return
     await _ensure_vector_extension(engine)
+    await _drop_weblink_schema(engine)
     await _drop_contact_schema(engine)
     await _drop_reminder_schema(engine)
     await _drop_memory_schema(engine)
@@ -181,6 +191,7 @@ async def reset_prototype_schema(
     await _initialize_memory_schema(engine, schema_name)
     await _initialize_reminder_schema(engine, schema_name)
     await _initialize_contact_schema(engine, schema_name)
+    await _initialize_weblink_schema(engine, schema_name)
 
 
 async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> None:
@@ -422,6 +433,19 @@ async def _drop_contact_schema(engine: AsyncEngine) -> None:
         await connection.run_sync(_drop_contact_tables)
 
 
+async def _initialize_weblink_schema(engine: AsyncEngine, schema_name: str) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_create_weblink_tables)
+        for table_name in ("record_urls", "page_titles"):
+            await _configure_user_space_rls(connection, schema_name, table_name)
+        await _grant_weblink_privileges(connection, schema_name)
+
+
+async def _drop_weblink_schema(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(_drop_weblink_tables)
+
+
 def _create_capture_tables(connection: Connection) -> None:
     for table in CAPTURE_TABLES:
         table.create(connection, checkfirst=True)
@@ -519,6 +543,16 @@ def _create_contact_tables(connection: Connection) -> None:
 
 def _drop_contact_tables(connection: Connection) -> None:
     for table in reversed(CONTACT_TABLES):
+        table.drop(connection, checkfirst=True)
+
+
+def _create_weblink_tables(connection: Connection) -> None:
+    for table in WEBLINK_TABLES:
+        table.create(connection, checkfirst=True)
+
+
+def _drop_weblink_tables(connection: Connection) -> None:
+    for table in reversed(WEBLINK_TABLES):
         table.drop(connection, checkfirst=True)
 
 
@@ -749,6 +783,31 @@ async def _grant_contact_privileges(
     # upsert=INSERT+UPDATE (ON CONFLICT DO UPDATE), доставка=SELECT. Без DELETE.
     await connection.execute(
         text(f"GRANT SELECT, INSERT, UPDATE ON TABLE {table} TO {APPLICATION_ROLE}")
+    )
+
+
+async def _grant_weblink_privileges(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    schema = _quote_identifier(schema_name)
+    record_urls = f'{schema}."record_urls"'
+    page_titles = f'{schema}."page_titles"'
+    await connection.execute(
+        text(
+            f"REVOKE ALL PRIVILEGES ON TABLE {record_urls}, {page_titles} "
+            f"FROM {APPLICATION_ROLE}"
+        )
+    )
+    # record_urls — append-only sidecar записи: без UPDATE/DELETE.
+    await connection.execute(
+        text(f"GRANT SELECT, INSERT ON TABLE {record_urls} TO {APPLICATION_ROLE}")
+    )
+    # page_titles: enqueue=INSERT (ON CONFLICT DO NOTHING), claim/итог
+    # воркера=UPDATE. Без DELETE.
+    await connection.execute(
+        text(
+            f"GRANT SELECT, INSERT, UPDATE ON TABLE {page_titles} TO {APPLICATION_ROLE}"
+        )
     )
 
 

@@ -51,6 +51,8 @@ async def run_local_polling(settings: Settings) -> None:
         task_capture = TaskCaptureInTransaction()
         exact_search = ExactSearchInTransaction()
         project_context = ProjectContextInTransaction()
+        # Один объект на оба порта показа: запись целиком + её sidecar-ссылки.
+        record_view = RecordViewInTransaction()
         processor = LocalUpdateProcessor(
             store=PostgresUpdateRepository(session_factory),
             clock=SystemClock(),
@@ -66,8 +68,9 @@ async def run_local_polling(settings: Settings) -> None:
             bot_username=bot_user.username,
             reminder_ack_port=task_capture,
             contact_port=ContactIntakeInTransaction(),
-            record_view_port=RecordViewInTransaction(),
+            record_view_port=record_view,
             digest_port=DigestInTransaction(),
+            record_links_port=record_view,
         )
         poller = LocalPoller(
             AiogramGateway(

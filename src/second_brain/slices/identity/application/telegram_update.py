@@ -1,6 +1,9 @@
 from dataclasses import dataclass, field
 
-from second_brain.slices.capture.application.contracts import TelegramVoiceMetadata
+from second_brain.slices.capture.application.contracts import (
+    TelegramLink,
+    TelegramVoiceMetadata,
+)
 from second_brain.slices.contacts.application.contracts import TelegramContactPayload
 
 
@@ -19,3 +22,5 @@ class TelegramUpdate:
     voice: TelegramVoiceMetadata | None = field(default=None, repr=False)
     # Карточка контакта (message.contact): телефон/имя — PII, repr-hidden.
     contact: TelegramContactPayload | None = field(default=None, repr=False)
+    # Ссылки из message.entities (text_link/url) в порядке появления — PII.
+    links: tuple[TelegramLink, ...] = field(default=(), repr=False)

@@ -148,6 +148,11 @@ CATALOG: dict[str, dict[Locale, str]] = {
         Locale.RU: "🧬 Похожее по смыслу:",
         Locale.EN: "🧬 Similar in meaning:",
     },
+    # Sidecar-блок ссылок под дословным текстом записи (S1).
+    "record_view.links_header": {
+        Locale.RU: "🔗 Ссылки:",
+        Locale.EN: "🔗 Links:",
+    },
     # --- сводка за период ---
     # Кнопка панели видна ВСЕМ пользователям (не только админу).
     "panel.btn.digest": {Locale.RU: "📊 Сводка", Locale.EN: "📊 Digest"},
@@ -463,6 +468,10 @@ def record_view_header(label: str, date: str, locale: Locale) -> str:
 
 def related_section_header(locale: Locale) -> str:
     return _text("record_view.related_header", locale)
+
+
+def record_links_header(locale: Locale) -> str:
+    return _text("record_view.links_header", locale)
 
 
 # --- сводка за период ---
