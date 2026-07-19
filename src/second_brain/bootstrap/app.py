@@ -1,11 +1,21 @@
-"""Композиция FastAPI-приложения: /health и Telegram-webhook (эпик API-1, B1).
+"""Композиция FastAPI-приложения: /health, Telegram-webhook и /v1 (эпик API-1).
 
-Webhook-роут — «insert-then-200»: сверка секрета из заголовка
+Webhook-роут (B1) — «insert-then-200»: сверка секрета из заголовка
 ``X-Telegram-Bot-Api-Secret-Token``, cap тела, минимальная проверка формы и
 ОДИН идемпотентный INSERT в telegram_update_inbox. Никакой обработки в
 HTTP-запросе: обработку ведёт inbox-шаг воркера (telegram_inbox_step).
 Тело запроса и payload НИКОГДА не логируются (PII), путь статический, без
 секрета в URL.
+
+Роутер `/v1` (C1) — публичный API по персональному токену; его устройство и
+конверт ошибок описаны в ``api_v1``.
+
+В схеме OpenAPI остаётся ТОЛЬКО `/v1`. `/health` и `/telegram/webhook` помечены
+``include_in_schema=False`` намеренно: схема — контракт для клиентов публичного
+API, а эти два роута клиентам не адресованы. Webhook — дверь одного вызывающего
+(Telegram), его форму диктует Telegram, и печатать её в публичной схеме значит
+приглашать в неё стучаться; `/health` — проба контейнера и traefik, а не
+возможность продукта. Оба продолжают работать как прежде — не описаны, но живы.
 """
 
 import asyncio
@@ -19,6 +29,11 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from second_brain.bootstrap.api_v1 import (
+    ApiRuntimeProvider,
+    create_v1_router,
+    register_v1_error_handlers,
+)
 from second_brain.bootstrap.settings import Settings
 from second_brain.shared.trace import TraceContext
 from second_brain.slices.identity.adapters.persistence.database import (
@@ -86,6 +101,7 @@ async def _webhook_runtime_from_environment() -> TelegramWebhookRuntime | None:
 
 def create_app(
     webhook_runtime_provider: WebhookRuntimeProvider | None = None,
+    api_runtime_provider: ApiRuntimeProvider | None = None,
 ) -> FastAPI:
     """Создаёт приложение; provider позволяет тестам подменить зависимости."""
     app = FastAPI(title="Second Brain", version="0.1.0")
@@ -105,11 +121,11 @@ def create_app(
                 runtime_cache.append(await provider())
             return runtime_cache[0]
 
-    @app.get("/health")
+    @app.get("/health", include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/telegram/webhook")
+    @app.post("/telegram/webhook", include_in_schema=False)
     async def telegram_webhook(request: Request) -> Response:
         runtime = await resolve_runtime()
         if runtime is None:
@@ -154,4 +170,6 @@ def create_app(
             return Response(status_code=500)
         return JSONResponse({"ok": True})
 
+    app.include_router(create_v1_router(api_runtime_provider))
+    register_v1_error_handlers(app)
     return app

@@ -97,6 +97,42 @@ save it somewhere safe (a password manager) and delete that message from the
 chat. Lost it — issue a new one. Revoking is immediate and permanent for that
 token; the row stays in the list as history.
 
+**Calling the API with that token.** Send it in the `Authorization` header and
+ask `/v1` who you are:
+
+```bash
+curl -H "Authorization: Bearer <the token from the bot>" \
+  https://yousaid.srv1492259.hstgr.cloud/v1/me
+```
+
+```json
+{
+  "user_id": "…",
+  "user_space_id": "…",
+  "language": "ru",
+  "timezone": "Asia/Jerusalem"
+}
+```
+
+The token alone decides whose memory answers — there is no parameter for
+choosing a space, so there is nothing to get wrong or to forge. `GET /v1/me` is
+currently the only endpoint: it exists to prove the door works end to end.
+Notes, search, digest and export arrive in the following slices of the epic, so
+treat the shape of `/v1` as a **draft** until the epic closes. The live schema
+is always at `/openapi.json` (human-readable at `/docs`).
+
+Every `/v1` error looks the same way and never explains itself:
+
+```json
+{"error": {"code": "unauthorized", "trace_id": "0f3c8a1d5e7b4c2a9d6f8e1b3a5c7d9e"}}
+```
+
+The same `trace_id` comes back in the `X-Trace-Id` header, and it is what to
+quote when asking the owner to look into a failure — the details live in the
+service log under that id and never in the answer. A missing, malformed,
+unknown, revoked or deactivated token all produce the identical `401`: telling
+them apart would tell an attacker which token exists.
+
 ## Local identity enrollment
 
 The first person to enroll (via the bootstrap link below) becomes the **admin**.
@@ -251,6 +287,74 @@ and reached over HTTPS through the server's shared traefik, with a per-IP rate
 limit and a proxy-side body cap on top of the app's own — see "The `api` service
 goes out through the server's SHARED traefik" under Deploys below. `polling` is
 kept only as a rollback path — see "Telegram webhook in production" below.
+
+### The `/v1` router and its door (epic API-1, slice C1)
+
+The same FastAPI app serves `/v1`. One dependency guards every route on it: the
+`Authorization: Bearer` secret is checked by `AuthenticateApiToken`, and **its
+answer is the only source of whose memory is being served**. No user or space
+identifier is read from the body, the path or the query string — not "read and
+validated", but not read at all, so there is no parameter to forge. The work
+then continues in a session whose transaction has announced that space to
+Postgres (`set_user_space_scope`, the same transaction-local `set_config` the
+bot path uses), which is what makes the row-level security policies — not the
+carefulness of a single `SELECT` — the thing that keeps other spaces out of
+reach.
+
+Every failure answers an identical `401` with no hint about the cause, and the
+whole router shares one error envelope (`code` + `trace_id`, plus the
+`X-Trace-Id` header) that never carries an exception text, SQL or a path. A
+database outage is deliberately **not** a `401`: it answers `500 internal`, and
+it does not consume the caller's failure budget below. The envelope also covers
+the two ways an answer usually escapes one: request validation (`422
+invalid_request`, without FastAPI's `detail` list naming fields and echoing what
+was sent) and a failure while the router's dependencies are being built, which
+happens lazily *inside* the first request.
+
+* **Brute-force budget.** `API_AUTH_FAILURE_LIMIT` failed authorizations per
+  client address inside `API_AUTH_FAILURE_WINDOW_SECONDS` (defaults 20 / 300;
+  `0` disables it) — then `429` until the window slides. Only *failures* count,
+  so ordinary use never meets the limit. This is the second line: traefik's
+  general per-IP rate limit is the first, and it cannot see how the token check
+  ended.
+* **An exhausted budget never turns a valid token away.** The presented token is
+  checked *before* the budget decides anything, so the answer depends on both:
+
+  | budget | token | answer |
+  | --- | --- | --- |
+  | alive | valid | the endpoint's normal answer |
+  | alive | invalid/absent | `401`, one failure spent |
+  | exhausted | valid | the endpoint's normal answer |
+  | exhausted | invalid/absent | `429`, nothing spent |
+
+  Refusing everyone once the budget is gone would be a self-inflicted denial of
+  service here, for the reason in the next bullet: in production every caller
+  shares one address, so a single guesser would lock the owner out of his own
+  API. The price of checking first is one indexed read per attempt beyond the
+  budget, and the flow reaching that point is already capped by traefik's rate
+  limit — a deliberate trade.
+* **Where the client address comes from — read this before trusting the limit.**
+  uvicorn runs **without `--proxy-headers`** and traefik dials the container
+  from the host network, so the socket address the app sees is the docker
+  gateway — *the same value for every caller on the internet*. With the default
+  (`API_CLIENT_IP_HEADER` unset) the per-address limit therefore degenerates
+  into one shared budget for all callers in production: it still throttles a
+  single-source brute force, but one attacker spends everybody's budget (which
+  costs holders of valid tokens nothing, per the bullet above). To make it truly
+  per-client, set `API_CLIENT_IP_HEADER=X-Forwarded-For`
+  in the server's `.env`: the router then takes the **rightmost** entry of that
+  header, which is the one the nearest proxy wrote after seeing the real socket
+  (everything to its left was sent by the client and is free to forge). Setting
+  it is only safe because the `api` container publishes no ports and cannot be
+  reached except through traefik — on a deployment where the app is directly
+  reachable, leave it unset, or callers will name their own address.
+
+`/health` and `POST /telegram/webhook` are marked `include_in_schema=False` and
+do not appear in `/openapi.json`. The schema is the contract offered to API
+clients; the webhook is a private door for exactly one caller whose shape
+Telegram dictates (publishing it only invites probing), and `/health` is a
+container/traefik probe rather than a product capability. Both keep working
+exactly as before — undocumented, not disabled.
 
 ## Local voice transcription and OpenRouter classification
 

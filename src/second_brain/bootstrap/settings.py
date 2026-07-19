@@ -26,6 +26,11 @@ DEFAULT_INBOX_WEBHOOK_ERROR_WINDOW_SECONDS = 3600
 # «последний раз использован». Писать её на КАЖДЫЙ запрос — значит превращать
 # каждое чтение через API в запись в базу.
 DEFAULT_API_TOKEN_LAST_USED_THROTTLE_SECONDS = 300
+# Роутер /v1 (эпик API-1, C1): лимит на ПРОВАЛЫ авторизации с одного адреса —
+# против подбора токена. Считаются только провалы, поэтому обычной работе порог
+# не мешает. 0 = лимит выключен.
+DEFAULT_API_AUTH_FAILURE_LIMIT = 20
+DEFAULT_API_AUTH_FAILURE_WINDOW_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,13 @@ class Settings:
     api_token_last_used_throttle_seconds: int = (
         DEFAULT_API_TOKEN_LAST_USED_THROTTLE_SECONDS
     )
+    # Лимит провалов авторизации /v1 на адрес и окно, в котором они считаются.
+    api_auth_failure_limit: int = DEFAULT_API_AUTH_FAILURE_LIMIT
+    api_auth_failure_window_seconds: int = DEFAULT_API_AUTH_FAILURE_WINDOW_SECONDS
+    # Заголовок, из которого брать адрес клиента для этого лимита. None = не
+    # верить заголовкам и брать адрес сокета. Задавать ТОЛЬКО там, где до
+    # приложения не достучаться мимо прокси, иначе клиент назначит адрес сам.
+    api_client_ip_header: str | None = None
     voice_storage_root: str = field(
         default=DEFAULT_VOICE_STORAGE_ROOT,
         repr=False,
@@ -113,6 +125,13 @@ class Settings:
             "API_TOKEN_LAST_USED_THROTTLE_SECONDS",
             DEFAULT_API_TOKEN_LAST_USED_THROTTLE_SECONDS,
         )
+        api_auth_failure_limit = _non_negative_int_environment(
+            "API_AUTH_FAILURE_LIMIT", DEFAULT_API_AUTH_FAILURE_LIMIT
+        )
+        api_auth_failure_window_seconds = _non_negative_int_environment(
+            "API_AUTH_FAILURE_WINDOW_SECONDS", DEFAULT_API_AUTH_FAILURE_WINDOW_SECONDS
+        )
+        api_client_ip_header = os.environ.get("API_CLIENT_IP_HEADER") or None
         voice_storage_root = (
             os.environ.get("VOICE_STORAGE_ROOT") or DEFAULT_VOICE_STORAGE_ROOT
         )
@@ -173,6 +192,9 @@ class Settings:
             api_token_pepper=api_token_pepper,
             api_token_pepper_key_id=api_token_pepper_key_id,
             api_token_last_used_throttle_seconds=api_token_last_used_throttle_seconds,
+            api_auth_failure_limit=api_auth_failure_limit,
+            api_auth_failure_window_seconds=api_auth_failure_window_seconds,
+            api_client_ip_header=api_client_ip_header,
             voice_storage_root=voice_storage_root,
             image_storage_root=image_storage_root,
             image_max_file_size_bytes=image_max_file_size_bytes,
