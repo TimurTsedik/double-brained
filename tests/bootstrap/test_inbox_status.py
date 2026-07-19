@@ -246,7 +246,12 @@ def test_a_token_inside_the_telegram_error_text_is_not_printed() -> None:
 
 def test_a_token_shaped_string_is_redacted_even_if_it_is_not_ours() -> None:
     # Защитный слой не полагается на то, что известные нам значения — все.
-    stranger = "8154739021:AAHkQwErTyUiOpAsDfGhJkLzXcVbNm12345"
+    #
+    # Хвост НАРОЧНО короче настоящего (у токена Telegram после двоеточия ровно
+    # 35 символов): строка обязана попасть под наш шаблон, но не выглядеть
+    # рабочим токеном для сканеров секретов — иначе каждый такой тест поднимает
+    # ложную тревогу в репозитории. Не «чинить» на более правдоподобную.
+    stranger = "0000000000:not-a-real-token-shape"
     text, _code = report(
         webhook=WebhookView(
             url=f"https://yousaid.example/{stranger}",
