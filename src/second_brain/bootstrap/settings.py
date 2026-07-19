@@ -18,6 +18,10 @@ DEFAULT_TITLE_FETCH_RETRY_BACKOFF_SECONDS = 60
 DEFAULT_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024
 DEFAULT_INBOX_MAX_ATTEMPTS = 5
 DEFAULT_INBOX_RETRY_BACKOFF_SECONDS = 30
+# Пороги команды статуса очереди (B4): с какого возраста головы очередь
+# считается вставшей и насколько свежей должна быть жалоба Telegram.
+DEFAULT_INBOX_HEAD_AGE_ALERT_SECONDS = 300
+DEFAULT_INBOX_WEBHOOK_ERROR_WINDOW_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,12 @@ class Settings:
     # сбоев строка — failed; между попытками линейный бэкофф.
     inbox_max_attempts: int = DEFAULT_INBOX_MAX_ATTEMPTS
     inbox_retry_backoff_seconds: int = DEFAULT_INBOX_RETRY_BACKOFF_SECONDS
+    # Пороги команды second-brain-inbox-status (B4). Возраст головы, с
+    # которого очередь считается вставшей: голова моложе — обычная обработка.
+    inbox_head_age_alert_seconds: int = DEFAULT_INBOX_HEAD_AGE_ALERT_SECONDS
+    # Окно свежести жалобы Telegram: last_error он НЕ сбрасывает после удачной
+    # доставки (только setWebhook), поэтому старая ошибка — история, не авария.
+    inbox_webhook_error_window_seconds: int = DEFAULT_INBOX_WEBHOOK_ERROR_WINDOW_SECONDS
 
     def telegram_bot_id(self) -> int:
         """Числовой id бота из префикса токена (формат Telegram «id:hmac»).
@@ -126,6 +136,13 @@ class Settings:
         inbox_retry_backoff_seconds = _non_negative_int_environment(
             "INBOX_RETRY_BACKOFF_SECONDS", DEFAULT_INBOX_RETRY_BACKOFF_SECONDS
         )
+        inbox_head_age_alert_seconds = _non_negative_int_environment(
+            "INBOX_HEAD_AGE_ALERT_SECONDS", DEFAULT_INBOX_HEAD_AGE_ALERT_SECONDS
+        )
+        inbox_webhook_error_window_seconds = _non_negative_int_environment(
+            "INBOX_WEBHOOK_ERROR_WINDOW_SECONDS",
+            DEFAULT_INBOX_WEBHOOK_ERROR_WINDOW_SECONDS,
+        )
         return cls(
             database_url=database_url,
             schema_database_url=schema_database_url,
@@ -149,6 +166,8 @@ class Settings:
             webhook_max_body_bytes=webhook_max_body_bytes,
             inbox_max_attempts=inbox_max_attempts,
             inbox_retry_backoff_seconds=inbox_retry_backoff_seconds,
+            inbox_head_age_alert_seconds=inbox_head_age_alert_seconds,
+            inbox_webhook_error_window_seconds=inbox_webhook_error_window_seconds,
         )
 
 

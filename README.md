@@ -224,8 +224,9 @@ best-effort callback ack and the delayed panel follow-up), and marks the row
 up to `INBOX_MAX_ATTEMPTS`, then the row becomes `failed`; a failed head does
 not block the rest of the queue, but a pending head waiting for its backoff
 does (strict order matters more than throughput because of pending modes).
-`PostgresTelegramInboxQueue.read_status` reports pending/failed depth and the
-age of the head row for monitoring. **The webhook is the working door in
+`second-brain-inbox-status` prints that depth, the age of the head row and
+Telegram's own view of the delivery — see "Looking at the queue" below. **The
+webhook is the working door in
 production** (cutover done, slice B3): the route is served by the `api` service
 and reached over HTTPS through the server's shared traefik, with a per-IP rate
 limit and a proxy-side body cap on top of the app's own — see "The `api` service
@@ -426,6 +427,87 @@ Two keys live in the server's `.env` (never in Git) for this:
 | `TELEGRAM_WEBHOOK_SECRET` | Random secret compared against the `X-Telegram-Bot-Api-Secret-Token` header on every delivery. Empty → the route answers 503 and the door is closed. Also passed to `setWebhook`; it lives only in the header, never in the URL. |
 | `APP_IMAGE_POLLING_FALLBACK` | Pinned image reference of the last build whose polling is known to work (e.g. `ghcr.io/timurtsedik/double-brained:sha-02f9906`). Read by nothing automatic — it exists so the rollback below does not have to guess a tag at 3 a.m. |
 
+#### Looking at the queue
+
+The webhook door can stand still without anything shouting: updates keep
+landing in `telegram_update_inbox` and simply stop being processed, or Telegram
+stops being able to reach us at all. One command on the server answers both
+halves — what the queue holds, and what Telegram thinks of the delivery:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm worker second-brain-inbox-status
+```
+
+(`worker` is used only as a container to run in — it needs the same image and
+`.env`, and the command touches nothing the running worker owns. `--rm` leaves
+no container behind.)
+
+```text
+Telegram inbox queue (bot 8154739021)
+  waiting to be processed (pending): 0
+  gave up permanently (failed):      0
+  head of the queue waiting:         -
+  stuck above:                       300s
+
+Telegram side (getWebhookInfo)
+  url:                               https://yousaid.srv1492259.hstgr.cloud/telegram/webhook
+  waiting at Telegram:               0
+  max connections:                   1
+  last delivery error:               none
+
+OK: nothing is stuck and Telegram reports no recent delivery error.
+```
+
+What the numbers mean:
+
+| Line | Reading |
+| --- | --- |
+| `waiting to be processed (pending)` | Updates written by `api` that the worker has not finished yet. A handful for a moment is normal; **a number that grows between two runs of this command is the rollback signal** below. |
+| `gave up permanently (failed)` | Rows that exhausted `INBOX_MAX_ATTEMPTS` and will never be retried. Anything above 0 means updates were lost to the user — worth reading the worker log. |
+| `head of the queue waiting` | Age of the OLDEST unprocessed update. This is the sharper signal of the two: strict `update_id` order means a stuck head blocks everything behind it, so **seconds are normal and minutes are not**. `-` means the queue is empty. |
+| `stuck above` | The threshold the age above is judged against — see the knobs below. |
+| `waiting at Telegram` | `pending_update_count` from `getWebhookInfo`: updates Telegram is still holding because it could not hand them to us. Ours (`pending`) and theirs are different queues — a backlog on Telegram's side with an empty inbox means the door itself is shut. |
+| `last delivery error` | **The field to read first.** `getWebhookInfo`'s `last_error_date` / `last_error_message` — if Telegram cannot deliver to us, this is where it says so (bad certificate, 502 from traefik, timeout). Marked `FRESH` inside the error window and `history` outside it, because Telegram does NOT clear this field after a successful delivery — only `setWebhook` does — so an old message here is not an incident. |
+
+The last line is the verdict, and the exit code follows it, so the same command
+can be dropped into any external scheduler later without changes:
+
+| Exit | Verdict | Meaning |
+| --- | --- | --- |
+| `0` | `OK` | Nothing stuck, no fresh delivery error. |
+| `1` | `PROBLEM` | The head is older than the threshold, and/or there are `failed` rows, and/or Telegram reports a fresh delivery error. The line names which. |
+| `2` | `UNKNOWN` | The state could not be established: the database is unreachable, or Telegram is, or the command never got that far (a broken `.env`, for instance). A dead network does not kill the command — if only `getWebhookInfo` fails, the queue numbers are still printed and the Telegram block says `UNREACHABLE` with the failure's class name. |
+
+The bot token never appears in the output, by either route. **Failures print the
+exception class and nothing else** — never a traceback — because the message
+text may carry the request URL (a Bot API URL contains the token) or the
+database DSN with its password. **Strings that come back from Telegram** — the
+webhook `url` and `last delivery error` — are printed through a redactor: the
+bot token, `TELEGRAM_WEBHOOK_SECRET` and anything shaped like a Telegram token
+come out as `<redacted>`. Our own webhook keeps its secret in the header, not in
+the path, but "token as the webhook path" is a common enough misconfiguration
+that this command has to catch it rather than print it.
+
+Two knobs, both in the server's `.env` (defaults are fine for this bot):
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `INBOX_HEAD_AGE_ALERT_SECONDS` | `300` | Head age above which the queue counts as stuck (exit `1`). |
+| `INBOX_WEBHOOK_ERROR_WINDOW_SECONDS` | `3600` | How recent Telegram's `last_error` must be to count as a live problem rather than history. |
+
+**This is the command behind the rollback rule.** Run it twice a minute apart:
+if `pending` and the head age are both climbing while the worker is up, the
+webhook path is not moving updates — roll back to polling with the procedure
+below. A fresh `last delivery error` with a rising `waiting at Telegram` and an
+empty `pending` points the other way: the updates are not even reaching `api`,
+so check traefik, the certificate and `TELEGRAM_WEBHOOK_SECRET` before rolling
+back.
+
+There is deliberately no HTTP endpoint for this: it would face the internet and
+drag in the question of authorising it. `/health` is deliberately untouched too —
+the container healthcheck calls it, and a deep queue must not paint the
+container unhealthy.
+
 #### Two traps that already cost time
 
 * **Changing `TELEGRAM_WEBHOOK_SECRET` in `.env` does nothing until `api`
@@ -449,7 +531,9 @@ Two keys live in the server's `.env` (never in Git) for this:
 
 #### Rolling back to polling
 
-Use this when the webhook is broken and the bot must receive updates again.
+Use this when the webhook is broken and the bot must receive updates again —
+confirm it with `second-brain-inbox-status` above first, so the rollback is a
+decision and not a guess.
 Run everything from the app directory on the VPS (`cd` there first). The steps
 are ordered so the two doors never overlap.
 
