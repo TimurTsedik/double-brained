@@ -69,4 +69,6 @@ def build_update_processor(
         digest_port=DigestInTransaction(),
         record_links_port=record_view,
         record_edit_port=RecordEditInTransaction(),
+        api_token_pepper=settings.api_token_pepper,
+        api_token_pepper_key_id=settings.api_token_pepper_key_id,
     )

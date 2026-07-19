@@ -55,6 +55,55 @@ CATALOG: dict[str, dict[Locale, str]] = {
             "intended person."
         ),
     },
+    # --- токены доступа к API (эпик API-1, секция C) ---
+    # Кнопка видна ВСЕМ пользователям: токен даёт доступ к СВОЕЙ памяти.
+    # «API» — одно и то же слово в обоих языках, отсюда одинаковая подпись.
+    "panel.btn.api_tokens": {Locale.RU: "🔑 API", Locale.EN: "🔑 API"},
+    "api_tokens.panel.header": {
+        Locale.RU: "🔑 Токены доступа к API",
+        Locale.EN: "🔑 API access tokens",
+    },
+    "api_tokens.panel.empty": {
+        Locale.RU: "🔑 Токенов доступа к API пока нет.",
+        Locale.EN: "🔑 No API access tokens yet.",
+    },
+    "api_tokens.row": {
+        Locale.RU: "{number}. {label} · {state} · создан {created} · {used}",
+        Locale.EN: "{number}. {label} · {state} · created {created} · {used}",
+    },
+    "api_tokens.state.active": {Locale.RU: "активен", Locale.EN: "active"},
+    "api_tokens.state.revoked": {Locale.RU: "отозван", Locale.EN: "revoked"},
+    "api_tokens.used": {
+        Locale.RU: "последний раз {when}",
+        Locale.EN: "last used {when}",
+    },
+    "api_tokens.never_used": {
+        Locale.RU: "не использовался",
+        Locale.EN: "never used",
+    },
+    "api_tokens.create_btn": {
+        Locale.RU: "➕ Новый токен",
+        Locale.EN: "➕ New token",
+    },
+    "api_tokens.revoke_btn": {
+        Locale.RU: "🗑 Отозвать {label}",
+        Locale.EN: "🗑 Revoke {label}",
+    },
+    # Честное предупреждение: секрет виден ОДИН раз, восстановить его нельзя.
+    "api_tokens.created": {
+        Locale.RU: (
+            "🔑 Новый токен доступа к API — {label}:\n\n{secret}\n\n"
+            "Он показан один раз: восстановить его нельзя, можно только выпустить "
+            "новый. Сохраните токен в надёжном месте (менеджер паролей), а это "
+            "сообщение удалите из чата."
+        ),
+        Locale.EN: (
+            "🔑 New API access token — {label}:\n\n{secret}\n\n"
+            "It is shown once: it cannot be recovered, only replaced with a new "
+            "one. Store it somewhere safe (a password manager) and delete this "
+            "message from the chat."
+        ),
+    },
     # --- голос ---
     "voice_queued": {
         Locale.RU: "🎙️ Голос сохранён. Расшифровываю…",
@@ -405,9 +454,10 @@ def panel_button_rows(
 ) -> list[list[tuple[str, str]]]:
     """Строки панели как ряды пар (подпись, callback_data).
 
-    Ряд «📊 Сводка» виден ВСЕМ пользователям. Ряд «➕ Пригласить» добавляется
-    ТОЛЬКО админу (member его не видит). Скрытие кнопки — не авторизация:
-    сервер заново проверяет роль на invite:create.
+    Ряды «📊 Сводка» и «🔑 API» видны ВСЕМ пользователям (токен даёт доступ к
+    СВОЕЙ памяти). Ряд «➕ Пригласить» добавляется ТОЛЬКО админу (member его не
+    видит). Скрытие кнопки — не авторизация: сервер заново проверяет роль на
+    invite:create.
     """
     rows = [
         [
@@ -432,6 +482,9 @@ def panel_button_rows(
         [
             (_text("panel.btn.lang_menu", locale), "lang:menu"),
         ],
+        [
+            (_text("panel.btn.api_tokens", locale), "api:menu"),
+        ],
     ]
     if is_admin:
         rows.append([(_text("panel.btn.invite", locale), "invite:create")])
@@ -440,6 +493,57 @@ def panel_button_rows(
 
 def invite_message_text(link: str, locale: Locale) -> str:
     return _text("invite.message", locale).format(link=link)
+
+
+# --- токены доступа к API ---
+
+
+def api_token_panel_header(locale: Locale) -> str:
+    return _text("api_tokens.panel.header", locale)
+
+
+def api_token_panel_empty(locale: Locale) -> str:
+    return _text("api_tokens.panel.empty", locale)
+
+
+def api_token_row(
+    number: int,
+    label: str,
+    created: str,
+    used: str | None,
+    revoked: bool,
+    locale: Locale,
+) -> str:
+    """Строка списка: метка, состояние, когда создан и когда использовался.
+
+    ``used`` — уже отформатированный момент последнего использования или None
+    («не использовался»); секрет показать невозможно и в строке его нет.
+    """
+    state_key = "api_tokens.state.revoked" if revoked else "api_tokens.state.active"
+    used_text = (
+        _text("api_tokens.never_used", locale)
+        if used is None
+        else _text("api_tokens.used", locale).format(when=used)
+    )
+    return _text("api_tokens.row", locale).format(
+        number=number,
+        label=label,
+        state=_text(state_key, locale),
+        created=created,
+        used=used_text,
+    )
+
+
+def api_token_create_button(locale: Locale) -> str:
+    return _text("api_tokens.create_btn", locale)
+
+
+def api_token_revoke_button(label: str, locale: Locale) -> str:
+    return _text("api_tokens.revoke_btn", locale).format(label=label)
+
+
+def api_token_created_text(label: str, secret: str, locale: Locale) -> str:
+    return _text("api_tokens.created", locale).format(label=label, secret=secret)
 
 
 # --- голос ---

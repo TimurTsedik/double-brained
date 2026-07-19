@@ -14,6 +14,7 @@ from second_brain.slices.identity.adapters.persistence.models import (
     RESULT_KIND_CHECK_NAME,
     USER_ROLE_CHECK_NAME,
     USER_SPACE_LANGUAGE_CHECK_NAME,
+    ApiToken,
     EnrollmentAttempt,
     EnrollmentInvite,
     TelegramIdentity,
@@ -32,6 +33,11 @@ IDENTITY_TABLES = (
     cast(Table, TelegramUpdateReceipt.__table__),
     cast(Table, TelegramUpdateInbox.__table__),
     cast(Table, EnrollmentAttempt.__table__),
+    # api_tokens — БЕЗ RLS (причина в докстринге модели). Отдельной реконсиляции
+    # не требует: create_all(checkfirst=True) пропускает лишь СУЩЕСТВУЮЩИЕ
+    # таблицы, а недостающую доращивает — живая база секции B получит её первым
+    # же init-db.
+    cast(Table, ApiToken.__table__),
 )
 
 
@@ -222,6 +228,7 @@ async def _grant_application_privileges(
     enrollment_invites = f"{quoted_schema}.enrollment_invites"
     user_spaces = f"{quoted_schema}.user_spaces"
     update_inbox = f"{quoted_schema}.telegram_update_inbox"
+    api_tokens = f"{quoted_schema}.api_tokens"
     await connection.execute(
         text(f"GRANT CONNECT ON DATABASE {quoted_database} TO {APPLICATION_ROLE}")
     )
@@ -256,6 +263,16 @@ async def _grant_application_privileges(
         text(
             "GRANT UPDATE (status, attempt_count, next_attempt_at) ON TABLE "
             f"{update_inbox} TO {APPLICATION_ROLE}"
+        )
+    )
+    # Токены API: выдача=INSERT, чтение/проверка=SELECT (оба из широкого гранта),
+    # КОЛОНОЧНЫЙ UPDATE только по двум отметкам жизненного цикла. Ни секрет
+    # (token_hash), ни владельца (user_id), ни перец app-роль переписать не
+    # может. DELETE не даётся: отзыв — это revoked_at, история остаётся.
+    await connection.execute(
+        text(
+            "GRANT UPDATE (last_used_at, revoked_at) ON TABLE "
+            f"{api_tokens} TO {APPLICATION_ROLE}"
         )
     )
     # КОЛОНОЧНЫЙ грант (решение 3): app-роль меняет только язык (и updated_at,

@@ -4,7 +4,7 @@ from hmac import compare_digest
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import CursorResult, func, select, text, update
+from sqlalchemy import CursorResult, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import (
 
 from second_brain.shared.i18n import Locale, resolve_locale
 from second_brain.slices.identity.adapters.persistence.models import (
+    ApiToken,
     EnrollmentAttempt,
     EnrollmentInvite,
     TelegramIdentity,
@@ -28,9 +29,12 @@ from second_brain.slices.identity.application.contracts import (
     TelegramRecipient,
 )
 from second_brain.slices.identity.ports.repositories import (
+    ApiTokenPrincipal,
+    ApiTokenView,
     BootstrapInviteUnavailable,
     EnrollmentAttemptReservation,
     EnrollmentOutcome,
+    NewApiToken,
     NewBootstrapInvite,
     StoredUpdateReceipt,
     UpdateHandler,
@@ -562,6 +566,151 @@ class PostgresUpdateTransaction:
             language,
             now,
         )
+
+    async def read_user_space_timezone(
+        self, access_context: AccessContext
+    ) -> str | None:
+        return await read_user_space_timezone(
+            self._session, access_context.user_space_id, access_context.user_id
+        )
+
+    async def issue_api_token(
+        self, access_context: AccessContext, token: NewApiToken
+    ) -> ApiTokenView:
+        # На api_tokens RLS нет (проверка токена идёт до резолва пространства),
+        # поэтому изоляция здесь — user_id из access_context: чужой владелец в
+        # строку не запишется.
+        row = ApiToken(
+            id=token.id,
+            user_id=access_context.user_id,
+            token_hash=token.token_hash,
+            pepper_key_id=token.pepper_key_id,
+            label=token.label,
+            created_at=token.created_at,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return _api_token_view(row)
+
+    async def list_api_tokens(
+        self, access_context: AccessContext
+    ) -> tuple[ApiTokenView, ...]:
+        rows = await self._session.scalars(
+            select(ApiToken)
+            .where(ApiToken.user_id == access_context.user_id)
+            .order_by(ApiToken.created_at, ApiToken.id)
+        )
+        return tuple(_api_token_view(row) for row in rows)
+
+    async def revoke_api_token(
+        self, access_context: AccessContext, token_id: UUID, now: datetime
+    ) -> bool:
+        # Отзыв — пометка, а не удаление. Повторный отзыв не переписывает момент
+        # (revoked_at IS NULL в WHERE), но и не считается ошибкой: наличие строки
+        # проверяется отдельно.
+        token = await self._session.scalar(
+            select(ApiToken).where(
+                ApiToken.id == token_id,
+                ApiToken.user_id == access_context.user_id,
+            )
+        )
+        if token is None:
+            return False
+        if token.revoked_at is None:
+            token.revoked_at = now
+            await self._session.flush()
+        return True
+
+
+def _api_token_view(row: ApiToken) -> ApiTokenView:
+    return ApiTokenView(
+        id=row.id,
+        label=row.label,
+        created_at=row.created_at,
+        last_used_at=row.last_used_at,
+        revoked_at=row.revoked_at,
+    )
+
+
+class PostgresApiTokenRepository:
+    """Проверка предъявленного секрета вне транзакции обработки апдейта.
+
+    Живёт отдельно от бот-пути: HTTP-запрос приходит без пространства, и именно
+    этот запрос его и устанавливает. Отметка last_used_at пишется только когда
+    она реально устарела — обычный запрос API остаётся чистым чтением, — и
+    только вперёд: параллельные запросы одним токеном не двигают её назад.
+    """
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def authenticate_api_token(
+        self,
+        token_hash: bytes,
+        pepper_key_id: str,
+        now: datetime,
+        refresh_used_before: datetime,
+    ) -> ApiTokenPrincipal | None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                # Пара (хэш, текущий pepper_key_id) — как у приглашений: токены,
+                # выданные под прежним перцем, перестают проходить сами собой.
+                row = (
+                    await session.execute(
+                        select(
+                            ApiToken.id,
+                            ApiToken.token_hash,
+                            ApiToken.last_used_at,
+                            User.id,
+                            UserSpace.id,
+                        )
+                        .select_from(ApiToken)
+                        .join(User, User.id == ApiToken.user_id)
+                        .join(UserSpace, UserSpace.owner_user_id == User.id)
+                        .where(
+                            ApiToken.token_hash == token_hash,
+                            ApiToken.pepper_key_id == pepper_key_id,
+                            ApiToken.revoked_at.is_(None),
+                            User.is_active.is_(True),
+                            UserSpace.is_active.is_(True),
+                        )
+                        .limit(1)
+                    )
+                ).one_or_none()
+                if row is None:
+                    return None
+                token_id, stored_hash, last_used_at, user_id, user_space_id = row
+                if not compare_digest(stored_hash, token_hash):
+                    return None
+                if last_used_at is None or last_used_at < refresh_used_before:
+                    # Прочитанная строка решает только «пора ли писать» — так
+                    # обычный запрос не превращается в запись. Условие самой
+                    # записи проверяет БАЗА и заново: между чтением и UPDATE
+                    # строку успевает изменить соседняя транзакция. Отсюда два
+                    # условия в WHERE — токен ещё жив (отозванному отметка не
+                    # ставится) и новый момент строго позже прежнего. При READ
+                    # COMMITTED UPDATE перепроверяет WHERE на свежей версии
+                    # строки, поэтому более ранняя отметка не ляжет поверх более
+                    # поздней ни при каком порядке коммитов.
+                    await session.execute(
+                        update(ApiToken)
+                        .where(
+                            ApiToken.id == token_id,
+                            ApiToken.user_id == user_id,
+                            ApiToken.revoked_at.is_(None),
+                            or_(
+                                ApiToken.last_used_at.is_(None),
+                                ApiToken.last_used_at < now,
+                            ),
+                        )
+                        .values(last_used_at=now)
+                    )
+                return ApiTokenPrincipal(
+                    access_context=AccessContext(
+                        user_id=user_id, user_space_id=user_space_id
+                    ),
+                    token_id=token_id,
+                )
 
 
 async def acquire_update_lock(

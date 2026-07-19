@@ -24,6 +24,7 @@ from second_brain.slices.identity.application.contracts import (
 )
 from second_brain.slices.identity.application.local_updates import AcknowledgementKind
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
+from second_brain.slices.identity.ports.repositories import ApiTokenView
 from second_brain.slices.projects.application.contracts import ProjectPanelResult
 from second_brain.slices.retrieval.application.contracts import (
     DigestPage,
@@ -134,6 +135,72 @@ class AiogramGateway:
         await self._bot.send_message(
             chat_id=update.telegram_user_id,
             text=messages.invite_message_text(link, locale),
+        )
+
+    async def send_api_token_created(
+        self, update: TelegramUpdate, label: str, secret: str
+    ) -> None:
+        # Секрет уходит В ЛИЧКУ владельцу — приватный чат, известный актёр. Он
+        # виден один раз, нигде не логируется и в базе лежит только его хэш;
+        # текст сам просит удалить сообщение из чата.
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=messages.api_token_created_text(label, secret, locale),
+        )
+
+    async def send_api_token_panel(
+        self, update: TelegramUpdate, tokens: Sequence[ApiTokenView]
+    ) -> None:
+        # Список токенов владельца: метка, состояние, когда создан и когда
+        # использовался (моменты уже в tz пространства). Кнопка отзыва — только
+        # у живых токенов: отозванный остаётся в списке как история.
+        if not update.is_private or update.telegram_user_id is None:
+            return
+        locale = await self._resolve_locale(update)
+        if tokens:
+            rows = [
+                messages.api_token_row(
+                    number,
+                    token.label,
+                    token.created_at.strftime(RECORD_VIEW_DATE_FORMAT),
+                    (
+                        None
+                        if token.last_used_at is None
+                        else token.last_used_at.strftime(RECORD_VIEW_DATE_FORMAT)
+                    ),
+                    token.revoked_at is not None,
+                    locale,
+                )
+                for number, token in enumerate(tokens, start=1)
+            ]
+            text = messages.api_token_panel_header(locale) + "\n\n" + "\n".join(rows)
+        else:
+            text = messages.api_token_panel_empty(locale)
+        keyboard_rows = [
+            [
+                InlineKeyboardButton(
+                    text=messages.api_token_create_button(locale),
+                    callback_data="api:create",
+                )
+            ]
+        ]
+        keyboard_rows.extend(
+            [
+                InlineKeyboardButton(
+                    text=messages.api_token_revoke_button(token.label, locale),
+                    callback_data=f"api:revoke:{token.id}",
+                )
+            ]
+            for token in tokens
+            if token.revoked_at is None
+        )
+        await self._bot.send_message(
+            chat_id=update.telegram_user_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
         )
 
     async def send_contact_saved(self, update: TelegramUpdate, name: str) -> None:

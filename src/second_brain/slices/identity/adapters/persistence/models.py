@@ -151,6 +151,42 @@ class EnrollmentInvite(Base):
     consumed_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
 
 
+class ApiToken(Base):
+    """Токен доступа к публичному HTTP-API: в базе — только хэш секрета.
+
+    RLS на таблице НЕТ, и это осознанно, а не забыто. Проверка токена случается
+    ДО того, как известно пространство пользователя: именно по токену мы и
+    узнаём, кто пришёл, — значит строка обязана читаться вне scope. Ровно та же
+    модель, что у enrollment_invites (и по той же причине); изоляция здесь
+    держится не политикой БД, а предикатом user_id в каждом запросе.
+
+    Перец у токенов СВОЙ (api_tokens.pepper_key_id ≠ перец инвайтов): ротация
+    перца инвайтов не должна разлогинивать все выданные API-токены — это разные
+    жизненные циклы. Поиск, как у инвайтов, идёт по паре (хэш, pepper_key_id).
+
+    Отзыв — это ПОМЕТКА revoked_at, а не удаление: история выданного доступа
+    остаётся (и DELETE роли приложения не выдан).
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    token_hash: Mapped[bytes] = mapped_column(
+        LargeBinary(32), unique=True, nullable=False
+    )
+    pepper_key_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Человекочитаемая метка, чтобы владелец различал свои токены в списке.
+    label: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # NULL = токеном ещё не пользовались. Пишется НЕ на каждый запрос API —
+    # см. AuthenticateApiToken (окно троттлинга).
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 RESULT_KIND_CHECK_NAME = "ck_telegram_update_receipts_result_kind"
 
 
@@ -173,6 +209,7 @@ class TelegramUpdateReceipt(Base):
             "'memory_question_queued', 'memory_question_required', "
             "'language_prompt_shown', 'language_selected', "
             "'invite_created', 'invite_forbidden', 'already_enrolled', "
+            "'api_tokens_listed', 'api_token_created', 'api_token_revoked', "
             "'contact_saved', 'digest_menu_shown', 'digest_shown', 'ignored')",
             name=RESULT_KIND_CHECK_NAME,
         ),

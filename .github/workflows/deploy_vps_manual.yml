@@ -57,6 +57,8 @@ jobs:
       TELEGRAM_BOT_TOKEN: "000000:dummy-ci-token"
       INVITE_TOKEN_PEPPER: "ci-dummy-pepper"
       INVITE_TOKEN_PEPPER_KEY_ID: "ci-v1"
+      API_TOKEN_PEPPER: "ci-dummy-api-pepper"
+      API_TOKEN_PEPPER_KEY_ID: "ci-api-v1"
       OPEN_ROUTER_AI_KEY: "ci-dummy-openrouter-key"
     steps:
       - uses: actions/checkout@v4

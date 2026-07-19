@@ -34,6 +34,7 @@ from second_brain.slices.identity.adapters.persistence.models import (
     TelegramUpdateInbox,
 )
 from second_brain.slices.identity.domain.entities import TelegramInboxStatus
+from tests.bootstrap.conftest import set_required_environment
 from tests.identity.conftest import IsolatedDatabase
 
 SECRET = "webhook-secret-value"
@@ -229,11 +230,12 @@ async def test_environment_runtime_refuses_a_privileged_database_role(
     isolated_database: IsolatedDatabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Реальный провайдер (env) проверяет роль ДО первого enqueue.
+    set_required_environment(monkeypatch)
+    # Роли намеренно перевёрнуты: приложение получает owner-URL — на этом и
+    # ловится привилегированная роль.
     monkeypatch.setenv("DATABASE_URL", isolated_database.schema_database_url)
     monkeypatch.setenv("SCHEMA_DATABASE_URL", isolated_database.database_url)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", f"{BOT_ID}:webhook-test-token")
-    monkeypatch.setenv("INVITE_TOKEN_PEPPER", "webhook-test-pepper")
-    monkeypatch.setenv("INVITE_TOKEN_PEPPER_KEY_ID", "webhook-test-v1")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", SECRET)
 
     with pytest.raises(RuntimeError, match="non-superuser"):

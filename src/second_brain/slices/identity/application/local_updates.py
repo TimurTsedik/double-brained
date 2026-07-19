@@ -27,9 +27,11 @@ from second_brain.slices.editing.application.contracts import (
     RecordEditPort,
 )
 from second_brain.slices.identity.application.access_context import ResolveAccessContext
+from second_brain.slices.identity.application.api_tokens import ApiTokenLifecycle
 from second_brain.slices.identity.application.contracts import AccessContext
 from second_brain.slices.identity.application.telegram_update import TelegramUpdate
 from second_brain.slices.identity.ports.repositories import (
+    ApiTokenView,
     EnrollmentOutcome,
     NewUpdateResult,
     UpdateStore,
@@ -110,6 +112,16 @@ _DIGEST_MORE_CALLBACK_PATTERN = re.compile(
     r"digest:more:(week|month|half_year|year):(0|[1-9][0-9]{0,5}):([1-9][0-9]{0,9})"
 )
 
+# Токены доступа к API: три строгие формы (меню / выдать / отозвать конкретный).
+# Любой иной api:* гасится до любой другой обработки. Максимальная форма
+# «api:revoke:<uuid>» — 47 байт, в 64-байтовый лимит Telegram влезает.
+API_TOKENS_MENU_CALLBACK = "api:menu"
+API_TOKEN_CREATE_CALLBACK = "api:create"
+_API_TOKEN_REVOKE_PATTERN = re.compile(
+    r"api:revoke:"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+)
+
 
 class AcknowledgementKind(StrEnum):
     CAPTURED = "captured"
@@ -148,6 +160,10 @@ class AcknowledgementKind(StrEnum):
     IMAGE_SAVED = "image_saved"
     INVITE_CREATED = "invite_created"
     INVITE_FORBIDDEN = "invite_forbidden"
+    # Токены доступа к API (эпик API-1, секция C): список / выдан / отозван.
+    API_TOKENS_LISTED = "api_tokens_listed"
+    API_TOKEN_CREATED = "api_token_created"
+    API_TOKEN_REVOKED = "api_token_revoked"
     CONTACT_SAVED = "contact_saved"
     DIGEST_MENU_SHOWN = "digest_menu_shown"
     DIGEST_SHOWN = "digest_shown"
@@ -167,6 +183,14 @@ class UpdateResult:
     # в receipt/логи не попадает; поллер шлёт её как side-effect на invite_created.
     # repr=False — plaintext-токен не должен просочиться в repr/лог.
     invite_link: str | None = field(default=None, repr=False)
+    # Только что выданный API-токен: секрет живёт ТОЛЬКО в памяти этого прохода
+    # (repr=False — плейнтекст не должен просочиться в repr/лог), метка — рядом,
+    # чтобы человек понял, какую строку списка он только что завёл.
+    api_token_secret: str | None = field(default=None, repr=False)
+    api_token_label: str | None = None
+    # Список токенов владельца для показа/после отзыва (моменты — в tz
+    # пространства): fresh-only, replay дубля payload'а не получает.
+    api_tokens: tuple[ApiTokenView, ...] | None = None
     # «На когда» только что поставленное напоминание (в tz пространства):
     # поллер добавляет к captured-ack сообщение «⏰ Напомню …».
     reminder_when: datetime | None = None
@@ -186,6 +210,9 @@ class _TransientUpdatePayload:
     search_panel: SearchPanelResult | None = None
     project_panel: ProjectPanelResult | None = None
     invite_link: str | None = None
+    api_token_secret: str | None = None
+    api_token_label: str | None = None
+    api_tokens: tuple[ApiTokenView, ...] | None = None
     reminder_when: datetime | None = None
     contact_name: str | None = None
     record_view: RecordViewResult | None = None
@@ -214,12 +241,21 @@ class LocalUpdateProcessor:
         digest_port: DigestPort | None = None,
         record_links_port: RecordLinksPort | None = None,
         record_edit_port: RecordEditPort | None = None,
+        api_token_pepper: bytes | None = None,
+        api_token_pepper_key_id: str | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._pepper = pepper
         self._pepper_key_id = pepper_key_id
         self._bot_username = bot_username
+        # Перец API-токенов ОТДЕЛЬНЫЙ от перца приглашений: ротация одного не
+        # трогает другой. Не подключён (None) → кнопка «🔑 API» молчит.
+        self._api_tokens = (
+            ApiTokenLifecycle(api_token_pepper, api_token_pepper_key_id)
+            if api_token_pepper and api_token_pepper_key_id
+            else None
+        )
         self._capture_text_port = capture_text_port
         self._task_mode_port = task_mode_port
         self._task_panel_port = task_panel_port
@@ -259,6 +295,9 @@ class LocalUpdateProcessor:
             search_panel=None if receipt.existing else payload.search_panel,
             project_panel=None if receipt.existing else payload.project_panel,
             invite_link=None if receipt.existing else payload.invite_link,
+            api_token_secret=None if receipt.existing else payload.api_token_secret,
+            api_token_label=None if receipt.existing else payload.api_token_label,
+            api_tokens=None if receipt.existing else payload.api_tokens,
             reminder_when=None if receipt.existing else payload.reminder_when,
             contact_name=None if receipt.existing else payload.contact_name,
             record_view=None if receipt.existing else payload.record_view,
@@ -587,6 +626,21 @@ class LocalUpdateProcessor:
             and digest_more_match is None
         ):
             return AcknowledgementKind.IGNORED
+        # api:* принимается ТОЛЬКО в трёх строгих формах (menu / create /
+        # revoke:uuid); любой иной api:* — IGNORED до любой другой обработки.
+        api_revoke_match = (
+            _API_TOKEN_REVOKE_PATTERN.fullmatch(update.callback_data)
+            if update.callback_data is not None
+            else None
+        )
+        if (
+            update.callback_data is not None
+            and update.callback_data.startswith("api:")
+            and update.callback_data
+            not in {API_TOKENS_MENU_CALLBACK, API_TOKEN_CREATE_CALLBACK}
+            and api_revoke_match is None
+        ):
+            return AcknowledgementKind.IGNORED
         selections = {
             "capture:note": "note",
             "capture:task": "task",
@@ -621,6 +675,8 @@ class LocalUpdateProcessor:
                 "lang:ru",
                 "lang:en",
                 "invite:create",
+                API_TOKENS_MENU_CALLBACK,
+                API_TOKEN_CREATE_CALLBACK,
                 EDIT_CANCEL_CALLBACK,
             }
             and not is_task_completion
@@ -628,6 +684,7 @@ class LocalUpdateProcessor:
             and show_match is None
             and edit_match is None
             and not is_digest
+            and api_revoke_match is None
         ):
             return AcknowledgementKind.IGNORED
         if update.telegram_user_id is None:
@@ -659,6 +716,22 @@ class LocalUpdateProcessor:
             # один из них не пишет строку invite. Сюда доходит только активный
             # язык-выбравший, чью роль перепроверяет create_member_invite.
             return await self._process_invite_create(transaction, update, now, payload)
+        if (
+            update.callback_data
+            in {API_TOKENS_MENU_CALLBACK, API_TOKEN_CREATE_CALLBACK}
+            or api_revoke_match is not None
+        ):
+            # Кнопка «🔑 API» — у КАЖДОГО пользователя (в отличие от приглашения):
+            # токен даёт доступ к его собственной памяти. Роль здесь не при чём,
+            # изоляция — по владельцу (user_id из access_context).
+            return await self._process_api_tokens(
+                transaction,
+                access_context,
+                update.callback_data,
+                api_revoke_match.group(1) if api_revoke_match is not None else None,
+                now,
+                payload,
+            )
         # Any panel button other than "Ask memory" clears the one-shot memory
         # mode, so a queued question never sticks onto an unrelated next text.
         if self._memory_ask_port is not None and update.callback_data != "memory:ask":
@@ -1054,6 +1127,39 @@ class LocalUpdateProcessor:
             return AcknowledgementKind.INVITE_FORBIDDEN
         payload.invite_link = f"https://t.me/{self._bot_username}?start={token}"
         return AcknowledgementKind.INVITE_CREATED
+
+    async def _process_api_tokens(
+        self,
+        transaction: UpdateTransaction,
+        access_context: AccessContext,
+        callback_data: str | None,
+        revoke_token_id: str | None,
+        now: datetime,
+        payload: _TransientUpdatePayload,
+    ) -> str:
+        if self._api_tokens is None:
+            return AcknowledgementKind.IGNORED
+        if callback_data == API_TOKEN_CREATE_CALLBACK:
+            issued = await self._api_tokens.issue(access_context, transaction, now)
+            payload.api_token_secret = issued.secret
+            payload.api_token_label = issued.view.label
+            return AcknowledgementKind.API_TOKEN_CREATED
+        if revoke_token_id is not None:
+            # Чужой / несуществующий uuid → IGNORED: callback отвечен, ни одного
+            # сообщения — поведение неотличимо от мусорного callback'а.
+            revoked = await self._api_tokens.revoke(
+                access_context, transaction, UUID(revoke_token_id), now
+            )
+            if not revoked:
+                return AcknowledgementKind.IGNORED
+            payload.api_tokens = await self._api_tokens.list_tokens_in_space_timezone(
+                access_context, transaction
+            )
+            return AcknowledgementKind.API_TOKEN_REVOKED
+        payload.api_tokens = await self._api_tokens.list_tokens_in_space_timezone(
+            access_context, transaction
+        )
+        return AcknowledgementKind.API_TOKENS_LISTED
 
     async def _process_language_callback(
         self,

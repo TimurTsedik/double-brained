@@ -87,6 +87,16 @@ when they open it, they get their own empty space and pick their language. The
 link works for whoever opens it first and expires in 24 hours, so share it only
 with the intended person. If you ever lose it, just press **➕ Invite** again.
 
+**Reaching your memory from outside Telegram.** Press **🔑 API** in the panel to
+manage your own access tokens — everyone has this button, because a token opens
+*your* memory and nobody else's. The panel lists your tokens (label, state, when
+each was created and last used) with **➕ New token** above them and a
+**🗑 Revoke** button next to every live one. A new token is shown **once**, in a
+single message: the bot stores only its hash and cannot ever show it again, so
+save it somewhere safe (a password manager) and delete that message from the
+chat. Lost it — issue a new one. Revoking is immediate and permanent for that
+token; the row stays in the list as history.
+
 ## Local identity enrollment
 
 The first person to enroll (via the bootstrap link below) becomes the **admin**.
@@ -121,8 +131,15 @@ tokens, peppers, or database credentials in logs.
 cp .env.example .env
 ```
 
-Set four distinct database URLs, the three Telegram/invite secrets, and the
-OpenRouter API key in `.env`. `DATABASE_URL` and `TEST_DATABASE_URL` must use
+Set four distinct database URLs, the three Telegram/invite secrets, the two
+API-token secrets, and the OpenRouter API key in `.env`. `API_TOKEN_PEPPER` and
+`API_TOKEN_PEPPER_KEY_ID` salt the **API access tokens** issued from the 🔑 API
+button and are deliberately **separate** from the invite pepper: rotating the
+invite pepper must not log out every issued API token, and rotating the API
+pepper (bump `API_TOKEN_PEPPER_KEY_ID` with it) invalidates every issued token
+at once without touching enrollment. Both are required — the app refuses to
+start without them rather than silently salting tokens with someone else's
+secret. `DATABASE_URL` and `TEST_DATABASE_URL` must use
 the non-superuser `second_brain_app` role. `SCHEMA_DATABASE_URL` and
 `TEST_SCHEMA_DATABASE_URL` are owner-only URLs used for explicit schema
 initialization and isolated test schemas. `OPEN_ROUTER_AI_KEY` holds your
@@ -139,6 +156,8 @@ TEST_SCHEMA_DATABASE_URL=postgresql+asyncpg://second_brain@127.0.0.1:55432/secon
 TELEGRAM_BOT_TOKEN=
 INVITE_TOKEN_PEPPER=
 INVITE_TOKEN_PEPPER_KEY_ID=
+API_TOKEN_PEPPER=
+API_TOKEN_PEPPER_KEY_ID=
 OPEN_ROUTER_AI_KEY=
 ```
 

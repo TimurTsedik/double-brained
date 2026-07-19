@@ -9,7 +9,7 @@
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from typing import Protocol
 
@@ -18,6 +18,7 @@ from second_brain.slices.identity.application.local_updates import (
     AcknowledgementKind,
     UpdateResult,
 )
+from second_brain.slices.identity.ports.repositories import ApiTokenView
 from second_brain.slices.projects.application.contracts import ProjectPanelResult
 from second_brain.slices.retrieval.application.contracts import (
     DigestPage,
@@ -43,6 +44,14 @@ class TelegramGateway(Protocol):
     async def send_panel(self, update: TelegramUpdate) -> None: ...
 
     async def send_invite_link(self, update: TelegramUpdate, link: str) -> None: ...
+
+    async def send_api_token_created(
+        self, update: TelegramUpdate, label: str, secret: str
+    ) -> None: ...
+
+    async def send_api_token_panel(
+        self, update: TelegramUpdate, tokens: Sequence[ApiTokenView]
+    ) -> None: ...
 
     async def send_contact_saved(self, update: TelegramUpdate, name: str) -> None: ...
 
@@ -376,6 +385,34 @@ class TelegramPresenter:
                     await self._sleep(1.0)
                     continue
                 break
+        if result.kind is AcknowledgementKind.API_TOKEN_CREATED and getattr(
+            result, "fresh", True
+        ):
+            secret = getattr(result, "api_token_secret", None)
+            label = getattr(result, "api_token_label", None)
+            if secret is None or label is None:
+                raise RuntimeError("fresh api token creation did not return a secret")
+            while True:
+                try:
+                    await self._gateway.send_api_token_created(update, label, secret)
+                except Exception:
+                    await self._sleep(1.0)
+                    continue
+                break
+        if result.kind in {
+            AcknowledgementKind.API_TOKENS_LISTED,
+            AcknowledgementKind.API_TOKEN_REVOKED,
+        } and getattr(result, "fresh", True):
+            tokens = getattr(result, "api_tokens", None)
+            if tokens is None:
+                raise RuntimeError("fresh api token action did not return a list")
+            while True:
+                try:
+                    await self._gateway.send_api_token_panel(update, tokens)
+                except Exception:
+                    await self._sleep(1.0)
+                    continue
+                break
         if result.kind is AcknowledgementKind.CONTACT_SAVED and getattr(
             result, "fresh", True
         ):
@@ -448,6 +485,9 @@ class TelegramPresenter:
             AcknowledgementKind.VOICE_QUEUED,
             AcknowledgementKind.INVITE_CREATED,
             AcknowledgementKind.INVITE_FORBIDDEN,
+            AcknowledgementKind.API_TOKENS_LISTED,
+            AcknowledgementKind.API_TOKEN_CREATED,
+            AcknowledgementKind.API_TOKEN_REVOKED,
             AcknowledgementKind.CONTACT_SAVED,
             AcknowledgementKind.DIGEST_MENU_SHOWN,
             AcknowledgementKind.DIGEST_SHOWN,

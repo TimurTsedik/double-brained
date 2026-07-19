@@ -22,6 +22,10 @@ DEFAULT_INBOX_RETRY_BACKOFF_SECONDS = 30
 # считается вставшей и насколько свежей должна быть жалоба Telegram.
 DEFAULT_INBOX_HEAD_AGE_ALERT_SECONDS = 300
 DEFAULT_INBOX_WEBHOOK_ERROR_WINDOW_SECONDS = 3600
+# Токены доступа к API (эпик API-1, секция C): как часто обновлять отметку
+# «последний раз использован». Писать её на КАЖДЫЙ запрос — значит превращать
+# каждое чтение через API в запись в базу.
+DEFAULT_API_TOKEN_LAST_USED_THROTTLE_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,17 @@ class Settings:
     telegram_bot_token: str = field(repr=False)
     invite_token_pepper: bytes = field(repr=False)
     invite_token_pepper_key_id: str
+    # Перец API-токенов ОТДЕЛЬНЫЙ от перца приглашений: ротация перца инвайтов
+    # не должна разлогинивать все выданные API-токены — это разные жизненные
+    # циклы. from_environment ТРЕБУЕТ обе переменные; пустое значение здесь
+    # означает «механизм не подключён» — кнопка «🔑 API» тогда молчит и ни одна
+    # строка токена не пишется (слабым перцем токены не выдаются).
+    api_token_pepper: bytes = field(default=b"", repr=False)
+    api_token_pepper_key_id: str = ""
+    # Как часто обновлять last_used_at у токена (0 = на каждый запрос).
+    api_token_last_used_throttle_seconds: int = (
+        DEFAULT_API_TOKEN_LAST_USED_THROTTLE_SECONDS
+    )
     voice_storage_root: str = field(
         default=DEFAULT_VOICE_STORAGE_ROOT,
         repr=False,
@@ -92,6 +107,12 @@ class Settings:
         telegram_bot_token = _required_environment("TELEGRAM_BOT_TOKEN")
         invite_token_pepper = _required_environment("INVITE_TOKEN_PEPPER").encode()
         invite_token_pepper_key_id = _required_environment("INVITE_TOKEN_PEPPER_KEY_ID")
+        api_token_pepper = _required_environment("API_TOKEN_PEPPER").encode()
+        api_token_pepper_key_id = _required_environment("API_TOKEN_PEPPER_KEY_ID")
+        api_token_last_used_throttle_seconds = _non_negative_int_environment(
+            "API_TOKEN_LAST_USED_THROTTLE_SECONDS",
+            DEFAULT_API_TOKEN_LAST_USED_THROTTLE_SECONDS,
+        )
         voice_storage_root = (
             os.environ.get("VOICE_STORAGE_ROOT") or DEFAULT_VOICE_STORAGE_ROOT
         )
@@ -149,6 +170,9 @@ class Settings:
             telegram_bot_token=telegram_bot_token,
             invite_token_pepper=invite_token_pepper,
             invite_token_pepper_key_id=invite_token_pepper_key_id,
+            api_token_pepper=api_token_pepper,
+            api_token_pepper_key_id=api_token_pepper_key_id,
+            api_token_last_used_throttle_seconds=api_token_last_used_throttle_seconds,
             voice_storage_root=voice_storage_root,
             image_storage_root=image_storage_root,
             image_max_file_size_bytes=image_max_file_size_bytes,

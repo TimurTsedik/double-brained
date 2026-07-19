@@ -26,6 +26,7 @@ from tests.identity.conftest import IsolatedDatabase, require_test_database_url
 
 TIMESTAMP = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
 EXPECTED_PROTOTYPE_TABLES = {
+    "api_tokens",
     "capture_events",
     "classification_results",
     "contacts",
@@ -239,6 +240,7 @@ async def test_identity_schema_lifecycle_excludes_capture_events(
                 {"schema": schema},
             )
         assert set(result.scalars()) == {
+            "api_tokens",
             "enrollment_attempts",
             "enrollment_invites",
             "telegram_identities",

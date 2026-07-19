@@ -28,6 +28,7 @@ from second_brain.bootstrap.inbox_status import (
 )
 from second_brain.bootstrap.settings import Settings
 from second_brain.slices.identity.adapters.persistence.inbox import TelegramInboxHealth
+from tests.bootstrap.conftest import set_required_environment
 
 NOW = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
 BOT_ID = 700
@@ -321,11 +322,10 @@ async def test_unreadable_database_reports_an_undetermined_state() -> None:
 
 
 def _set_required_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://app@example")
-    monkeypatch.setenv("SCHEMA_DATABASE_URL", "postgresql+asyncpg://owner@example")
+    # Токен бота — свой: тесты ниже проверяют, что он НЕ попадает в вывод, а с
+    # чужим токеном из общего набора такая проверка ничего не доказывала бы.
+    set_required_environment(monkeypatch)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", BOT_TOKEN)
-    monkeypatch.setenv("INVITE_TOKEN_PEPPER", "pepper")
-    monkeypatch.setenv("INVITE_TOKEN_PEPPER_KEY_ID", "key-1")
 
 
 def test_alert_thresholds_have_defaults_and_are_configurable(

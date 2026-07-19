@@ -326,6 +326,53 @@ async def test_application_role_privileges_on_telegram_update_inbox(
 
 
 @pytest.mark.asyncio
+async def test_application_role_updates_only_lifecycle_marks_of_api_tokens(
+    session: AsyncSession,
+) -> None:
+    # Токены API: выдача=INSERT, проверка=SELECT, КОЛОНОЧНЫЙ UPDATE только по
+    # двум отметкам жизненного цикла. Секрет (token_hash), владелец и перец
+    # app-роли неподвластны; DELETE нет — отзыв это revoked_at, а не удаление.
+    for privilege, allowed in (
+        ("SELECT", True),
+        ("INSERT", True),
+        ("UPDATE", False),
+        ("DELETE", False),
+    ):
+        actual = await session.scalar(
+            text("SELECT has_table_privilege(current_user, 'api_tokens', :privilege)"),
+            {"privilege": privilege},
+        )
+        assert actual is allowed, privilege
+
+    assert (
+        await session.scalar(
+            text(
+                "SELECT has_any_column_privilege(current_user, 'api_tokens', 'UPDATE')"
+            )
+        )
+        is True
+    )
+    for column, allowed in (
+        ("last_used_at", True),
+        ("revoked_at", True),
+        ("token_hash", False),
+        ("pepper_key_id", False),
+        ("user_id", False),
+        ("label", False),
+        ("created_at", False),
+        ("id", False),
+    ):
+        actual = await session.scalar(
+            text(
+                "SELECT has_column_privilege(current_user, 'api_tokens', "
+                ":column, 'UPDATE')"
+            ),
+            {"column": column},
+        )
+        assert actual is allowed, column
+
+
+@pytest.mark.asyncio
 async def test_application_role_lacks_update_on_immutable_identity_tables(
     session: AsyncSession,
 ) -> None:

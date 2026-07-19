@@ -33,6 +33,64 @@ class NewBootstrapInvite:
     role: str = "admin"
 
 
+@dataclass(frozen=True)
+class ApiTokenView:
+    """Строка списка токенов: всё, кроме секрета — его показать невозможно."""
+
+    id: UUID
+    label: str
+    created_at: datetime
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+
+
+@dataclass(frozen=True)
+class NewApiToken:
+    id: UUID
+    token_hash: bytes
+    pepper_key_id: str
+    label: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class ApiTokenPrincipal:
+    """Кому принадлежит предъявленный токен (вход для следующего слайса)."""
+
+    access_context: AccessContext
+    token_id: UUID
+
+
+class ApiTokenRepository(Protocol):
+    async def authenticate_api_token(
+        self,
+        token_hash: bytes,
+        pepper_key_id: str,
+        now: datetime,
+        refresh_used_before: datetime,
+    ) -> ApiTokenPrincipal | None: ...
+
+
+class ApiTokenTransaction(Protocol):
+    """Операции над токенами внутри уже открытой транзакции обработки апдейта."""
+
+    async def read_user_space_timezone(
+        self, access_context: AccessContext
+    ) -> str | None: ...
+
+    async def issue_api_token(
+        self, access_context: AccessContext, token: NewApiToken
+    ) -> ApiTokenView: ...
+
+    async def list_api_tokens(
+        self, access_context: AccessContext
+    ) -> tuple[ApiTokenView, ...]: ...
+
+    async def revoke_api_token(
+        self, access_context: AccessContext, token_id: UUID, now: datetime
+    ) -> bool: ...
+
+
 class EnrollmentRepository(Protocol):
     async def store_bootstrap_invite(self, invite: NewBootstrapInvite) -> None: ...
 
@@ -73,7 +131,10 @@ class TelegramAccessContextResolver(Protocol):
 
 
 class UpdateTransaction(
-    UpdateTransactionContract, TelegramAccessContextResolver, Protocol
+    UpdateTransactionContract,
+    TelegramAccessContextResolver,
+    ApiTokenTransaction,
+    Protocol,
 ):
     async def reserve_enrollment_attempt(
         self,
