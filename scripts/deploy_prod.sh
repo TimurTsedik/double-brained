@@ -5,12 +5,12 @@
 # This script is NOT first-time initialisation. It assumes the database role
 # `second_brain_app`, the schema, and the owner enrollment already exist (that
 # is done once, by hand, following Part B of the deploy plan). A mandatory guard
-# below refuses to start polling/worker on an uninitialised database so a stray
+# below refuses to start worker/api on an uninitialised database so a stray
 # run can never produce a restart-loop.
 #
 # It pulls the requested image, (re)starts postgres, verifies the role exists,
-# then does a short cutover: stop polling+worker+api, reconcile the schema with
-# `init-db` (idempotent, ADD-only), and bring everything back up on the new image.
+# then does a short cutover: stop the app, reconcile the schema with `init-db`
+# (idempotent, ADD-only), and bring everything back up on the new image.
 # The stop is required — init-db briefly REVOKEs and re-GRANTs the app role's
 # privileges, so a running bot would hit permission errors mid-reconcile. Running
 # init-db on EVERY deploy means a schema-changing release can never land new code
@@ -18,6 +18,13 @@
 # never touches the ./data volume and never logs secrets. First-time
 # initialisation (creating the role/owner enrollment) is still manual, once — the
 # guard below aborts on an uninitialised database.
+#
+# Updates reach the bot through the WEBHOOK served by `api`. `polling` sits
+# behind the `rollback` compose profile and is deliberately NOT part of a normal
+# deploy: a plain `up -d` does not start it, and this script does not wait for
+# it. Deploying WHILE a rollback to polling is active is not supported — see the
+# warning printed at the end of this script and "Rolling back to polling" in
+# README.md.
 #
 # Required environment:
 #   APP_IMAGE   full image reference to deploy (e.g. ghcr.io/timurtsedik/double-brained:sha-xxxxxxx)
@@ -103,27 +110,45 @@ fi
 # (idempotent, ADD-only) reconciles the schema safely; on a no-schema release it
 # is a near-instant no-op. Running it every deploy means a schema-adding release
 # never starts new code on an un-migrated schema.
+#
+# `polling` stays in this list even though a normal deploy never starts it.
+# Naming a service explicitly auto-enables its profile, so this reliably stops a
+# polling container that a rollback left running — and during a rollback polling
+# IS the live bot, so init-db's REVOKE/GRANT window would hit it exactly like
+# any other app service. When no polling container exists (the normal case) the
+# command is a silent no-op and still exits 0.
 log "stopping polling, worker and api for the schema reconcile"
 docker compose -f "$COMPOSE_FILE" stop polling worker api
 
 log "reconciling schema (init-db: idempotent, ADD-only)"
 docker compose -f "$COMPOSE_FILE" run --rm -T worker second-brain-identity init-db
 
-# --- bring up all services (recreates polling+worker+api on the new image) --
+# --- bring up all services (recreates worker+api on the new image) ----------
+# No service is named here on purpose: a bare `up -d` starts only the services
+# in the ACTIVE profiles, so `polling` (profile `rollback`) stays down. Naming it
+# — even as `up -d polling` — would auto-enable its profile and start it, which
+# is exactly what must not happen while the webhook owns the update stream.
+#
+# `--remove-orphans` keeps its normal job of pruning containers whose service no
+# longer exists in the file. It does NOT touch `polling` on current Compose
+# (verified on v2.32.4: a defined service in an inactive profile is not an
+# orphan), but Compose versions before ~2.21 did delete such containers. Either
+# way the rule is the same: do not deploy while a rollback is running.
 log "starting all services"
 docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
 
 # --- wait for app services to become healthy --------------------------------
-# api is waited on by name like the others: it publishes no port, so an api that
+# api is waited on by name like worker: it publishes no port, so an api that
 # came back broken would otherwise be invisible here and only show up as a 502
-# from the server's shared traefik.
-log "waiting for polling, worker and api to become healthy"
+# from the server's shared traefik. `polling` is NOT waited on — a normal deploy
+# does not start it, so waiting would burn the whole timeout and then fail a
+# perfectly good deploy.
+log "waiting for worker and api to become healthy"
 deadline_ok=0
 for _ in $(seq 1 45); do
-  polling_h="$(docker compose -f "$COMPOSE_FILE" ps polling --format '{{.Health}}' 2>/dev/null || true)"
   worker_h="$(docker compose -f "$COMPOSE_FILE" ps worker --format '{{.Health}}' 2>/dev/null || true)"
   api_h="$(docker compose -f "$COMPOSE_FILE" ps api --format '{{.Health}}' 2>/dev/null || true)"
-  if [ "$polling_h" = "healthy" ] && [ "$worker_h" = "healthy" ] && [ "$api_h" = "healthy" ]; then
+  if [ "$worker_h" = "healthy" ] && [ "$api_h" = "healthy" ]; then
     deadline_ok=1
     break
   fi
@@ -133,8 +158,25 @@ done
 if [ "$deadline_ok" != "1" ]; then
   log "services did not become healthy in time; recent logs follow:"
   docker compose -f "$COMPOSE_FILE" ps || true
-  docker compose -f "$COMPOSE_FILE" logs --tail 50 polling worker api || true
-  fail "polling/worker/api unhealthy after redeploy"
+  docker compose -f "$COMPOSE_FILE" logs --tail 50 worker api || true
+  fail "worker/api unhealthy after redeploy"
 fi
 
-log "redeploy complete; all services healthy"
+# --- did this deploy just interrupt a rollback? -----------------------------
+# A polling container that EXISTS but is not running means the cutover above
+# stopped a live rollback and, `polling` being outside the active profiles, did
+# not bring it back. The bot would be deaf: the webhook is deleted (that is what
+# a rollback does) and nothing is calling getUpdates either. Say so loudly
+# instead of reporting a clean deploy.
+polling_state="$(docker compose -f "$COMPOSE_FILE" ps -a polling --format '{{.State}}' 2>/dev/null || true)"
+if [ -n "$polling_state" ] && [ "$polling_state" != "running" ]; then
+  log "WARNING: a stopped 'polling' container is present — this deploy interrupted a"
+  log "WARNING: rollback and did NOT restart it. If the webhook is still deleted the"
+  log "WARNING: bot receives nothing right now. Restore ONE of the two doors:"
+  log "WARNING:   polling : export APP_IMAGE=\"\$APP_IMAGE_POLLING_FALLBACK\" && \\"
+  log "WARNING:             docker compose -f $COMPOSE_FILE --profile rollback up -d polling"
+  log "WARNING:   webhook : re-run setWebhook, then docker compose -f $COMPOSE_FILE rm -sf polling"
+  log "WARNING: See 'Rolling back to polling' in README.md."
+fi
+
+log "redeploy complete; worker and api healthy"

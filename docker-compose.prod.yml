@@ -1,4 +1,7 @@
-# Production compose for the VPS deploy (long-polling + HTTP api).
+# Production compose for the VPS deploy (Telegram webhook + HTTP api).
+# Updates come in over the webhook served by `api`; `polling` is kept only as a
+# rollback door, behind the `rollback` profile, and a normal `up -d` does not
+# start it (see its comment below).
 # postgres, polling, worker and api share the default project bridge network so
 # the app services keep outbound access to Telegram / OpenRouter / HuggingFace.
 # postgres is isolated by having NO published `ports:` (reachable only in-network
@@ -33,9 +36,26 @@ services:
       retries: 5
       start_period: 20s
 
+  # ROLLBACK-ONLY door (epic API-1, slice B3). Updates arrive through the
+  # webhook on `api`; `getUpdates` is NOT the working mode any more. Telegram
+  # allows exactly ONE consumer, so a polling container started next to a live
+  # webhook gets 409 Conflict forever and, with `restart: unless-stopped`,
+  # spins in a restart loop.
+  #
+  # The `rollback` profile is what keeps that from happening: a service in a
+  # non-active profile is NOT started by a plain `up -d`, so the normal deploy
+  # cannot resurrect it by accident. The service stays DEFINED here on purpose —
+  # deleting it would also delete the rollback path. Bringing it back is one
+  # command (deleteWebhook first, then):
+  #
+  #   export APP_IMAGE="$APP_IMAGE_POLLING_FALLBACK"
+  #   docker compose -f docker-compose.prod.yml --profile rollback up -d polling
+  #
+  # See "Rolling back to polling" in README.md for the full procedure.
   polling:
     image: ${APP_IMAGE:?APP_IMAGE is required}
     command: ["second-brain-local-polling"]
+    profiles: ["rollback"]
     env_file: ./.env
     user: "1001:1001"
     restart: unless-stopped
