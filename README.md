@@ -218,7 +218,10 @@ not block the rest of the queue, but a pending head waiting for its backoff
 does (strict order matters more than throughput because of pending modes).
 `PostgresTelegramInboxQueue.read_status` reports pending/failed depth and the
 age of the head row for monitoring. Polling remains the working door until
-the cutover (slice B3); the reverse proxy and rate limits arrive with B2.
+the cutover (slice B3). In production the route is served by the `api` service
+and reached over HTTPS through the server's shared traefik, with a per-IP rate
+limit and a proxy-side body cap on top of the app's own — see "The `api` service
+goes out through the server's SHARED traefik" under Deploys below.
 
 ## Local voice transcription and OpenRouter classification
 
@@ -301,9 +304,13 @@ does not resend it. Send `/start` again to request a new panel.
 Every push to `main` deploys automatically (`.github/workflows/deploy_vps_manual.yml`):
 tests and the GHCR image build run in parallel, then the VPS redeploy runs
 `scripts/deploy_prod.sh`. That script does a short cutover on **every** deploy —
-stop `polling`+`worker`, run `init-db`, bring everything back up on the new image.
+stop `polling`+`worker`+`api`, run `init-db`, bring everything back up on the new
+image, and wait for all three to report healthy.
 The stop is required because `init-db` briefly REVOKEs and re-GRANTs the app
 role's privileges, so a running bot would hit permission errors mid-reconcile.
+`api` is stopped for the same reason: a webhook arriving mid-reconcile would fail
+its INSERT on permissions, whereas a stopped `api` simply does not answer and
+Telegram retries the update after the cutover.
 `init-db` is idempotent and ADD-only, so on a release with no schema change it is
 a near-instant no-op; the cost is a few seconds of downtime per deploy. A
 schema-adding release therefore needs no manual step — the columns are grown in
@@ -327,6 +334,61 @@ docker compose -f docker-compose.prod.yml run --rm -T postgres \
 ```
 
 (Skip it and the glitch self-heals after one message per space.)
+
+### The `api` service goes out through the server's SHARED traefik (epic API-1, slice B2)
+
+**Do not install a reverse proxy for this project. There already is one, and it
+is not ours.** Ports 80 and 443 on the VPS belong to a single `traefik` container
+that lives in its own compose project (`/docker/traefik`, host network,
+entrypoints `web:80` + `websecure:443`, global 80→443 redirect, `letsencrypt`
+HTTP-01 resolver, docker provider with `exposedbydefault=false`). It has been
+running for months and it also fronts a **second, unrelated project of the
+owner** on the same machine. Adding a Caddy/nginx/second traefik would fight for
+those ports and take the neighbour down with it.
+
+`api` therefore attaches to that traefik purely through labels in
+`docker-compose.prod.yml` — `traefik.enable=true`, a `Host(...)` router on the
+`websecure` entrypoint, `tls.certresolver=letsencrypt`, and a
+`loadbalancer.server.port`. Nothing else is needed and nothing else may be added.
+
+* **Host name: `yousaid.srv1492259.hstgr.cloud`.** The ROOT name
+  `srv1492259.hstgr.cloud` is **taken by the neighbouring project** — claiming it
+  would break a working bot. The wildcard `*.srv1492259.hstgr.cloud` already
+  resolves to this server's IP, so the sub-name needs no DNS work and Let's
+  Encrypt issues its certificate over HTTP-01 on first request.
+* **No `ports:` section, on purpose.** traefik runs in the host network and
+  dials the container's bridge IP directly, so nothing needs publishing. A
+  published port would be a second, plaintext door into the webhook —
+  bypassing TLS, the rate limit and the body cap below.
+* **Rate limit:** 10 req/s sustained, burst 20, per client IP (traefik's default
+  source criterion is the remote address, and on the host network that is the
+  real client IP). Real traffic is a handful of small requests per minute — the
+  owner's Telegram updates plus the future `/v1` — so the limit is invisible to
+  legitimate use, including a retry burst after a restart, while floods and
+  secret-guessing are cut to a trickle.
+* **Body cap:** `buffering.maxRequestBodyBytes=2097152` (2 MiB). This is a
+  SECOND line of defence, not a replacement for the app's
+  `WEBHOOK_MAX_BODY_BYTES` (1 MiB by default), which still owns the normal 413.
+  It sits deliberately above the app cap: the app stays the authority on what a
+  valid update may weigh, and traefik only refuses the absurd before it reaches
+  a python process.
+
+  Note the interaction, because it is easy to misread: `buffering` reads the
+  whole body before proxying, so behind this proxy the route's own incremental
+  read never sees a body larger than 2 MiB, and the memory a request can cost is
+  capped by traefik rather than by the route. The route's streaming cap still
+  matters — it is what protects any deployment reached without this proxy, and
+  it is the behaviour the tests pin — but in production traefik is the first
+  wall, not the route.
+* **Port:** uvicorn listens on `API_PORT` (default `8000`) inside the container —
+  an in-network port, never published. Set `API_PORT` in the server's `.env` to
+  change it; the command, the healthcheck and the traefik label all follow that
+  one variable.
+* **Health:** the container healthcheck is an HTTP `GET /health` (via python —
+  the runtime image has no curl), not the `second-brain-healthcheck` database
+  ping used by `polling`/`worker`. `/health` does not touch the database, and
+  the webhook route builds its DB runtime lazily on the first update, so a
+  database ping would report on the wrong subject for this service.
 
 ## Automated checks
 

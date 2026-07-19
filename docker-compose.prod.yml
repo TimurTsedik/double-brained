@@ -1,8 +1,21 @@
-# Production compose for the VPS deploy (long-polling).
-# postgres, polling and worker share the default project bridge network so the
-# app services keep outbound access to Telegram / OpenRouter / HuggingFace.
+# Production compose for the VPS deploy (long-polling + HTTP api).
+# postgres, polling, worker and api share the default project bridge network so
+# the app services keep outbound access to Telegram / OpenRouter / HuggingFace.
 # postgres is isolated by having NO published `ports:` (reachable only in-network
 # by the hostname `postgres`), not by network isolation.
+#
+# NOTHING here publishes a port and NO reverse proxy is defined on purpose. The
+# VPS already runs ONE shared `traefik` container (its own compose project under
+# /docker/traefik, host network, entrypoints web:80 + websecure:443, global
+# 80->443 redirect, `letsencrypt` HTTP-01 resolver) that also fronts a second,
+# unrelated project of the owner. `api` joins it purely through labels below —
+# see the `api` service comment. Do not add a proxy and do not publish ports.
+#
+# API_PORT (optional, in ./.env) selects the port uvicorn listens on inside the
+# container; it is a pure in-network port, never published. It appears three
+# times below (command, healthcheck URL, traefik service port) because compose
+# has no way to reuse a scalar inside a string — but the knob is the single
+# variable: set API_PORT once and all three follow.
 services:
   postgres:
     image: pgvector/pgvector:0.8.5-pg17
@@ -55,3 +68,79 @@ services:
       timeout: 5s
       retries: 5
       start_period: 40s
+
+  # HTTP door of the stack (epic API-1, slice B2): the FastAPI app with /health
+  # and POST /telegram/webhook. Reached from the internet ONLY through the
+  # server's shared traefik, over TLS, under the host name below.
+  #
+  # No `ports:` ON PURPOSE. traefik runs in the host network and dials the
+  # container's bridge IP directly, so nothing needs publishing — and a
+  # published port would be a second, plaintext door bypassing TLS, the rate
+  # limit and the body cap. There is exactly one project network here, so
+  # traefik has no ambiguity about which IP to use (no `traefik.docker.network`
+  # label needed).
+  api:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    command:
+      - uvicorn
+      - second_brain.bootstrap.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - ${API_PORT:-8000}
+    env_file: ./.env
+    user: "1001:1001"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+    # Unlike polling/worker this service DOES serve HTTP, so the healthcheck is
+    # the real thing an HTTP service must prove: that it answers. GET /health
+    # does not touch the database (the webhook route builds its DB runtime
+    # lazily, on the first update), so `second-brain-healthcheck` — a database
+    # ping — would report on the wrong subject and go red while a perfectly
+    # serving api just has no database yet. python is used instead of curl:
+    # the runtime image is python:3.13-slim and has no curl.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:${API_PORT:-8000}/health", timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Attachment to the SHARED traefik (see the file header). Names are prefixed
+    # `second-brain-` because routers/middlewares live in one global namespace
+    # shared with the neighbouring project on this server.
+    #
+    # Host: the ROOT name srv1492259.hstgr.cloud is taken by that neighbouring
+    # project — taking it would break a working bot. The wildcard
+    # *.srv1492259.hstgr.cloud already resolves to this server, so the sub-name
+    # needs no DNS work and letsencrypt issues its certificate over HTTP-01.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.second-brain-api.rule=Host(`yousaid.srv1492259.hstgr.cloud`)"
+      - "traefik.http.routers.second-brain-api.entrypoints=websecure"
+      - "traefik.http.routers.second-brain-api.tls=true"
+      - "traefik.http.routers.second-brain-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.second-brain-api.loadbalancer.server.port=${API_PORT:-8000}"
+      - "traefik.http.routers.second-brain-api.middlewares=second-brain-ratelimit@docker,second-brain-bodylimit@docker"
+      # Rate limit, per client IP (traefik's default source criterion is the
+      # request's remote address, and traefik on the host network sees the real
+      # one). Legitimate traffic is a handful of small requests per minute:
+      # Telegram webhook deliveries for one owner, plus the future /v1 used by
+      # that same single person. 10 req/s sustained with a burst of 20 leaves
+      # that untouched — including a retry burst after an api restart — while
+      # cutting floods and secret-guessing to a useless trickle.
+      - "traefik.http.middlewares.second-brain-ratelimit.ratelimit.average=10"
+      - "traefik.http.middlewares.second-brain-ratelimit.ratelimit.burst=20"
+      # Body cap — the SECOND line of defence, not a replacement for the app's
+      # WEBHOOK_MAX_BODY_BYTES (1 MiB by default), which still owns the normal
+      # 413. Deliberately set ABOVE that app cap: the app stays the authority on
+      # what a valid update may weigh, while traefik refuses the absurd before
+      # it ever reaches a python process. Telegram updates are JSON of a few KB.
+      - "traefik.http.middlewares.second-brain-bodylimit.buffering.maxRequestBodyBytes=2097152"

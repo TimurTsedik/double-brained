@@ -9,7 +9,7 @@
 # run can never produce a restart-loop.
 #
 # It pulls the requested image, (re)starts postgres, verifies the role exists,
-# then does a short cutover: stop polling+worker, reconcile the schema with
+# then does a short cutover: stop polling+worker+api, reconcile the schema with
 # `init-db` (idempotent, ADD-only), and bring everything back up on the new image.
 # The stop is required — init-db briefly REVOKEs and re-GRANTs the app role's
 # privileges, so a running bot would hit permission errors mid-reconcile. Running
@@ -94,29 +94,36 @@ if [ "$(printf '%s' "$role_present" | tr -d '[:space:]')" != "1" ]; then
 fi
 
 # --- cutover: stop the app, reconcile the schema, restart -------------------
-# Stop polling+worker FIRST: init-db briefly REVOKEs then re-GRANTs the app
+# Stop polling+worker+api FIRST: init-db briefly REVOKEs then re-GRANTs the app
 # role's privileges (identity does a broad REVOKE ALL before the slice grants),
-# so a live old bot would hit "permission denied" during that window. With the
-# app stopped, init-db (idempotent, ADD-only) reconciles the schema safely; on a
-# no-schema release it is a near-instant no-op. Running it every deploy means a
-# schema-adding release never starts new code on an un-migrated schema.
-log "stopping polling and worker for the schema reconcile"
-docker compose -f "$COMPOSE_FILE" stop polling worker
+# so a live old bot would hit "permission denied" during that window. api is in
+# that list for exactly the same reason — a webhook arriving mid-reconcile would
+# fail its INSERT on permissions; stopped, it simply does not answer and
+# Telegram retries the update afterwards. With the app stopped, init-db
+# (idempotent, ADD-only) reconciles the schema safely; on a no-schema release it
+# is a near-instant no-op. Running it every deploy means a schema-adding release
+# never starts new code on an un-migrated schema.
+log "stopping polling, worker and api for the schema reconcile"
+docker compose -f "$COMPOSE_FILE" stop polling worker api
 
 log "reconciling schema (init-db: idempotent, ADD-only)"
 docker compose -f "$COMPOSE_FILE" run --rm -T worker second-brain-identity init-db
 
-# --- bring up all services (recreates polling+worker on the new image) ------
+# --- bring up all services (recreates polling+worker+api on the new image) --
 log "starting all services"
 docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
 
 # --- wait for app services to become healthy --------------------------------
-log "waiting for polling and worker to become healthy"
+# api is waited on by name like the others: it publishes no port, so an api that
+# came back broken would otherwise be invisible here and only show up as a 502
+# from the server's shared traefik.
+log "waiting for polling, worker and api to become healthy"
 deadline_ok=0
 for _ in $(seq 1 45); do
   polling_h="$(docker compose -f "$COMPOSE_FILE" ps polling --format '{{.Health}}' 2>/dev/null || true)"
   worker_h="$(docker compose -f "$COMPOSE_FILE" ps worker --format '{{.Health}}' 2>/dev/null || true)"
-  if [ "$polling_h" = "healthy" ] && [ "$worker_h" = "healthy" ]; then
+  api_h="$(docker compose -f "$COMPOSE_FILE" ps api --format '{{.Health}}' 2>/dev/null || true)"
+  if [ "$polling_h" = "healthy" ] && [ "$worker_h" = "healthy" ] && [ "$api_h" = "healthy" ]; then
     deadline_ok=1
     break
   fi
@@ -126,8 +133,8 @@ done
 if [ "$deadline_ok" != "1" ]; then
   log "services did not become healthy in time; recent logs follow:"
   docker compose -f "$COMPOSE_FILE" ps || true
-  docker compose -f "$COMPOSE_FILE" logs --tail 50 polling worker || true
-  fail "polling/worker unhealthy after redeploy"
+  docker compose -f "$COMPOSE_FILE" logs --tail 50 polling worker api || true
+  fail "polling/worker/api unhealthy after redeploy"
 fi
 
 log "redeploy complete; all services healthy"
