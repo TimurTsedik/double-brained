@@ -209,7 +209,13 @@ class TaskCapture:
         # не должна тянуть резолв часового пояса из базы.
         if not self._time_extractor.might_contain_due(command.text):
             return None
-        tz = await self._timezone_reader.resolve_timezone(command.access_context)
+        # Пояс запроса, если он назван, ГЛАВНЕЕ пояса пространства: приложение
+        # открывают из другой страны, и «завтра в 9» там значит другой момент.
+        # Телеграм не передаёт ничего, поэтому и поведение, и число запросов к
+        # базе у него прежние — прескрин выше по-прежнему отсекает резолв.
+        tz = command.request_tz or await self._timezone_reader.resolve_timezone(
+            command.access_context
+        )
         remind_at = self._time_extractor.extract_due(
             command.text, command.created_at, tz
         )

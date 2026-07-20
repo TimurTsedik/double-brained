@@ -8,11 +8,13 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,7 +25,36 @@ from second_brain.slices.capture.domain.entities import CaptureSourceKind
 class CaptureEventModel(Base):
     __tablename__ = "capture_events"
     __table_args__ = (
-        CheckConstraint("channel = 'telegram'", name="ck_capture_events_channel"),
+        # Предикат ФОРМЫ строки, а не просто словарь каналов. Три телеграмных
+        # идентификатора перестали быть NOT NULL — без этой замены журнал
+        # молча потерял бы своё fail-closed свойство: строка channel='telegram'
+        # с NULL-ами прошла бы вставку, а uq_capture_events_telegram_delivery
+        # (NULLS DISTINCT) перестал бы ловить её повторы — то есть страховка от
+        # двойной доставки выключилась бы ровно на тех строках, где ошиблись.
+        # Обратный гибрид (channel='api' с телеграмными id) запрещён по той же
+        # причине: иначе по строке нельзя сказать, чем она на самом деле
+        # является. Один предикат, а не два: каждая ветка сама пришпиливает
+        # channel, поэтому словарь каналов он уже содержит.
+        CheckConstraint(
+            "(channel = 'telegram'"
+            "   AND bot_id IS NOT NULL"
+            "   AND telegram_update_id IS NOT NULL"
+            "   AND telegram_message_id IS NOT NULL"
+            "   AND client_ref IS NULL"
+            "   AND request_tz IS NULL)"
+            " OR (channel = 'api'"
+            "   AND bot_id IS NULL"
+            "   AND telegram_update_id IS NULL"
+            "   AND telegram_message_id IS NULL"
+            "   AND client_ref IS NOT NULL AND client_ref <> ''"
+            "   AND request_tz IS NOT NULL AND request_tz <> ''"
+            "   AND source_kind = 'text')",
+            name="ck_capture_events_channel",
+        ),
+        CheckConstraint(
+            "modality IN ('text', 'voice_transcript')",
+            name="ck_capture_events_modality",
+        ),
         CheckConstraint(
             "(source_kind = 'text' AND raw_text IS NOT NULL AND raw_text <> '') "
             "OR (source_kind = 'voice' AND raw_text IS NULL) "
@@ -46,6 +77,17 @@ class CaptureEventModel(Base):
             "source_kind",
             name="uq_capture_events_id_space_kind",
         ),
+        # Ключ идемпотентности API-захвата. Частичный, потому что телеграмные
+        # строки client_ref не несут вовсе, а UNIQUE по NULL'ам их бы не
+        # различал. Последний рубеж, а не механизм: повтор распознаётся чтением
+        # ДО вставки (см. эндпоинт), сюда доходит только гонка.
+        Index(
+            "uq_capture_events_client_ref",
+            "user_space_id",
+            "client_ref",
+            unique=True,
+            postgresql_where=text("client_ref IS NOT NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -64,9 +106,17 @@ class CaptureEventModel(Base):
         server_default=CaptureSourceKind.TEXT.value,
     )
     channel: Mapped[str] = mapped_column(String(16), nullable=False)
-    bot_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    telegram_update_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    telegram_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    bot_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_update_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    client_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_tz: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # server_default обязателен: create_voice/create_image ``modality`` не
+    # передают, поэтому SQLAlchemy опускает колонку в INSERT'е — без умолчания
+    # на стороне базы первый же голос или фото упёрлись бы в NOT NULL.
+    modality: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="text"
+    )
     raw_text: Mapped[str | None] = mapped_column(Text)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False

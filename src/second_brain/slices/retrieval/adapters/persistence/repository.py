@@ -254,6 +254,54 @@ class PostgresSemanticIndexWriter:
             capture_event_id=row.capture_event_id,
         )
 
+    async def read_initial_target(
+        self, access_context: AccessContext, capture_event_id: UUID
+    ) -> IndexingTarget | None:
+        """Запись, созданную ПЕРВИЧНОЙ обработкой этого захвата.
+
+        Тот же join, что и у ``read_target``, но ключ другой: не прогон, а сам
+        захват плюс ``version == 1``. Первичный прогон захвата — ровно версия 1
+        и навсегда (``create_index_run`` у правок берёт max(version)+1), а у
+        прогона не бывает больше одной цели индексации — она его первичный ключ.
+
+        Именно поэтому здесь нет ни сортировки по ``created_at``, ни выборки
+        «самой ранней записи»: разбор текста дописывает СВОИ записи с тем же
+        ``source_capture_event_id``, а стенные часы причинность не хранят —
+        такой порядок был бы верен лишь обычно, а ключ идемпотентности обязан
+        быть верен всегда. Записи разбора ни прогона, ни цели не создают, то
+        есть сюда не попадают вовсе.
+        """
+        await _set_user_space_scope(self._session, access_context)
+        statement = (
+            select(
+                IndexingTargetModel.record_kind,
+                IndexingTargetModel.record_id,
+                ProcessingRunModel.capture_event_id,
+            )
+            .select_from(IndexingTargetModel)
+            .join(
+                ProcessingRunModel,
+                and_(
+                    ProcessingRunModel.id == IndexingTargetModel.processing_run_id,
+                    ProcessingRunModel.user_space_id
+                    == IndexingTargetModel.user_space_id,
+                ),
+            )
+            .where(
+                ProcessingRunModel.capture_event_id == capture_event_id,
+                ProcessingRunModel.version == 1,
+                IndexingTargetModel.user_space_id == access_context.user_space_id,
+            )
+        )
+        row = (await self._session.execute(statement)).one_or_none()
+        if row is None:
+            return None
+        return IndexingTarget(
+            record_kind=row.record_kind,
+            record_id=row.record_id,
+            capture_event_id=row.capture_event_id,
+        )
+
     async def replace_chunks_for_record(
         self, command: StoreSemanticChunksCommand
     ) -> None:

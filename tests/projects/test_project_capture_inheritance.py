@@ -126,13 +126,13 @@ async def capture_text(
             )
         source = await capture.capture(
             CaptureTextCommand(
-                ACCESS_A,
-                10,
-                update_id,
-                update_id + 1000,
-                f"typed {selection}",
-                NOW,
-                TRACE_ID,
+                access_context=ACCESS_A,
+                bot_id=10,
+                telegram_update_id=update_id,
+                telegram_message_id=update_id + 1000,
+                raw_text=f"typed {selection}",
+                received_at=NOW,
+                trace_id=TRACE_ID,
             ),
             transaction,
         )

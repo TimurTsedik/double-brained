@@ -207,6 +207,7 @@ async def _initialize_capture_schema(engine: AsyncEngine, schema_name: str) -> N
     async with engine.begin() as connection:
         await connection.run_sync(_create_capture_tables)
         await _reconcile_capture_image_columns(connection, schema_name)
+        await _reconcile_capture_api_columns(connection, schema_name)
         for table_name in ("capture_events", "telegram_attachments"):
             await _configure_user_space_rls(connection, schema_name, table_name)
         await _grant_capture_privileges(connection, schema_name)
@@ -253,6 +254,46 @@ async def _reconcile_capture_image_columns(
         await _reapply_model_check(
             connection, attachments, TelegramAttachmentModel, check_name
         )
+
+
+async def _reconcile_capture_api_columns(
+    connection: AsyncConnection, schema_name: str
+) -> None:
+    # create_all(checkfirst=True) пропускает СУЩЕСТВУЮЩИЕ таблицы, поэтому живая
+    # база сама не получит ни колонок API-захвата, ни послабления NOT NULL на
+    # телеграмных идентификаторах. Доращиваем идемпотентно.
+    #
+    # Порядок здесь несущий, а не косметический: предикат формы НАЗЫВАЕТ
+    # client_ref и request_tz, поэтому переприменять его можно только ПОСЛЕ
+    # ADD COLUMN; а послабление NOT NULL идёт до него, потому что именно оно
+    # делает предикат единственным сторожем формы строки.
+    #
+    # Типы колонок — ДОСЛОВНО те же, что в ORM-модели: свежая база строится по
+    # модели, живая — вот этим SQL, и разойтись им негде, кроме как здесь.
+    events = f"{_quote_identifier(schema_name)}.capture_events"
+    for column_definition in (
+        "client_ref varchar(128)",
+        "request_tz text",
+        "modality varchar(16) NOT NULL DEFAULT 'text'",
+    ):
+        await connection.execute(
+            text(f"ALTER TABLE {events} ADD COLUMN IF NOT EXISTS {column_definition}")
+        )
+    for column_name in ("bot_id", "telegram_update_id", "telegram_message_id"):
+        await connection.execute(
+            text(f"ALTER TABLE {events} ALTER COLUMN {column_name} DROP NOT NULL")
+        )
+    for check_name in ("ck_capture_events_channel", "ck_capture_events_modality"):
+        await _reapply_model_check(connection, events, CaptureEventModel, check_name)
+    # Индекс модели материализуется только на СВЕЖЕЙ таблице, поэтому для живой
+    # он же пишется литералом (тот же приём, что у полнотекстовых индексов).
+    await connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            f"{_quote_identifier('uq_capture_events_client_ref')} "
+            f"ON {events} (user_space_id, client_ref) WHERE client_ref IS NOT NULL"
+        )
+    )
 
 
 async def _reapply_named_check(

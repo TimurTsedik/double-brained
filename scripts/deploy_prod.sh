@@ -10,7 +10,8 @@
 #
 # It pulls the requested image, (re)starts postgres, verifies the role exists,
 # then does a short cutover: stop the app, reconcile the schema with `init-db`
-# (idempotent, ADD-only), and bring everything back up on the new image.
+# (idempotent, forward-only, no row rewrites), and bring everything back up on
+# the new image.
 # The stop is required — init-db briefly REVOKEs and re-GRANTs the app role's
 # privileges, so a running bot would hit permission errors mid-reconcile. Running
 # init-db on EVERY deploy means a schema-changing release can never land new code
@@ -107,9 +108,9 @@ fi
 # that list for exactly the same reason — a webhook arriving mid-reconcile would
 # fail its INSERT on permissions; stopped, it simply does not answer and
 # Telegram retries the update afterwards. With the app stopped, init-db
-# (idempotent, ADD-only) reconciles the schema safely; on a no-schema release it
-# is a near-instant no-op. Running it every deploy means a schema-adding release
-# never starts new code on an un-migrated schema.
+# (idempotent, forward-only, no row rewrites) reconciles the schema safely; on a
+# no-schema release it is a near-instant no-op. Running it every deploy means a
+# schema-adding release never starts new code on an un-migrated schema.
 #
 # `polling` stays in this list even though a normal deploy never starts it.
 # Naming a service explicitly auto-enables its profile, so this reliably stops a
@@ -120,7 +121,7 @@ fi
 log "stopping polling, worker and api for the schema reconcile"
 docker compose -f "$COMPOSE_FILE" stop polling worker api
 
-log "reconciling schema (init-db: idempotent, ADD-only)"
+log "reconciling schema (init-db: idempotent, forward-only, no row rewrites)"
 docker compose -f "$COMPOSE_FILE" run --rm -T worker second-brain-identity init-db
 
 # --- bring up all services (recreates worker+api on the new image) ----------

@@ -18,6 +18,7 @@ from second_brain.slices.capture.application.contracts import (
 from second_brain.slices.capture.domain.entities import CaptureEvent
 from second_brain.slices.identity.adapters.persistence.repositories import (
     PostgresUpdateTransaction,
+    acquire_client_ref_lock,
     read_user_space_timezone,
 )
 from second_brain.slices.identity.adapters.telegram.gateway import (
@@ -79,6 +80,7 @@ from second_brain.slices.tasks.application.contracts import (
     CancelPendingTaskCommand,
     CompleteTaskCommand,
     ConsumePendingTaskTextCommand,
+    CreateTypedCaptureCommand,
     SetAwaitingTaskCommand,
     SetPendingCaptureSelectionCommand,
     TaskModePort,
@@ -87,7 +89,7 @@ from second_brain.slices.tasks.application.contracts import (
 )
 from second_brain.slices.tasks.application.task_capture import TaskCapture
 from second_brain.slices.tasks.application.task_panel import TaskPanel
-from second_brain.slices.tasks.domain.entities import Task
+from second_brain.slices.tasks.domain.entities import PendingCaptureType, Task
 from second_brain.slices.weblinks.adapters.persistence.repository import (
     PostgresWeblinkWriter,
 )
@@ -118,17 +120,53 @@ class TaskCaptureInTransaction(
             )
         )
         task_capture = _typed_task_capture(session)
-        record = await task_capture.consume_for_text(
-            ConsumePendingTaskTextCommand(
-                access_context=command.access_context,
-                text=command.raw_text,
-                is_private_chat=True,
-                telegram_message_id=command.telegram_message_id,
-                source_capture_event_id=source.id,
-                created_at=command.received_at,
-                trace_id=command.trace_id,
+        # Развилка по ЗАЯВЛЕННОМУ происхождению, а не по пустому полю: телеграм
+        # идёт ровно тем же путём, что и до сих пор, остальные — прямым
+        # созданием записи. Хвост ниже (проектные связи, прогон обработки,
+        # цель индексации, ссылки) — ОДИН на оба пути; собирать его во второй
+        # раз в HTTP-композиции значило бы молча потерять три записи из четырёх.
+        #
+        # Почему API НЕ зовёт consume_for_text — четыре причины, каждая
+        # проверена, и это тот самый комментарий, который мешает «упростить»
+        # ветку обратно:
+        # 1) consume_for_text УДАЛЯЕТ строку pending_capture_selections — то
+        #    есть кнопка, нажатая владельцем в боте и ещё не использованная,
+        #    была бы съедена захватом с телефона;
+        # 2) _is_eligible требует telegram_message_id, которого по HTTP нет:
+        #    вернулся бы None, то есть строка журнала БЕЗ записи, и ссылки тоже
+        #    пропали бы (они пишутся только внутри ветки «запись создана»);
+        # 3) _is_eligible отбрасывает текст, начинающийся с «/», — по HTTP это
+        #    обычный текст, а не команда бота;
+        # 4) _is_eligible требует is_private_chat, а по HTTP этот флаг
+        #    утверждал бы что-то про сущность, которой не существует.
+        if command.channel == "telegram":
+            record = await task_capture.consume_for_text(
+                ConsumePendingTaskTextCommand(
+                    access_context=command.access_context,
+                    text=command.raw_text,
+                    is_private_chat=True,
+                    telegram_message_id=command.telegram_message_id,
+                    source_capture_event_id=source.id,
+                    created_at=command.received_at,
+                    trace_id=command.trace_id,
+                )
             )
-        )
+        else:
+            # Тип назван явно — он ГЛАВНЕЕ времени (как нажатая кнопка); тип не
+            # назван — заметка, которая при явном будущем времени становится
+            # задачей с напоминанием. Ровно та же семантика, что у бота.
+            record = await task_capture.create_for_selection(
+                CreateTypedCaptureCommand(
+                    access_context=command.access_context,
+                    selection=command.capture_type or PendingCaptureType.NOTE,
+                    text=command.raw_text,
+                    source_capture_event_id=source.id,
+                    created_at=command.received_at,
+                    trace_id=command.trace_id,
+                    route_default_by_time=command.capture_type is None,
+                    request_tz=command.request_tz,
+                )
+            )
         if record is not None:
             await project_links.inherit_capture_links(
                 InheritCaptureProjectLinksCommand(
@@ -177,6 +215,27 @@ class TaskCaptureInTransaction(
                     )
                 )
         return source
+
+    async def claim_client_ref(
+        self,
+        access_context: AccessContext,
+        client_ref: str,
+        transaction: UpdateTransaction,
+    ) -> CaptureEvent | None:
+        """Занимает ключ повтора до конца транзакции и отдаёт уже записанное.
+
+        Замок и чтение неразделимы: без замка два одновременных повтора оба
+        увидели бы «ничего нет» и оба бы записали. Тот же приём, которым гасятся
+        повторы телеграмных обновлений, — замок, чтение, работа.
+
+        Возвращается ВЕСЬ захват, а не один id: из этой же строки берётся пояс,
+        которым разбиралось время первого вызова, — повтор обязан ответить им.
+        """
+        session = _active_session(transaction)
+        await acquire_client_ref_lock(session, access_context.user_space_id, client_ref)
+        return await PostgresCaptureEventWriter(session).read_by_client_ref(
+            access_context, client_ref
+        )
 
     async def set_awaiting_task(
         self, command: SetAwaitingTaskCommand, transaction: UpdateTransaction

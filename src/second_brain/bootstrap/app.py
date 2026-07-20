@@ -31,10 +31,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from second_brain.bootstrap.api_v1 import (
     ApiRuntimeProvider,
+    V1IngressMiddleware,
     create_v1_router,
     register_v1_error_handlers,
 )
-from second_brain.bootstrap.settings import Settings
+from second_brain.bootstrap.settings import DEFAULT_API_MAX_BODY_BYTES, Settings
 from second_brain.shared.trace import TraceContext
 from second_brain.slices.identity.adapters.persistence.database import (
     assert_non_privileged_application_role,
@@ -172,4 +173,20 @@ def create_app(
 
     app.include_router(create_v1_router(api_runtime_provider))
     register_v1_error_handlers(app)
+    app.add_middleware(V1IngressMiddleware, max_body_bytes=_api_max_body_bytes())
     return app
+
+
+def _api_max_body_bytes() -> int:
+    """Cap тела `/v1`, читаемый на СБОРКЕ приложения.
+
+    Прослойка — чистый ASGI и создаётся вместе с приложением, а приложение
+    собирается на импорте ``main``, где полного окружения может и не быть
+    (тесты, выгрузка схемы). Поэтому нехватка настроек здесь — не авария, а
+    значение по умолчанию: сам `/v1` в таком развёртывании всё равно отвечает
+    503, а процесс остаётся прикрытым тем же самым потолком.
+    """
+    try:
+        return Settings.from_environment().api_max_body_bytes
+    except RuntimeError:
+        return DEFAULT_API_MAX_BODY_BYTES

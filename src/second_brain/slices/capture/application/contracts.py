@@ -8,6 +8,7 @@ from second_brain.slices.identity.application.contracts import (
     AccessContext,
     UpdateTransaction,
 )
+from second_brain.slices.tasks.application.contracts import PendingCaptureType
 
 
 @dataclass(frozen=True)
@@ -24,13 +25,35 @@ class TelegramLink:
 
 @dataclass(frozen=True)
 class CaptureTextCommand:
+    """Приём текста — из телеграма или из запроса к API.
+
+    Поля с умолчаниями стоят в конце не по вкусу, а по правилу dataclass'а:
+    защищённое телеграмное происхождение (``channel="telegram"``) остаётся
+    поведением по умолчанию, поэтому вызывающему, который его не знает, форму
+    строки в базе испортить нечем — предикат ``ck_capture_events_channel``
+    откажет во вставке.
+    """
+
     access_context: AccessContext
-    bot_id: int
-    telegram_update_id: int
-    telegram_message_id: int
     raw_text: str = field(repr=False)
     received_at: datetime
     trace_id: str
+    # Происхождение захвата, названное ОДИН раз и явно: маршрут внутри
+    # ``TaskCaptureInTransaction.capture`` ветвится по нему, а не гадает по
+    # пустому полю.
+    channel: str = "telegram"
+    bot_id: int | None = None
+    telegram_update_id: int | None = None
+    telegram_message_id: int | None = None
+    # Ключ идемпотентности вызывающего: слепой повтор с тем же значением обязан
+    # вернуть ОТВЕТ ПЕРВОГО вызова, а не создать второй захват.
+    client_ref: str | None = None
+    # Часовой пояс запроса — им разбирается относительное время («завтра в 9»).
+    request_tz: str | None = None
+    # Происхождение текста: набран или надиктован. Пока чистая пометка.
+    modality: str = "text"
+    # Явный тип записи из запроса; None = «тип не назван», тогда решает время.
+    capture_type: PendingCaptureType | None = None
     # Sidecar-ссылки сообщения: текст выше остаётся дословным, пары «слово →
     # адрес» пишутся рядом (record_urls) после создания записи.
     links: tuple[TelegramLink, ...] = field(default=(), repr=False)

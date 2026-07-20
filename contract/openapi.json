@@ -1,6 +1,153 @@
 {
   "components": {
     "schemas": {
+      "CaptureLinkBody": {
+        "description": "Ссылка при записи: пара «слово → адрес», как в сообщении бота.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "url": {
+            "maxLength": 2048,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "url"
+        ],
+        "title": "CaptureLinkBody",
+        "type": "object"
+      },
+      "CaptureRecordBody": {
+        "description": "Запись, созданная ЭТИМ вызовом.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "examples": [
+              "task"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id"
+        ],
+        "title": "CaptureRecordBody",
+        "type": "object"
+      },
+      "CaptureRequest": {
+        "description": "Что прислать, чтобы запись появилась.",
+        "properties": {
+          "client_ref": {
+            "description": "Ключ повтора: своё значение на КАЖДОЕ действие пользователя. Повтор с тем же значением вернёт ответ первого вызова и НИЧЕГО не создаст; тела при этом не сравниваются. Не берите его из текста (хэш содержимого склеил бы две разные записи одних и тех же слов).",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Client Ref",
+            "type": "string"
+          },
+          "links": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CaptureLinkBody"
+            },
+            "title": "Links",
+            "type": "array"
+          },
+          "modality": {
+            "default": "text",
+            "description": "Откуда взялся текст: набран или надиктован. Пока пометка.",
+            "enum": [
+              "text",
+              "voice_transcript"
+            ],
+            "title": "Modality",
+            "type": "string"
+          },
+          "text": {
+            "description": "Текст записи ДОСЛОВНО — как прислали, так и сохраним. Пустой текст и текст из одних пробелов не принимаются.",
+            "maxLength": 32000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingCaptureType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Тип записи. Назван — он главнее времени; не назван — заметка, которая при явном будущем времени становится задачей с напоминанием."
+          },
+          "tz": {
+            "description": "Часовой пояс запроса (имя IANA). Им разбирается относительное время («завтра в 9»). На формат ответа не влияет: все моменты времени наружу уходят в UTC.",
+            "examples": [
+              "Europe/Lisbon"
+            ],
+            "title": "Tz",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "client_ref",
+          "tz"
+        ],
+        "title": "CaptureRequest",
+        "type": "object"
+      },
+      "CaptureResponse": {
+        "description": "Итог записи: журнал, созданная запись и, если есть, момент напоминания.\n\n`record` — запись, созданную ЭТИМ вызовом. Позже к тому же захвату разбор\nтекста может добавить ещё записи; про них этот ответ ничего не говорит —\nони видны в поиске и сводке.",
+        "properties": {
+          "capture_id": {
+            "format": "uuid",
+            "title": "Capture Id",
+            "type": "string"
+          },
+          "record": {
+            "$ref": "#/components/schemas/CaptureRecordBody"
+          },
+          "reminder_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Когда напомним, в UTC. Относительное время разбирается от момента ПРИЁМА запроса сервером, а не от момента, когда его набрали: очередь, слитая с опозданием, поставит напоминание от прихода — поэтому он здесь и виден.",
+            "title": "Reminder At"
+          },
+          "request_tz": {
+            "description": "Пояс, которым РЕАЛЬНО разобрано время этого захвата. На повторе это пояс ПЕРВОГО вызова, а не присланный сейчас.",
+            "examples": [
+              "Europe/Lisbon"
+            ],
+            "title": "Request Tz",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capture_id",
+          "record",
+          "request_tz"
+        ],
+        "title": "CaptureResponse",
+        "type": "object"
+      },
       "ErrorBody": {
         "description": "Тело ошибки: безопасный код и идентификатор трассировки.",
         "properties": {
@@ -77,6 +224,17 @@
         ],
         "title": "MeResponse",
         "type": "object"
+      },
+      "PendingCaptureType": {
+        "enum": [
+          "note",
+          "task",
+          "idea",
+          "decision",
+          "question"
+        ],
+        "title": "PendingCaptureType",
+        "type": "string"
       }
     },
     "securitySchemes": {
@@ -93,6 +251,113 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/captures": {
+      "post": {
+        "description": "Создаёт запись из текста; повтор с тем же client_ref ничего не дублирует.\n\nОтвет 201 — запись создана, 200 — это повтор и вернулся ответ первого\nвызова. Тела повтора и первого вызова НЕ сравниваются: тот же\nclient_ref с другим текстом вернёт первый захват, а новый текст\nпотеряется — поэтому client_ref обязан быть своим на каждое действие\nпользователя.\n\nМомент приёма запроса сервером — база для относительного времени;\nсобственную отметку времени клиент прислать не может.",
+        "operationId": "create_capture_v1_captures_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureResponse"
+                }
+              }
+            },
+            "description": "Повтор с уже использованным client_ref: возвращён ответ ПЕРВОГО вызова, ничего нового не создано."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Токен не предъявлен, неизвестен, отозван или больше не действует."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Тело запроса больше допустимого размера."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Запрос не проходит проверку: пустой или слишком длинный текст, пустой или слишком длинный client_ref, неизвестный часовой пояс, неизвестный тип записи, слишком длинный адрес ссылки, нулевой байт (U+0000) в любом текстовом поле. Сюда же попадает слишком длинная заметка, если размер тела не был объявлен заранее."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Либо слишком много неудачных попыток авторизации с этого адреса, либо исчерпан бюджет записей этого пространства в текущем окне."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Внутренняя ошибка; подробности — только в логах сервиса по trace_id."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "API не сконфигурирован на этом развёртывании."
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Записать мысль",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
     "/v1/me": {
       "get": {
         "description": "Отдаёт пользователя, его пространство, язык и часовой пояс.",
@@ -126,7 +391,7 @@
                 }
               }
             },
-            "description": "Слишком много неудачных попыток авторизации с этого адреса."
+            "description": "Либо слишком много неудачных попыток авторизации с этого адреса, либо исчерпан бюджет записей этого пространства в текущем окне."
           },
           "500": {
             "content": {

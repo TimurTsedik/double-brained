@@ -7,7 +7,9 @@ from second_brain.slices.identity.application.contracts import (
     AccessContext,
     UpdateTransaction,
 )
-from second_brain.slices.tasks.domain.entities import PendingCaptureType
+from second_brain.slices.tasks.domain.entities import (
+    PendingCaptureType as PendingCaptureType,
+)
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,10 @@ class CreateTypedCaptureCommand:
     # временем сама становится напоминанием-задачей. Классификатор его НЕ ставит
     # (под-пункты сохраняют выбранный ИИ тип).
     route_default_by_time: bool = False
+    # Часовой пояс запроса, в котором разбирать «завтра в 9». Задаёт только
+    # HTTP-путь; телеграм и воркеры не передают ничего и работают поясом
+    # пространства, как раньше.
+    request_tz: str | None = None
 
 
 @dataclass(frozen=True)

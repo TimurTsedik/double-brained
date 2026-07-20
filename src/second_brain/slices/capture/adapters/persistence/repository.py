@@ -62,10 +62,13 @@ class PostgresCaptureEventWriter:
             id=uuid4(),
             user_space_id=command.access_context.user_space_id,
             source_kind=CaptureSourceKind.TEXT,
-            channel="telegram",
+            channel=command.channel,
             bot_id=command.bot_id,
             telegram_update_id=command.telegram_update_id,
             telegram_message_id=command.telegram_message_id,
+            client_ref=command.client_ref,
+            request_tz=command.request_tz,
+            modality=command.modality,
             raw_text=command.raw_text,
             received_at=command.received_at,
             created_at=command.received_at,
@@ -74,6 +77,24 @@ class PostgresCaptureEventWriter:
         self._session.add(model)
         await self._session.flush()
         return _to_entity(model)
+
+    async def read_by_client_ref(
+        self, access_context: AccessContext, client_ref: str
+    ) -> CaptureEvent | None:
+        """Захват, уже записанный под этим ключом повтора, ЦЕЛИКОМ.
+
+        Целиком, а не один только id: из этой же строки берётся часовой пояс,
+        которым разбиралось время первого вызова, — повтор обязан ответить им, а
+        не тем, что прислали сейчас.
+        """
+        await _set_user_space_scope(self._session, access_context)
+        model = await self._session.scalar(
+            select(CaptureEventModel).where(
+                CaptureEventModel.user_space_id == access_context.user_space_id,
+                CaptureEventModel.client_ref == client_ref,
+            )
+        )
+        return None if model is None else _to_entity(model)
 
     async def create_voice(self, command: CaptureVoiceCommand) -> CaptureEvent:
         await _set_user_space_scope(self._session, command.access_context)
@@ -312,10 +333,13 @@ async def _set_user_space_scope(
 
 
 def _to_entity(model: CaptureEventModel) -> CaptureEvent:
+    # ``channel`` и ``request_tz`` берутся ИЗ СТРОКИ. Пока канал был здесь
+    # литералом, строка в базе могла быть верной, а возвращённая сущность —
+    # врать: значение подставлялось, а не читалось.
     return CaptureEvent(
         id=model.id,
         user_space_id=model.user_space_id,
-        channel="telegram",
+        channel=model.channel,
         bot_id=model.bot_id,
         telegram_update_id=model.telegram_update_id,
         telegram_message_id=model.telegram_message_id,
@@ -324,4 +348,5 @@ def _to_entity(model: CaptureEventModel) -> CaptureEvent:
         created_at=model.created_at,
         trace_id=model.trace_id,
         source_kind=model.source_kind,
+        request_tz=model.request_tz,
     )

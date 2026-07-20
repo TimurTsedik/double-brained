@@ -31,6 +31,16 @@ DEFAULT_API_TOKEN_LAST_USED_THROTTLE_SECONDS = 300
 # не мешает. 0 = лимит выключен.
 DEFAULT_API_AUTH_FAILURE_LIMIT = 20
 DEFAULT_API_AUTH_FAILURE_WINDOW_SECONDS = 300
+# Пределы на пишущем пути `/v1` (эпик API-1, D1). Cap тела: запись — это
+# набранная или надиктованная заметка плюс несколько ссылок, 64 КиБ ≈ 30 000
+# знаков по-русски, то есть заведомо больше всего, что человек наговорит.
+# Мегабайт webhook'а — размер телеграмного Update, здесь он не при чём.
+DEFAULT_API_MAX_BODY_BYTES = 64 * 1024
+# Записей на пространство в окне. Законный всплеск — очередь, накопившаяся
+# офлайн: 60/мин сливает дневной запас за минуту и всё же ограничивает
+# зациклившееся приложение. 0 = лимит выключен.
+DEFAULT_API_WRITE_RATE_LIMIT = 60
+DEFAULT_API_WRITE_RATE_WINDOW_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -58,6 +68,10 @@ class Settings:
     # верить заголовкам и брать адрес сокета. Задавать ТОЛЬКО там, где до
     # приложения не достучаться мимо прокси, иначе клиент назначит адрес сам.
     api_client_ip_header: str | None = None
+    # Cap тела запроса к `/v1` и бюджет записей на пространство (D1).
+    api_max_body_bytes: int = DEFAULT_API_MAX_BODY_BYTES
+    api_write_rate_limit: int = DEFAULT_API_WRITE_RATE_LIMIT
+    api_write_rate_window_seconds: int = DEFAULT_API_WRITE_RATE_WINDOW_SECONDS
     voice_storage_root: str = field(
         default=DEFAULT_VOICE_STORAGE_ROOT,
         repr=False,
@@ -132,6 +146,15 @@ class Settings:
             "API_AUTH_FAILURE_WINDOW_SECONDS", DEFAULT_API_AUTH_FAILURE_WINDOW_SECONDS
         )
         api_client_ip_header = os.environ.get("API_CLIENT_IP_HEADER") or None
+        api_max_body_bytes = _non_negative_int_environment(
+            "API_MAX_BODY_BYTES", DEFAULT_API_MAX_BODY_BYTES
+        )
+        api_write_rate_limit = _non_negative_int_environment(
+            "API_WRITE_RATE_LIMIT", DEFAULT_API_WRITE_RATE_LIMIT
+        )
+        api_write_rate_window_seconds = _non_negative_int_environment(
+            "API_WRITE_RATE_WINDOW_SECONDS", DEFAULT_API_WRITE_RATE_WINDOW_SECONDS
+        )
         voice_storage_root = (
             os.environ.get("VOICE_STORAGE_ROOT") or DEFAULT_VOICE_STORAGE_ROOT
         )
@@ -195,6 +218,9 @@ class Settings:
             api_auth_failure_limit=api_auth_failure_limit,
             api_auth_failure_window_seconds=api_auth_failure_window_seconds,
             api_client_ip_header=api_client_ip_header,
+            api_max_body_bytes=api_max_body_bytes,
+            api_write_rate_limit=api_write_rate_limit,
+            api_write_rate_window_seconds=api_write_rate_window_seconds,
             voice_storage_root=voice_storage_root,
             image_storage_root=image_storage_root,
             image_max_file_size_bytes=image_max_file_size_bytes,

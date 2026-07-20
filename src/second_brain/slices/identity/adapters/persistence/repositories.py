@@ -44,6 +44,9 @@ BOOTSTRAP_LOCK_KEY = 487_251_309
 MAX_ENROLLMENT_ATTEMPTS = 5
 UPDATE_LOCK_NAMESPACE = b"identity-update-lock-v1"
 POLLER_LOCK_KEY_NAMESPACE = b"identity-poller-lock-v1"
+# Замок идемпотентности API-захвата: (пространство, client_ref). Разные ключи
+# друг друга не держат, поэтому сливающаяся офлайн-очередь ни с кем не спорит.
+CAPTURE_CLIENT_REF_LOCK_NAMESPACE = b"capture-client-ref-lock-v1"
 
 
 class PostgresEnrollmentRepository:
@@ -722,7 +725,33 @@ async def acquire_update_lock(
     )
 
 
-def advisory_key(namespace: bytes, *identifiers: int) -> int:
+async def acquire_client_ref_lock(
+    session: AsyncSession, user_space_id: UUID, client_ref: str
+) -> None:
+    """Замок на (пространство, client_ref) до конца транзакции.
+
+    Тот же приём, которым гасятся повторы телеграмных обновлений: замок →
+    чтение → работа. Замок намеренно ЖДУЩИЙ, а не try_: весь смысл client_ref в
+    том, что повтор получает ответ первого вызова, и быстрый отказ вернул бы
+    ошибку ровно тому, кто первого ответа как раз и не увидел. Разные ключи друг
+    друга не держат, поэтому сливающаяся офлайн-очередь ни с кем не спорит.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {
+            "lock_key": advisory_key(
+                CAPTURE_CLIENT_REF_LOCK_NAMESPACE, user_space_id, client_ref
+            )
+        },
+    )
+
+
+def advisory_key(namespace: bytes, *identifiers: object) -> int:
+    """Ключ advisory-замка из пространства имён и произвольных идентификаторов.
+
+    Идентификаторы приводятся к строке, поэтому ими могут быть не только числа:
+    ключ идемпотентности захвата — это (UUID пространства, строка client_ref).
+    """
     encoded_identifiers = b":".join(
         str(identifier).encode() for identifier in identifiers
     )

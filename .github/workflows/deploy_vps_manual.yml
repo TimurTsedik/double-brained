@@ -5,8 +5,9 @@ name: Deploy to VPS
 # (against a real pgvector Postgres) and the GHCR image build run IN PARALLEL;
 # the VPS redeploy waits for both, so nothing untested is ever deployed. The
 # redeploy is a short cutover that runs `init-db` every time (idempotent,
-# ADD-only), so a schema-changing release can never land new code on an
-# un-migrated schema. Only the immutable sha tag is pushed — no :latest.
+# forward-only, no row rewrites), so a schema-changing release can never land
+# new code on an un-migrated schema. Only the immutable sha tag is pushed — no
+# :latest.
 # workflow_dispatch stays for manual rollback / deploying a specific ref.
 on:
   push:

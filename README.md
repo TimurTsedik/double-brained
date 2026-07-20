@@ -349,6 +349,54 @@ happens lazily *inside* the first request.
   reached except through traefik — on a deployment where the app is directly
   reachable, leave it unset, or callers will name their own address.
 
+### Writing a capture over the API (epic API-1, slice D1)
+
+`POST /v1/captures` is how something reaches the memory without going through
+Telegram. A **capture** is the journal row for what arrived, plus the record it
+became; the endpoint answers `201` with the record it created, or `200` when the
+call was a repeat (see below). The record is filed into the space's **current
+project** exactly as a capture from the bot is — the project context belongs to
+the space, not to a chat session, so a note sent from the phone lands where the
+owner is currently working.
+
+* **`client_ref` is the repeat key, and it must be per-action.** Send a fresh
+  value for every user action. A repeat with the same value returns the **first**
+  call's answer and creates nothing — and **the bodies are not compared**: the
+  same `client_ref` with different text answers `200` with the original capture
+  and silently discards the new text. Never derive it from the content: a
+  content hash would collapse two genuinely distinct captures of the same words
+  into one. The repeat answers the *first* call's `request_tz` too, not the one
+  just sent — a client retrying blind may legitimately have moved timezone since,
+  and echoing the new zone would name a zone that did not produce the stored
+  reminder.
+* **What `tz` does and does not affect.** It is the zone relative times are
+  parsed in — «завтра в 9» from Lisbon and from Jerusalem are different instants,
+  and both are stored absolutely. It does **not** affect how anything is
+  serialised: every instant on the wire is UTC RFC3339, per the `/v1` convention.
+  The **space** timezone is untouched by this and is still fixed; changing a
+  space's home timezone is not something this slice makes possible.
+* **Relative times are parsed against server receipt time.** No client-supplied
+  capture timestamp is accepted. The consequence is visible rather than hidden:
+  an offline queue draining hours late parses «завтра в 9» against arrival, and
+  the response's `reminder_at` says exactly which instant was stored.
+* **`modality`** records whether the text was typed or dictated (`text` /
+  `voice_transcript`). It is provenance only — same pipeline, same routing, same
+  reminders. It is not the voice pipeline: a transcript arrives *as* text.
+* **What the response does not promise.** `record` is the record *this call*
+  created. The classifier can materialise further records from the same capture
+  seconds later; those are ordinary rows and show up in search and the digest,
+  and this response says nothing about them.
+* **Two limits guard the write path.** `API_MAX_BODY_BYTES` (default 64 KiB) is
+  enforced by counting body chunks in ingress middleware, before the body is
+  parsed and before the token is checked — a `Content-Length` check alone is
+  bypassable by a chunked request from a stranger. Over it: `413
+  payload_too_large`. `API_WRITE_RATE_LIMIT` per `API_WRITE_RATE_WINDOW_SECONDS`
+  (default 60/60) is counted **per space**, so **a space's tokens share one write
+  budget**: the owner's laptop stuck in a retry loop can exhaust the budget his
+  phone is also using. That is the intended meaning of a per-user budget in a
+  single-owner product — a `429` that surfaces the loop beats giving the loop a
+  private quota. Reads are unaffected.
+
 `/health` and `POST /telegram/webhook` are marked `include_in_schema=False` and
 do not appear in `/openapi.json`. The schema is the contract offered to API
 clients; the webhook is a private door for exactly one caller whose shape
@@ -446,16 +494,16 @@ role's privileges, so a running bot would hit permission errors mid-reconcile.
 `api` is stopped for the same reason: a webhook arriving mid-reconcile would fail
 its INSERT on permissions, whereas a stopped `api` simply does not answer and
 Telegram retries the update after the cutover.
-`init-db` is idempotent and ADD-only, so on a release with no schema change it is
-a near-instant no-op; the cost is a few seconds of downtime per deploy. A
-schema-adding release therefore needs no manual step — the columns are grown in
-place before the new code starts. (First-time initialisation — creating the role
+`init-db` is idempotent, forward-only and never rewrites rows, so on a release
+with no schema change it is a near-instant no-op; the cost is a few seconds of
+downtime per deploy. A schema-adding release therefore needs no manual step —
+the columns are grown in place before the new code starts. (First-time initialisation — creating the role
 and owner enrollment — is still manual, once; the script's guard aborts on an
 uninitialised database.)
 
-**Data-meaning changes still need a one-time manual command.** `init-db` only
-adds structure; it never rewrites rows. When a release changes what EXISTING data
-means, run the fix-up once by hand. The button-authority release is the current
+**Data-meaning changes still need a one-time manual command.** `init-db` may
+relax or replace a constraint, but it never rewrites rows. When a release
+changes what EXISTING data means, run the fix-up once by hand. The button-authority release is the current
 example: an explicit type button is now consumed by DELETING its
 `pending_capture_selections` row, so a leftover `'note'` row from an older build
 reads as an explicit "Note" (suppressing the time→reminder default) until the
