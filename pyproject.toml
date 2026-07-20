@@ -31,6 +31,7 @@ second-brain-local-polling = "second_brain.bootstrap.local_polling:main"
 second-brain-local-voice-worker = "second_brain.bootstrap.local_voice_worker:main"
 second-brain-healthcheck = "second_brain.bootstrap.healthcheck:main"
 second-brain-inbox-status = "second_brain.bootstrap.inbox_status:main"
+second-brain-openapi = "second_brain.bootstrap.openapi_dump:main"
 
 [dependency-groups]
 dev = [

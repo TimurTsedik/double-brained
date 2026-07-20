@@ -631,7 +631,12 @@ async def test_openapi_describes_v1_and_keeps_the_service_routes_out(
 
     schema = response.json()
     assert response.status_code == 200
-    assert set(schema["paths"]) == {"/v1/me"}
+    # Не перечисляем пути поимённо: их состав сторожит побайтовое сравнение с
+    # `contract/openapi.json`, и список, продублированный здесь, краснел бы на
+    # каждом новом эндпоинте невнятным «множества не совпали». Здесь стережём
+    # то, чего тот замок не видит: наружу не должно вылезти ничего, кроме `/v1`.
+    assert "/v1/me" in schema["paths"]
+    assert all(path.startswith("/v1/") for path in schema["paths"])
     assert "/health" not in schema["paths"]
     assert "/telegram/webhook" not in schema["paths"]
     operation = schema["paths"]["/v1/me"]["get"]

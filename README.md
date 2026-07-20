@@ -750,3 +750,23 @@ uv run --env-file .env ruff check .
 uv run --env-file .env ruff format --check .
 uv run --env-file .env mypy src
 ```
+
+### Changing the `/v1` API means regenerating its contract
+
+The OpenAPI schema of `/v1` is a committed artifact: `contract/openapi.json`.
+Whenever you add, remove or reshape anything the schema describes — a route, a
+response model, a status code, a security scheme — regenerate it and commit the
+result in the same change:
+
+```bash
+uv run second-brain-openapi
+```
+
+No environment, database or network is needed for this: the app builds its
+routes eagerly, the router's dependencies only later, inside the first request.
+
+A test in `tests/bootstrap/test_openapi_contract.py` regenerates the schema and
+compares it with the committed file, so a schema change that was not committed
+turns the test run red instead of shipping silently. The file is what makes a
+change to the promise offered to token holders visible in a diff and reviewable
+like any other code.

@@ -1,0 +1,164 @@
+{
+  "components": {
+    "schemas": {
+      "ErrorBody": {
+        "description": "Тело ошибки: безопасный код и идентификатор трассировки.",
+        "properties": {
+          "code": {
+            "examples": [
+              "unauthorized"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "trace_id": {
+            "description": "Идентификатор запроса; по нему запрос ищется в логах сервиса.",
+            "examples": [
+              "0f3c8a1d5e7b4c2a9d6f8e1b3a5c7d9e"
+            ],
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "trace_id"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "ErrorEnvelope": {
+        "description": "Единый конверт ошибки для всего `/v1`.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorEnvelope",
+        "type": "object"
+      },
+      "MeResponse": {
+        "description": "Кем распознан вызывающий: пользователь, его пространство и его настройки.",
+        "properties": {
+          "language": {
+            "description": "Действующий язык пространства (пока язык не выбран — ru).",
+            "examples": [
+              "ru"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
+          "timezone": {
+            "examples": [
+              "Asia/Jerusalem"
+            ],
+            "title": "Timezone",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          },
+          "user_space_id": {
+            "format": "uuid",
+            "title": "User Space Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "user_space_id",
+          "language",
+          "timezone"
+        ],
+        "title": "MeResponse",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "description": "Персональный токен доступа, выданный кнопкой «🔑 API» в боте. Токен определяет, ЧЬЯ память отвечает на запрос.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "Second Brain",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/me": {
+      "get": {
+        "description": "Отдаёт пользователя, его пространство, язык и часовой пояс.",
+        "operationId": "read_me_v1_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Токен не предъявлен, неизвестен, отозван или больше не действует."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Слишком много неудачных попыток авторизации с этого адреса."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Внутренняя ошибка; подробности — только в логах сервиса по trace_id."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "API не сконфигурирован на этом развёртывании."
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Кем распознан вызывающий",
+        "tags": [
+          "v1"
+        ]
+      }
+    }
+  }
+}
